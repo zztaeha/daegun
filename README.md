@@ -1,7 +1,6 @@
 # daegun
 
 <img src="https://raw.githubusercontent.com/silly-tae/daegun/images-v1/assets/images/Logo/daegun.png" align="right" width="80" alt="">
-<a href="https://ko-fi.com/S1T425C33Y"><img src="https://ko-fi.com/img/githubbutton_sm.svg" align="right" alt="Support daegun on ko-fi"></a>
 
 **Your all-in-one text engine. Rust, `no_std`, zero dependencies.**
 
