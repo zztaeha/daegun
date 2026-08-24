@@ -1,6 +1,6 @@
 [package]
 name = "daegun"
-version = "1.1.6"
+version = "1.1.7"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Your all-in-one text engine. Rust, no_std, zero dependencies."

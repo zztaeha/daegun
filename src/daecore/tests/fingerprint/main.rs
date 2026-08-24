@@ -225,7 +225,7 @@ fn instanced_fonts() {
             Err(e) => f.bytes(e.as_bytes()),
         }
     }
-    check("instanced fonts", f.done(), 0x7766_92b9_3e79_379b);
+    check("instanced fonts", f.done(), 0x1fc2_26de_d57f_6374);
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn subset_fonts() {
             Err(e) => f.bytes(e.as_bytes()),
         }
     }
-    check("subset fonts", f.done(), 0xc682_1567_2ef8_81b5);
+    check("subset fonts", f.done(), 0xc03a_ab76_96bc_87af);
 }
 
 #[test]

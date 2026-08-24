@@ -30,7 +30,7 @@ pub use cff::parse::{cff_index_spans, parse_cff_index, parse_cff_index_refs};
 pub use cff::parse::{parse_top_dict, parse_private_subrs_offset, parse_fd_dict_private};
 pub(crate) use cff::parse::{walk_charset, CharsetFlow};
 pub use glyf::parse_loca;
-pub use display_font::{build_format4_cmap, build_name_table};
+pub use display_font::{build_unicode_cmap, build_name_table};
 pub(crate) use cff::seac::{seac_offsets, standard_encoding_sid, sid_to_gid};
 pub use cff::seac::seac_component_gids;
 pub use otl::gdef::{has_mark_glyph_sets, subset_gdef};

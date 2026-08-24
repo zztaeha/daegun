@@ -3,7 +3,10 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use super::super::decoder::{write_u16_be, write_i16_be, write_u32_be};
 
-pub fn build_format4_cmap(mappings: &[(u32, u16)]) -> Vec<u8> {
+// Format 4 addresses the BMP only. A supplementary-plane codepoint therefore
+// needs a format 12 subtable beside it, or the subset cannot express a mapping
+// it otherwise carries the glyph for.
+pub fn build_unicode_cmap(mappings: &[(u32, u16)]) -> Vec<u8> {
     let mut sorted: Vec<(u32, u16)> = mappings.iter().copied().filter(|&(cp, _)| cp <= 0xFFFF).collect();
     sorted.sort_by_key(|&(cp, _)| cp);
 
@@ -45,21 +48,68 @@ pub fn build_format4_cmap(mappings: &[(u32, u16)]) -> Vec<u8> {
     for s in &segs { write_i16_be(&mut sub, p, s.delta); p += 2; }
     for _ in &segs { write_u16_be(&mut sub, p, 0); p += 2; }
 
-    let encoding_records: &[(u16, u16)] = &[(0, 3), (3, 1)];
-    let cmap_header_len = 4 + encoding_records.len() * 8;
-    let subtable_offset = cmap_header_len as u32;
+    // (0,3) and (3,1) select the BMP subtable; (0,4) and (3,10) the full-range
+    // one, which is emitted only when something actually sits above the BMP
+    let wide = build_format12(mappings);
+    let records: &[(u16, u16, bool)] = if wide.is_empty() {
+        &[(0, 3, false), (3, 1, false)]
+    } else {
+        &[(0, 3, false), (3, 1, false), (0, 4, true), (3, 10, true)]
+    };
 
-    let mut cmap = vec![0u8; cmap_header_len + sub.len()];
+    let cmap_header_len = 4 + records.len() * 8;
+    let fmt4_off = cmap_header_len as u32;
+    let fmt12_off = fmt4_off + sub.len() as u32;
+
+    let mut cmap = vec![0u8; cmap_header_len + sub.len() + wide.len()];
     write_u16_be(&mut cmap, 0, 0);
-    write_u16_be(&mut cmap, 2, encoding_records.len() as u16);
-    for (i, &(platform_id, encoding_id)) in encoding_records.iter().enumerate() {
+    write_u16_be(&mut cmap, 2, records.len() as u16);
+    for (i, &(platform_id, encoding_id, is_wide)) in records.iter().enumerate() {
         let off = 4 + i * 8;
         write_u16_be(&mut cmap, off, platform_id);
         write_u16_be(&mut cmap, off + 2, encoding_id);
-        write_u32_be(&mut cmap, off + 4, subtable_offset);
+        write_u32_be(&mut cmap, off + 4, if is_wide { fmt12_off } else { fmt4_off });
     }
-    cmap[cmap_header_len..].copy_from_slice(&sub);
+    cmap[cmap_header_len..cmap_header_len + sub.len()].copy_from_slice(&sub);
+    cmap[cmap_header_len + sub.len()..].copy_from_slice(&wide);
     cmap
+}
+
+// Covers the whole mapping, BMP included, so the two subtables agree wherever
+// they overlap. Empty when nothing needs it, to keep existing output byte-identical.
+fn build_format12(mappings: &[(u32, u16)]) -> Vec<u8> {
+    if !mappings.iter().any(|&(cp, _)| cp > 0xFFFF) {
+        return Vec::new();
+    }
+    let mut sorted: Vec<(u32, u16)> = mappings.to_vec();
+    sorted.sort_by_key(|&(cp, _)| cp);
+    sorted.dedup_by_key(|&mut (cp, _)| cp);
+
+    let mut groups: Vec<(u32, u32, u16)> = Vec::new();
+    for &(cp, gid) in &sorted {
+        match groups.last_mut() {
+            // a run continues only while codepoint and glyph id advance together
+            Some(g) if cp == g.1 + 1 && u32::from(gid) == u32::from(g.2) + (g.1 - g.0) + 1 => {
+                g.1 = cp;
+            }
+            _ => groups.push((cp, cp, gid)),
+        }
+    }
+
+    let len = 16 + groups.len() * 12;
+    let mut sub = vec![0u8; len];
+    write_u16_be(&mut sub, 0, 12);
+    write_u16_be(&mut sub, 2, 0);
+    write_u32_be(&mut sub, 4, len as u32);
+    write_u32_be(&mut sub, 8, 0);
+    write_u32_be(&mut sub, 12, groups.len() as u32);
+    for (i, &(start, end, gid)) in groups.iter().enumerate() {
+        let off = 16 + i * 12;
+        write_u32_be(&mut sub, off, start);
+        write_u32_be(&mut sub, off + 4, end);
+        write_u32_be(&mut sub, off + 8, u32::from(gid));
+    }
+    sub
 }
 
 fn utf16be(s: &str) -> Vec<u8> {

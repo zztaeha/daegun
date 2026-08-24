@@ -94,7 +94,7 @@ typedef struct daegun_font daegun_font;
  * is not detectable any other way. */
 uint32_t daegun_abi_version(void);
 
-#define DAEGUN_ABI_VERSION ((1u << 16) | (1u << 8) | 6u)
+#define DAEGUN_ABI_VERSION ((1u << 16) | (1u << 8) | 7u)
 
 /* What the last failing call ON THIS THREAD said, as UTF-8. Empty when nothing has failed.
  *

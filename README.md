@@ -45,7 +45,7 @@ Rust:
 
 ```toml
 [dependencies]
-daegun = "1.1.6"
+daegun = "1.1.7"
 ```
 
 C: build the library in the shape you want. The ABI is behind the `capi` feature, which implies

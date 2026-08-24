@@ -104,7 +104,7 @@ pub fn glyf_closure(ttf: &[u8], requested: &[u16]) -> Result<GlyphSet, String> {
 }
 
 fn display_tables(mappings: &[(u32, u16)], family: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let cmap = crate::daecore::daetype::subsetter::build_format4_cmap(mappings);
+    let cmap = crate::daecore::daetype::subsetter::build_unicode_cmap(mappings);
     if cmap.is_empty() {
         return Err(format!(
             "subset_text: {} distinct codepoints exceed what a format 4 cmap with one segment each can address",

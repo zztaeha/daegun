@@ -55,7 +55,15 @@ pub fn build_ttf<V: AsRef<[u8]>>(table_map: &BTreeMap<String, V>) -> Vec<u8> {
     for &tag in &tags {
         let raw = table_map[tag].as_ref();
         tbl_offsets.push(out.len());
-        tbl_checksums.push(checksum32(raw));
+        // head's directory checksum is defined with checkSumAdjustment read as
+        // zero, since that field is derived from the checksum it would feed
+        tbl_checksums.push(if tag == "head" && raw.len() >= 12 {
+            let mut zeroed = raw.to_vec();
+            zeroed[8..12].fill(0);
+            checksum32(&zeroed)
+        } else {
+            checksum32(raw)
+        });
         out.extend_from_slice(raw);
         out.resize(pad4(out.len()), 0);
     }
@@ -83,11 +91,9 @@ pub fn build_ttf<V: AsRef<[u8]>>(table_map: &BTreeMap<String, V>) -> Vec<u8> {
         let head_off = tbl_offsets[pos];
         let head_len = table_map[tags[pos]].as_ref().len();
         if head_len >= 12 && head_off + 12 <= out.len() {
-            let old_adj = read_u32_be(&out, head_off + 8).unwrap_or(0);
             write_u32_be(&mut out, head_off + 8, 0);
             let header_cs = checksum32(&out[..sfnt_hdr + dir_size]);
-            let file_cs = tbl_checksums.iter().fold(header_cs, |a, &c| a.wrapping_add(c))
-                .wrapping_sub(old_adj);
+            let file_cs = tbl_checksums.iter().fold(header_cs, |a, &c| a.wrapping_add(c));
             write_u32_be(&mut out, head_off + 8, 0xB1B0_AFBA_u32.wrapping_sub(file_cs));
         }
     }
