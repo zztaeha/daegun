@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use daegun::{Font, OutlinePen, RasterOptions};
+use daegun::{Font, OutlineOptions, OutlinePen, Path};
 
 const WARMUP: usize = 50;
 const ROUNDS: usize = 200;
@@ -82,7 +82,7 @@ fn api_latency() {
     let font = Font::from_bytes(&bytes).expect("the fixture parses");
     let gid = font.glyph_id(u32::from('g')).expect("a glyph for 'g'");
 
-    println!("\ndaegun — Rust API, {} rounds after {} warmup\n", ROUNDS, WARMUP);
+    println!("\ndaegun – Rust API, {} rounds after {} warmup\n", ROUNDS, WARMUP);
 
     report("font_open", time_once(|| Font::from_bytes(&bytes).expect("parses")));
     {
@@ -123,14 +123,19 @@ fn api_latency() {
     report("num_glyphs", time(|| font.num_glyphs()));
     report("line_metrics", time(|| font.line_metrics(false)));
 
-    let opts = RasterOptions::default();
-    report("rasterize cached", time(|| font.rasterize_glyph_with(gid, 16.0, &[], &opts)));
+    report("glyph_quads", time(|| font.glyph_quads(gid, &[])));
+    let opts = OutlineOptions::default();
     report(
-        "rasterize uncached",
+        "prepared_outline",
         time(|| {
-            font.clear_glyph_cache();
-            font.rasterize_glyph_with(gid, 16.0, &[], &opts)
+            let mut c = Count::default();
+            font.prepared_outline(gid, 16.0, &[], &opts, &mut c);
+            c.0
         }),
     );
+    let mut path = Path::default();
+    font.outline_glyph(gid, &mut path);
+    let max_area = daegun::max_area_for(16.0, f32::from(font.upm()));
+    report("flatten", time(|| daegun::flatten(&path, max_area)));
     println!();
 }

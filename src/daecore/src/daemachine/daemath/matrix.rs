@@ -3,7 +3,7 @@ pub type Matrix = [f64; 6];
 pub const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
 // `x' = a*x + c*y + e`, `y' = b*x + d*y + f` – the same convention as `TransformPen`,
-// `Path::replay` and `RasterOptions::transform`, so a matrix never needs converting between them.
+// `Path::replay` and `OutlineOptions::transform`, so a matrix never needs converting between them.
 pub fn invert(t: &Matrix) -> Option<Matrix> {
     let [a, b, c, d, e, f] = *t;
     let det = a * d - b * c;

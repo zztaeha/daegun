@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use super::format_1;
 use super::super::schema::{Schema, StructField, CountSource, DropPolicy, OffsetWidth, PayloadShape, EmptyPolicy, EnvRef};
 use super::context::{context_schema, chain_context_schema};
 
@@ -66,20 +67,13 @@ fn pair_pos_format1_schema() -> Schema {
     ])
 }
 
-fn pair_pos_class2_record_schema() -> Schema {
-    Schema::Struct(vec![
-        StructField { name: "value1", schema: Schema::ValueRecordField(EnvRef("vf1")), bind: None },
-        StructField { name: "value2", schema: Schema::ValueRecordField(EnvRef("vf2")), bind: None },
-    ])
-}
-
 fn pair_pos_format2_schema() -> Schema {
     Schema::Struct(vec![
         StructField { name: "format", schema: Schema::U16, bind: None },
         StructField { name: "coverage", schema: Schema::Offset(OffsetWidth::W16, Box::new(Schema::Coverage(EmptyPolicy::Fail, None))), bind: None },
         StructField { name: "value_format1", schema: Schema::ValueFormatField(EnvRef("vf1")), bind: None },
         StructField { name: "value_format2", schema: Schema::ValueFormatField(EnvRef("vf2")), bind: None },
-        StructField { name: "class_matrix", schema: Schema::ClassMatrix(Box::new(pair_pos_class2_record_schema())), bind: None },
+        StructField { name: "class_matrix", schema: Schema::ClassMatrix(EnvRef("vf1"), EnvRef("vf2")), bind: None },
     ])
 }
 
@@ -98,10 +92,10 @@ fn cursive_pos_entry_schema() -> Schema {
 }
 
 pub(crate) fn cursive_pos_schema() -> Schema {
-    Schema::Struct(vec![
+    format_1(Schema::Struct(vec![
         StructField { name: "format", schema: Schema::U16, bind: None },
         StructField { name: "entries", schema: Schema::CoveredArray(vec![], Box::new(cursive_pos_entry_schema()), PayloadShape::Inline), bind: None },
-    ])
+    ]))
 }
 
 fn mark_record_schema() -> Schema {
@@ -116,7 +110,7 @@ fn base_record_schema() -> Schema {
 }
 
 pub(crate) fn mark_attach_schema() -> Schema {
-    Schema::Struct(vec![
+    format_1(Schema::Struct(vec![
         StructField { name: "format", schema: Schema::U16, bind: None },
         StructField { name: "mark_coverage", schema: Schema::Offset(OffsetWidth::W16, Box::new(Schema::Coverage(EmptyPolicy::Fail, Some(EnvRef("mark_coverage"))))), bind: None },
         StructField { name: "base_coverage", schema: Schema::Offset(OffsetWidth::W16, Box::new(Schema::Coverage(EmptyPolicy::Fail, Some(EnvRef("base_coverage"))))), bind: None },
@@ -131,7 +125,7 @@ pub(crate) fn mark_attach_schema() -> Schema {
             schema: Schema::Offset(OffsetWidth::W16, Box::new(Schema::ZippedWithBoundCoverage(EnvRef("base_coverage"), Box::new(base_record_schema()), PayloadShape::Inline, DropPolicy::FilterSurvivorsOrFail))),
             bind: None,
         },
-    ])
+    ]))
 }
 
 fn component_anchors_schema() -> Schema {
@@ -146,7 +140,7 @@ fn ligature_attach_schema() -> Schema {
 }
 
 pub(crate) fn mark_lig_pos_schema() -> Schema {
-    Schema::Struct(vec![
+    format_1(Schema::Struct(vec![
         StructField { name: "format", schema: Schema::U16, bind: None },
         StructField { name: "mark_coverage", schema: Schema::Offset(OffsetWidth::W16, Box::new(Schema::Coverage(EmptyPolicy::Fail, Some(EnvRef("mark_coverage"))))), bind: None },
         StructField { name: "ligature_coverage", schema: Schema::Offset(OffsetWidth::W16, Box::new(Schema::Coverage(EmptyPolicy::Fail, Some(EnvRef("lig_coverage"))))), bind: None },
@@ -161,7 +155,7 @@ pub(crate) fn mark_lig_pos_schema() -> Schema {
             schema: Schema::Offset(OffsetWidth::W16, Box::new(Schema::ZippedWithBoundCoverage(EnvRef("lig_coverage"), Box::new(ligature_attach_schema()), PayloadShape::Offsets(OffsetWidth::W16), DropPolicy::FilterSurvivorsOrFail))),
             bind: None,
         },
-    ])
+    ]))
 }
 
 pub(crate) fn context_pos_schema() -> Schema { context_schema() }

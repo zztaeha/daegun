@@ -17,12 +17,9 @@ pub struct Axis {
 
 const _: () = assert!(size_of::<Axis>() == size_of::<usize>() + 8);
 
-pub unsafe fn axes_of<'a>(axes: *const Axis, len: usize) -> Vec<(&'a str, f64)> {
-    if axes.is_null() || len == 0 {
-        return Vec::new();
-    }
-    let slice = unsafe { core::slice::from_raw_parts(axes, len) };
-    slice
+pub unsafe fn axes_of<'a>(axes: *const Axis, len: usize) -> Option<Vec<(&'a str, f64)>> {
+    let slice = unsafe { crate::ffi::handle::slice_of(axes, len) }?;
+    let axes = slice
         .iter()
         .filter_map(|a| {
             if a.tag.is_null() {
@@ -30,7 +27,8 @@ pub unsafe fn axes_of<'a>(axes: *const Axis, len: usize) -> Vec<(&'a str, f64)> 
             }
             unsafe { core::ffi::CStr::from_ptr(a.tag) }.to_str().ok().map(|t| (t, a.value))
         })
-        .collect()
+        .collect();
+    Some(axes)
 }
 
 macro_rules! pod_list {

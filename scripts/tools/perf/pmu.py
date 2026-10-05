@@ -63,19 +63,19 @@ def main():
             continue
         cycles, instructions, n = totals(path)
         if n < floor or cycles == 0:
-            print(f"  run {i}: {n:>5} samples — DISCARDED, high-frequency sampling did not take")
+            print(f"  run {i}: {n:>5} samples – DISCARDED, high-frequency sampling did not take")
             continue
         kept.append((instructions / iters, cycles / iters))
         print(f"  run {i}: {n:>5} samples  {instructions / iters:>10,.0f} insn  "
               f"{cycles / iters:>9,.0f} cyc  IPC {instructions / cycles:.2f}")
     if not kept:
-        print("no run reached the sample floor — nothing measured"); sys.exit(1)
+        print("no run reached the sample floor – nothing measured"); sys.exit(1)
     ins = [k[0] for k in kept]
     cyc = [k[1] for k in kept]
     spread = 100 * (max(ins) - min(ins)) / min(ins) if len(ins) > 1 else 0.0
     print(f"\n  {len(kept)}/{runs} usable   median {sorted(ins)[len(ins) // 2]:,.0f} insn/iter, "
           f"{sorted(cyc)[len(cyc) // 2]:,.0f} cyc/iter   spread {spread:.2f}%")
     if spread > 1.0:
-        print("  spread above 1% — treat a difference smaller than that as unresolved")
+        print("  spread above 1% – treat a difference smaller than that as unresolved")
 
 main()

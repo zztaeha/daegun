@@ -78,7 +78,7 @@ fn contours_do_not_restate_the_closing_segment() {
 }
 
 // Charstring coordinates are relative, so rounding each blended delta to a whole unit accumulates
-// error along the outline. At wght 500 this point lands on 6.0 instead of 5.82489.
+// error along the outline: at wght 500 this point would land on 6.0 instead of 5.82489.
 #[test]
 fn blend_keeps_sub_unit_precision() {
     with_font(SOURCE_SERIF, |font| {

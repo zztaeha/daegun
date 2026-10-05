@@ -522,7 +522,7 @@ fn reorder(classes: &[Class], levels: &mut [u8], base_level: u8) -> Vec<usize> {
 
     // L1: a segment or paragraph separator goes back to the paragraph level, and so does any
     // whitespace *immediately preceding* one, and any trailing whitespace at the end of the line.
-    // Not everything after a separator — that is a different and much more destructive rule.
+    // Not everything after a separator – that is a different and much more destructive rule.
     // Uses the *original* classes, not the resolved ones: the one place the algorithm looks back
     // past its own work.
     let resettable = |c: Class| {

@@ -24,18 +24,46 @@ mod access;
 
 mod segmentation;
 
-mod hybrid;
-
 mod latency;
 
 mod cached_facts;
 
-mod scene_orientation;
-
-mod rasterizer_agreement;
-mod overlapping_contours;
 mod linebreak_stretch;
 
 mod colr_v0;
 
+mod colr_v1;
+
+mod layout_subset;
+
+mod tables;
+
 mod cache_budgets;
+
+mod quads;
+
+mod flatten;
+
+mod prepared;
+
+mod layout_variations;
+
+mod instance_tables;
+
+mod gvar_points;
+
+mod cff2_gpos_instance;
+
+mod outline_decoders;
+
+mod stroke_coverage;
+
+mod bytecode;
+
+mod bitmap_subset;
+
+mod aat_subset;
+
+mod cff_subset;
+
+mod subset_tables;

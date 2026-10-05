@@ -37,8 +37,9 @@ pub struct Os2Fields {
 }
 
 impl Os2Fields {
+    // Bit 7 is reserved before version 4, and the spec says to ignore it there.
     pub fn use_typo_metrics(&self) -> bool {
-        self.fs_selection.is_some_and(|v| v & 0x0080 != 0)
+        self.version >= 4 && self.fs_selection.is_some_and(|v| v & 0x0080 != 0)
     }
 }
 

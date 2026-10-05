@@ -1,7 +1,6 @@
+// All three are copied literally into daegun.h, which cannot follow a Rust constant; roundtrip.c
+// checks the library against those copies.
 pub const MAX_OVERSAMPLE: u8 = 4;
-
-// Also encoded literally in the three shaders and their compiled .spv files, which cannot follow a
-// Rust constant – `daegpu` pins its own copy against this one.
 pub const MAX_TAPS: usize = MAX_OVERSAMPLE as usize + 4;
 pub const MAX_WEIGHTS: usize = MAX_TAPS * MAX_TAPS;
 
@@ -22,9 +21,9 @@ impl StripeOrder {
     }
 }
 
+// Fields are deliberately private: `key` is this layout's cache identity, so a layout whose contents
+// did not match it would be served another layout's bitmaps by any cache keyed on it.
 #[derive(Clone, Copy)]
-// Fields are deliberately private: `key` is this layout's cache identity, so a layout whose
-// contents no longer match its key silently returns another layout's bitmaps.
 pub struct SubpixelLayout {
     pub(crate) key: u64,
     pub(crate) ox: u8,
@@ -92,7 +91,7 @@ impl SubpixelLayout {
         let (ox, oy) = oversample;
         let (taps_x, taps_y) = taps;
         if ox == 0 || oy == 0 || ox > MAX_OVERSAMPLE || oy > MAX_OVERSAMPLE { return None; }
-        if taps_x as usize > MAX_TAPS || taps_y as usize > MAX_TAPS { return None; }
+        if taps_x == 0 || taps_y == 0 || taps_x as usize > MAX_TAPS || taps_y as usize > MAX_TAPS { return None; }
         let need = taps_x as usize * taps_y as usize;
         let mut table = [[0.0; MAX_WEIGHTS]; 3];
         for (c, src) in weights.iter().enumerate() {
@@ -176,14 +175,11 @@ impl SubpixelLayout {
         self.channels
     }
 
+    // A 64-bit hash of the parameters as given: two filters share a key only by a collision, and one
+    // written another way (an extra zero weight, a -0.0) gets a key of its own.
     #[inline]
     pub fn key(&self) -> u64 {
         self.key
-    }
-
-    #[inline]
-    pub fn weight_rows(&self) -> &[[f32; MAX_WEIGHTS]; 3] {
-        &self.weights
     }
 
     pub fn weights(&self, channel: usize) -> Option<&[f32]> {
@@ -194,11 +190,13 @@ impl SubpixelLayout {
         self.weights.get(channel)?.get(..active)
     }
 
+    // Whole pixels a side. The window reaches `-origin` samples before the pixel and
+    // `origin + taps - oversample` past it, and the pad covers the farther.
     pub fn pad(&self) -> (usize, usize) {
-        let pad = |origin: i8, oversample: u8| match origin {
-            o if o < 0 => (o.unsigned_abs() as usize).div_ceil(oversample as usize),
-            _ => 0,
+        let pad = |origin: i8, taps: u8, oversample: u8| {
+            let (o, t, n) = (isize::from(origin), isize::from(taps), isize::from(oversample));
+            ((-o).max(o + t - n).max(0) as usize).div_ceil(oversample as usize)
         };
-        (pad(self.origin_x, self.ox), pad(self.origin_y, self.oy))
+        (pad(self.origin_x, self.taps_x, self.ox), pad(self.origin_y, self.taps_y, self.oy))
     }
 }

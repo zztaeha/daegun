@@ -1,13 +1,11 @@
 // Unconditional, including under test, so the compiler enforces it rather than a
 // `--no-default-features` build nobody runs. Tests read fixtures off disk, so they get std back.
 #![no_std]
-// `deny`, not `forbid`, only because two subtrees opt back in – `daerizer`, which talks to Metal,
-// Vulkan and Direct3D, and `ffi`, which turns C pointers into references. Everything else,
-// including the whole engine in `daecore`, is `forbid`, which no inner `allow` can override.
+// `deny`, not `forbid`, only because `ffi` opts back in to turn C pointers into references. Every
+// other module is `forbid`, which no inner `allow` can override.
 #![deny(unsafe_code)]
 // A font is untrusted input and a panic is a denial of service that `forbid(unsafe_code)` does
-// nothing about. Gated on `not(test)` because the test bodies are `#[path]`-included into this
-// crate, so ungated it fires on 2,486 `.unwrap()`s in test files and buries the real ones.
+// nothing about. Gated on `not(test)` so the crate's own unit tests may `expect`.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 #[cfg_attr(not(test), macro_use)]
@@ -16,10 +14,6 @@ extern crate alloc;
 #[doc(hidden)]
 #[path = "../daecore/src/mod.rs"]
 pub mod daecore;
-
-#[doc(hidden)]
-#[path = "../daerizer/src/mod.rs"]
-pub mod daerizer;
 
 #[cfg(feature = "capi")]
 #[path = "../c-wrapper/mod.rs"]
@@ -34,10 +28,31 @@ extern crate std;
 
 pub(crate) use crate::daecore::{cache, daeshaper, sync};
 
+#[forbid(unsafe_code)]
 mod glyphcache;
+#[forbid(unsafe_code)]
 mod text;
+#[forbid(unsafe_code)]
 mod api;
-pub use daerizer as paint;
+
+// What a color scene is made of, and the math to sample its gradients and composite its layers.
+#[forbid(unsafe_code)]
+pub mod paint {
+    pub use crate::daecore::daemachine::daemath::{blend, gradient, matrix};
+    use crate::daecore::daetype::paint;
+    pub use crate::daecore::daetype::paint::colr;
+
+    pub use paint::{
+        resolve_stops, Blend, ClipShape, DisplayList, Extend, Gradient, GradientKind, Op, Paint, PathId,
+        Rgba, Stop, Stops,
+    };
+    pub use matrix::{concat, invert, Matrix, IDENTITY};
+
+    pub use blend::{blend, composite, Rgb};
+
+    pub use colr::lower;
+}
+
 pub use text::{
     grapheme_boundaries, line_break_opportunities, resolve_bidi, word_boundaries, BidiParagraph,
     LineBreak, ShapeOptions, Ignorables,
@@ -46,21 +61,20 @@ pub use text::{
 };
 pub use daeshaper::buffer::ClusterLevel;
 pub use api::{
-    Font, FontError, SubsetResult, Paint, ColorStop, GlyphBitmap, ColrLayer, PaletteInfo,
+    Font, FontError, SubsetResult, Paint, ColorStop, GlyphBitmap, BitmapImage, ColrLayer, PaletteInfo,
     BaseScriptInfo, StatAxis, StatAxisValue, StatInfo, MathKernCorner, NamedInstance, ShapedRun,
     GlyphPart, GlyphAssembly, MathGlyphVariant, MathGlyphConstruction, MathConstants, JstfModLists,
-    Metrics, RasterizedGlyph, FvarAxis, SubSuperMetrics, TypographicMetrics, GlyphClass,
-    RasterOptions, SubpixelLayout, StripeOrder, MAX_OVERSAMPLE, HintMode, Rect, ShelfPacker, Justified, JustifyOptions, BidiRun,
-    DrawTarget, DrawnGlyph, Policy, Prefer, Refusal, Rendered, Request, DeviceKind, DeviceProfile, route,
+    FvarAxis, SubSuperMetrics, TypographicMetrics, GlyphClass,
+    SubpixelLayout, StripeOrder, MAX_OVERSAMPLE, HintMode, Rect, ShelfPacker, Justified, JustifyOptions, BidiRun,
     Cap, Join, StrokeStyle, stroke, stroke_simplified,
     Os2Info, WinMetrics, TypoLineMetrics,
-    HintedOutline, draw_hinted, FLAG_ON_CURVE,
+    HintedOutline, draw_hinted, FLAG_CUBIC, FLAG_ON_CURVE,
     CffHints, CffStem,
     FillRule, Path, TransformPen, Verb,
-    RenderedScene,
-    binding, eval, shader, Band, ColorSlot, CurvePoint, GlyphInstance, GlyphSlot, GpuBatch,
-    ShaderLanguage, ShaderStage, SubpixelParams, GpuGlyphError, MAX_CURVES_PER_GLYPH,
-    MAX_SUBPIXEL_WEIGHTS, MAX_SUBPIXEL_TAPS, MAX_SUPERSAMPLE, HullVertex, HULL_VERTICES,
+    Quad, QuadError, QuadraticPen, normalize_winding, MAX_CURVES_PER_GLYPH,
+    flatten, max_area_for, resolve_overlaps, MAX_FLATTEN_POINTS, MAX_RESOLVE_EDGES,
+    OutlineOptions, PreparedGlyph,
+    MAX_SUBPIXEL_WEIGHTS, MAX_SUBPIXEL_TAPS,
     LineMetrics, Align, BreakStrategy, LayoutLine, LayoutOptions, PositionedRun, TextLayout,
     TextOrientation, WritingMode,
     DEFAULT_POINT_SIZE,
@@ -70,24 +84,7 @@ pub use api::{outline_glyf_bytes, parse_loca};
 pub use api::bytes;
 pub use api::format;
 pub use api::build_font;
-pub use crate::daerizer::DisplayList as ColorScene;
+pub use crate::paint::DisplayList as ColorScene;
 
-// `Rgba` is in the signature of every `_with` colour entry point, so it has to be documented beside
-// them rather than reachable only through a hidden module.
-pub use crate::daerizer::Rgba;
-
-// The device backends, for a caller who would rather daegun drove the GPU than handed back buffers
-// to upload. Curated rather than exposing `daerizer` whole: these four modules are what a caller
-// drives, and the rasterizer around them is engine plumbing.
-pub mod gpu {
-    pub use crate::daerizer::daegpu::Mode;
-    pub use crate::daerizer::daegpu::backend::SurfaceFormat;
-
-    #[cfg(target_vendor = "apple")]
-    pub use crate::daerizer::daegpu::ffi as metal;
-    pub use crate::daerizer::daegpu::vk as vulkan;
-    #[cfg(windows)]
-    pub use crate::daerizer::daegpu::d3d11;
-    #[cfg(windows)]
-    pub use crate::daerizer::daegpu::d3d12;
-}
+// Also at the top level, beside `colr_scene_with`, whose signature takes it.
+pub use crate::paint::Rgba;

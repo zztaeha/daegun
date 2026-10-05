@@ -44,6 +44,8 @@ impl<'a> Lookup<'a> {
         }
     }
 
+    // Each glyph once, in order, with the value `value` answers for it, so overlapping or repeated
+    // segments cannot list more than the 65,535 glyphs there are.
     pub fn entries(&self) -> Vec<(u16, u16)> {
         let mut out = Vec::new();
         let push = |g: u16, out: &mut Vec<(u16, u16)>| {
@@ -53,6 +55,7 @@ impl<'a> Lookup<'a> {
             0 => for g in 0..self.num_glyphs { push(g, &mut out); },
             2 | 4 | 6 => {
                 let Some((unit, n)) = self.bin_srch() else { return out };
+                let mut next = 0u16;
                 for i in 0..n {
                     let rec = 12 + i * unit;
                     let (first, last) = if self.format == 6 {
@@ -64,8 +67,10 @@ impl<'a> Lookup<'a> {
                         else { break };
                         (first, last)
                     };
-                    if last == 0xFFFF || first > last { continue; }
-                    for g in first..=last { push(g, &mut out); }
+                    let last = last.min(0xFFFE);
+                    if first > last || last < next { continue; }
+                    for g in first.max(next)..=last { push(g, &mut out); }
+                    next = last + 1;
                 }
             }
             8 | 10 => {
@@ -198,6 +203,7 @@ pub struct StateTable<'a> {
     entry_table: &'a [u8],
     n_classes: usize,
     extra_words: usize,
+    stride: usize,
 }
 
 impl<'a> StateTable<'a> {
@@ -208,12 +214,15 @@ impl<'a> StateTable<'a> {
         if n_classes == 0 || n_classes > 0xFFFF {
             return None;
         }
+        // An entry is its new state and flags, then two bytes per extra word, which a caller names.
+        let stride = extra_words.checked_mul(2)?.checked_add(4)?;
         Some(StateTable {
             class_lookup: Lookup::parse(data.get(class_off..)?, num_glyphs)?,
             state_array: data.get(state_off..)?,
             entry_table: data.get(entry_off..)?,
             n_classes,
             extra_words,
+            stride,
         })
     }
 
@@ -231,7 +240,7 @@ impl<'a> StateTable<'a> {
         }
         let cell = usize::from(state).checked_mul(self.n_classes)?.checked_add(klass)?.checked_mul(2)?;
         let index = read_u16_be(self.state_array, cell)?;
-        let at = usize::from(index).checked_mul(4 + 2 * self.extra_words)?;
+        let at = usize::from(index).checked_mul(self.stride)?;
         let e = window::<4>(self.entry_table, at)?;
         Some(Entry {
             new_state: u16::from_be_bytes([e[0], e[1]]),
@@ -239,5 +248,84 @@ impl<'a> StateTable<'a> {
             word1: if self.extra_words >= 1 { read_u16_be(self.entry_table, at + 4)? } else { 0 },
             word2: if self.extra_words >= 2 { read_u16_be(self.entry_table, at + 6)? } else { 0 },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    fn words(v: &[u16]) -> Vec<u8> {
+        v.iter().flat_map(|x| x.to_be_bytes()).collect()
+    }
+
+    // A binary-searched lookup of the given format with `units` of `size` words each.
+    fn searched(format: u16, units: &[&[u16]], tail: &[u16]) -> Vec<u8> {
+        let size = units.first().map_or(0, |u| u.len() as u16 * 2);
+        let mut t = words(&[format, size, units.len() as u16, 0, 0, 0]);
+        units.iter().for_each(|u| t.extend(words(u)));
+        t.extend(words(tail));
+        t
+    }
+
+    #[test]
+    fn overlapping_segments_list_each_glyph_once() {
+        let segments = vec![&[0xFFFE, 0, 1][..]; 50];
+        let bytes = searched(2, &segments, &[]);
+        let lookup = Lookup::parse(&bytes, 0xFFFF).unwrap();
+        let entries = lookup.entries();
+        assert_eq!(entries.len(), 0xFFFF, "every glyph below 0xFFFF once");
+        assert!(entries.iter().all(|&(g, v)| lookup.value(g) == Some(v)));
+    }
+
+    #[test]
+    fn a_segment_ending_at_ffff_lists_the_glyphs_value_answers_for() {
+        let bytes = searched(2, &[&[0xFFFF, 0xFFF0, 7], &[0xFFFF, 0xFFFF, 0]], &[]);
+        let lookup = Lookup::parse(&bytes, 0xFFFF).unwrap();
+        assert_eq!(lookup.value(0xFFF5), Some(7));
+        assert_eq!(lookup.entries(), (0xFFF0..=0xFFFE).map(|g| (g, 7)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn every_lookup_format_reads_its_values() {
+        let simple = words(&[0, 10, 11, 12]);
+        let simple = Lookup::parse(&simple, 3).unwrap();
+        assert_eq!((0..4).map(|g| simple.value(g)).collect::<Vec<_>>(), [Some(10), Some(11), Some(12), None]);
+
+        let single = searched(2, &[&[5, 3, 0x11], &[9, 8, 0x22], &[0xFFFF, 0xFFFF, 0]], &[]);
+        let single = Lookup::parse(&single, 20).unwrap();
+        assert_eq!([2, 3, 5, 7, 8, 9, 10].map(|g| single.value(g)), [None, Some(0x11), Some(0x11), None, Some(0x22), Some(0x22), None]);
+        assert_eq!(single.entries(), [(3, 0x11), (4, 0x11), (5, 0x11), (8, 0x22), (9, 0x22)]);
+
+        let array = searched(4, &[&[5, 3, 30], &[8, 8, 36], &[0xFFFF, 0xFFFF, 0]], &[0x31, 0x32, 0x33, 0x41]);
+        let array = Lookup::parse(&array, 20).unwrap();
+        assert_eq!(array.entries(), [(3, 0x31), (4, 0x32), (5, 0x33), (8, 0x41)]);
+
+        let table = searched(6, &[&[2, 0x52], &[7, 0x57], &[0xFFFF, 0]], &[]);
+        assert_eq!(Lookup::parse(&table, 20).unwrap().entries(), [(2, 0x52), (7, 0x57)]);
+
+        let trimmed = words(&[8, 4, 2, 0x84, 0x85]);
+        let trimmed = Lookup::parse(&trimmed, 20).unwrap();
+        assert_eq!(trimmed.entries(), [(4, 0x84), (5, 0x85)]);
+
+        let mut wide = words(&[10, 1, 6, 3]);
+        wide.extend([0xA6, 0xA7, 0xA8]);
+        assert_eq!(Lookup::parse(&wide, 20).unwrap().entries(), [(6, 0xA6), (7, 0xA7), (8, 0xA8)]);
+        let mut long = words(&[10, 4, 6, 1]);
+        long.extend([0, 1, 0xB0, 0x0B]);
+        assert_eq!(Lookup::parse(&long, 20).unwrap().value(6), Some(0xB00B));
+    }
+
+    #[test]
+    fn a_state_entry_reads_both_its_extra_words() {
+        let mut t = vec![0, 0, 0, 5, 0, 0, 0, 16, 0, 0, 0, 24, 0, 0, 0, 44];
+        t.extend(words(&[8, 4, 1, 4]));
+        t.extend(words(&[0, 0, 0, 0, 1, 0, 0, 0, 0, 0]));
+        t.extend(words(&[0, 0, 0, 0, 1, 0x4000, 0x0111, 0x0222]));
+        let table = StateTable::parse(&t, 2, 10).unwrap();
+        assert_eq!(table.class(4), 4);
+        let e = table.entry(0, 4).unwrap();
+        assert_eq!((e.new_state, e.flags, e.word1, e.word2), (1, 0x4000, 0x0111, 0x0222));
     }
 }

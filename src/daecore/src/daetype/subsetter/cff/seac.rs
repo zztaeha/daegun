@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
-use crate::daecore::daetype::decoder::read_u16_be;
+use super::expert_charsets::{EXPERT_CHARSET, EXPERT_SUBSET_CHARSET};
 use super::parse::{walk_charset, CharsetFlow};
+use crate::daecore::daetype::outline::CffOutlines;
+use crate::daecore::daetype::subsetter::GlyphSet;
 
 pub(crate) fn standard_encoding_sid(code: u8) -> u16 {
     match code {
@@ -19,122 +20,75 @@ pub(crate) fn standard_encoding_sid(code: u8) -> u16 {
     }
 }
 
-struct Ring<'a> { last: &'a mut [i32; 4], n: &'a mut usize }
+// Glyph by SID through any charset: one the font lays out, in any format, or a predefined one
+// (0 ISOAdobe, 1 Expert, 2 ExpertSubset). Built once and searched; the first glyph naming a SID wins.
+pub(crate) struct SidMap(Vec<(u16, u16)>);
 
-impl Ring<'_> {
-    fn push(&mut self, v: i32) {
-        self.last[*self.n & 3] = v;
-        *self.n += 1;
-    }
-    fn len(&self) -> usize { *self.n }
-    fn nth_from_end(&self, k: usize) -> i32 { self.last[(*self.n - 1 - k) & 3] }
-}
-
-fn seac_operands(cs: &[u8]) -> Option<(i32, i32, u8, u8)> {
-    let mut last = [0i32; 4];
-    let mut n = 0usize;
-    let mut stack = Ring { last: &mut last, n: &mut n };
-    let mut pos = 0usize;
-    let mut steps = 0usize;
-    while pos < cs.len() {
-        steps += 1;
-        if steps > cs.len() { break; }
-        let b0 = cs[pos];
-        match b0 {
-            32..=246 => { stack.push(b0 as i32 - 139); pos += 1; }
-            247..=250 => {
-                let b1 = *cs.get(pos + 1)? as i32;
-                stack.push((b0 as i32 - 247) * 256 + b1 + 108);
-                pos += 2;
+impl SidMap {
+    pub(crate) fn new(cff: &[u8], charset_off: Option<usize>, predefined: u8, n_glyphs: usize) -> SidMap {
+        let mut pairs: Vec<(u16, u16)> = alloc::vec![(0, 0)];
+        match charset_off {
+            Some(off) => {
+                let _ = walk_charset(cff, off, n_glyphs, |gid, sid| {
+                    pairs.push((sid, gid));
+                    CharsetFlow::Continue
+                });
             }
-            251..=254 => {
-                let b1 = *cs.get(pos + 1)? as i32;
-                stack.push(-(b0 as i32 - 251) * 256 - b1 - 108);
-                pos += 2;
-            }
-            28 => {
-                let v = read_u16_be(cs, pos + 1)? as i16 as i32;
-                stack.push(v);
-                pos += 3;
-            }
-            255 => {
-                let v = read_u16_be(cs, pos + 1)? as i16 as i32;
-                stack.push(v);
-                pos += 5;
-            }
-            14 => {
-                if stack.len() >= 4 {
-                    let achar = stack.nth_from_end(0);
-                    let bchar = stack.nth_from_end(1);
-                    let ady = stack.nth_from_end(2);
-                    let adx = stack.nth_from_end(3);
-                    if (0..=255).contains(&bchar) && (0..=255).contains(&achar) {
-                        return Some((adx, ady, bchar as u8, achar as u8));
-                    }
-                }
-                return None;
-            }
-            _ => return None,
-        }
-    }
-    None
-}
-
-pub(super) fn seac_components(cs: &[u8]) -> Option<(u8, u8)> {
-    seac_operands(cs).map(|(_, _, bchar, achar)| (bchar, achar))
-}
-
-pub(crate) fn seac_offsets(cs: &[u8]) -> Option<(f64, f64, u8, u8)> {
-    seac_operands(cs).map(|(adx, ady, bchar, achar)| (adx as f64, ady as f64, bchar, achar))
-}
-
-pub(super) fn build_format0_sid_to_gid_map(cff: &[u8], charset_off: Option<usize>, n_glyphs: usize) -> Option<BTreeMap<u16, u16>> {
-    let off = charset_off?;
-    if *cff.get(off)? != 0 { return None; }
-    let mut map = BTreeMap::new();
-    walk_charset(cff, off, n_glyphs, |gid, sid| {
-        map.entry(sid).or_insert(gid);
-        CharsetFlow::Continue
-    }).ok()?;
-    Some(map)
-}
-
-pub(crate) fn sid_to_gid(cff: &[u8], charset_off: Option<usize>, n_glyphs: usize, target: u16) -> Option<u16> {
-    if target == 0 { return Some(0) }
-    let off = match charset_off {
-        None => return if (target as usize) < n_glyphs { Some(target) } else { None },
-        Some(o) => o,
-    };
-    let mut hit = None;
-    walk_charset(cff, off, n_glyphs, |gid, sid| {
-        if sid == target { hit = Some(gid); CharsetFlow::Stop } else { CharsetFlow::Continue }
-    }).ok()?;
-    hit
-}
-
-pub fn seac_component_gids(
-    charstrings: &[&[u8]],
-    gids: &[u16],
-    cff: &[u8],
-    charset_off: Option<usize>,
-    format0_map: Option<&BTreeMap<u16, u16>>,
-) -> Vec<u16> {
-    let n_glyphs = charstrings.len();
-    let mut found = Vec::new();
-    for &gid in gids {
-        let cs = match charstrings.get(gid as usize) { Some(c) => *c, None => continue };
-        if let Some((bchar, achar)) = seac_components(cs) {
-            for code in [bchar, achar] {
-                let sid = standard_encoding_sid(code);
-                let comp = match format0_map {
-                    Some(map) => if sid == 0 { Some(0) } else { map.get(&sid).copied() },
-                    None => sid_to_gid(cff, charset_off, n_glyphs, sid),
+            None => {
+                let table: Option<&[u16]> = match predefined {
+                    1 => Some(&EXPERT_CHARSET),
+                    2 => Some(&EXPERT_SUBSET_CHARSET),
+                    _ => None,
                 };
-                if let Some(comp) = comp {
-                    found.push(comp);
+                for gid in 1..n_glyphs.min(usize::from(u16::MAX) + 1) {
+                    let sid = match table {
+                        Some(t) => match t.get(gid) { Some(&sid) => sid, None => break },
+                        None => gid as u16,
+                    };
+                    pairs.push((sid, gid as u16));
                 }
             }
         }
+        pairs.sort_by_key(|&(sid, gid)| (sid, gid));
+        pairs.dedup_by_key(|&mut (sid, _)| sid);
+        SidMap(pairs)
     }
-    found
+
+    pub(crate) fn gid(&self, sid: u16) -> Option<u16> {
+        self.0.binary_search_by_key(&sid, |&(s, _)| s).ok().map(|i| self.0[i].1)
+    }
+}
+
+// Adds to `set` the base and accent glyphs the frontier's seacs draw, and theirs in turn.
+pub(crate) fn close_over_seacs(outlines: &CffOutlines, cff: &[u8], mut frontier: Vec<u16>, set: &mut GlyphSet) {
+    while !frontier.is_empty() {
+        frontier = frontier.iter()
+            .filter_map(|&g| outlines.seac_glyphs(cff, g))
+            .flatten()
+            .flatten()
+            .filter(|&c| set.insert(c))
+            .collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Charsets in each format, and the predefined ones: SID to glyph, the first glyph naming a SID.
+    #[test]
+    fn a_sid_finds_its_glyph_through_every_charset() {
+        let format0 = [0u8, 0, 34, 0, 125, 0, 34];
+        let map = SidMap::new(&format0, Some(0), 0, 4);
+        assert_eq!((map.gid(34), map.gid(125), map.gid(0), map.gid(35)), (Some(1), Some(2), Some(0), None));
+
+        let format1 = [1u8, 1, 0x87, 2];
+        assert_eq!(SidMap::new(&format1, Some(0), 0, 4).gid(0x189), Some(3));
+        let format2 = [2u8, 1, 0x87, 0, 2];
+        assert_eq!(SidMap::new(&format2, Some(0), 0, 4).gid(0x188), Some(2));
+
+        assert_eq!(SidMap::new(&[], None, 0, 40).gid(34), Some(34), "ISOAdobe is SID for glyph");
+        assert_eq!(SidMap::new(&[], None, 1, 6).gid(229), Some(2), "Expert names exclamsmall second after space");
+        assert_eq!(SidMap::new(&[], None, 2, 6).gid(231), Some(2), "ExpertSubset starts dollaroldstyle there");
+    }
 }

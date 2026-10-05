@@ -77,7 +77,7 @@ def main(argv):
     saved = json.load(open(path))
     result = compare(saved, current)
     if result is None:
-        print(f"{name}: EQUIVALENT — identical on every input of every length")
+        print(f"{name}: EQUIVALENT – identical on every input of every length")
         return 0
     if result[0] == "alphabet":
         print(f"{name}: different alphabets, {result[1]} vs {result[2]}")

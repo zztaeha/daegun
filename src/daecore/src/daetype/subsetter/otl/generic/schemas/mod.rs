@@ -5,6 +5,11 @@ pub mod gdef;
 
 use super::schema::Schema;
 
+// A subtable of a type that defines format 1 only: another number is not read as format 1.
+fn format_1(schema: Schema) -> Schema {
+    Schema::FormatSwitch(0, alloc::vec![(1, schema)])
+}
+
 pub(crate) fn gsub_schema_for_type(effective_type: u16) -> Option<Schema> {
     match effective_type {
         1 => Some(gsub::single_subst_schema()),
@@ -17,7 +22,7 @@ pub(crate) fn gsub_schema_for_type(effective_type: u16) -> Option<Schema> {
     }
 }
 
-pub fn gpos_schema_for_type(effective_type: u16) -> Option<Schema> {
+pub(crate) fn gpos_schema_for_type(effective_type: u16) -> Option<Schema> {
     match effective_type {
         1 => Some(gpos::single_pos_schema()),
         2 => Some(gpos::pair_pos_schema()),

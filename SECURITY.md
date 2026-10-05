@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Use **[private vulnerability reporting](https://github.com/silly-tae/daegun/security/advisories/new)**
+Use **[private vulnerability reporting](https://github.com/zztaeha/daegun/security/advisories/new)**
 on this repository. It is private between you and the maintainer until a fix ships.
 
 Please do not open a public issue for a security problem.
@@ -21,7 +21,8 @@ as it takes, and you will be told which it is rather than left waiting.
 
 | Version | Supported |
 |---|---|
-| 1.0.x | Yes |
+| 1.2.x | Yes |
+| 1.0.x, 1.1.x | No – upgrade to 1.2 for fixes |
 | < 1.0 | No – `0.0.1` was a name reservation and contains no engine |
 
 ## The threat model
@@ -44,12 +45,12 @@ So the questions this project treats as security-relevant are:
 
 These are properties the build enforces, not intentions:
 
-**Unsafe is denied by default, and exactly two subtrees opt back in.** The crate root is
+**Unsafe is denied by default, and exactly one subtree opts back in.** The crate root is
 `#![deny(unsafe_code)]`. `daecore` – the whole engine, every parser, every table reader, the shaper –
 is `#![forbid(unsafe_code)]`, which no inner `#[allow]` can override; the compiler rejects it as
-`E0453`. The two that allow it say so in their own files: `daerizer`, which talks to Metal, Vulkan
-and Direct3D, and `ffi`, which turns C pointers back into references. `unsafe_op_in_unsafe_fn` is
-denied crate-wide, so an `unsafe fn` gets no implicit unsafe body.
+`E0453`. The one that allows it says so in its own files: `ffi`, which turns C pointers back into
+references. `unsafe_op_in_unsafe_fn` is denied crate-wide, so an `unsafe fn` gets no implicit unsafe
+body.
 
 **Nothing is read without a bounds check.** Every integer read from a font goes through a checked
 reader that answers `None` rather than reading past the end. Offset arithmetic uses checked
@@ -80,11 +81,12 @@ not, can:
 - A fallible call returns `daegun_status` and hands its result back through an out-parameter, so
   there is no in-band error value to mistake for a pointer.
 - Every entry point validates its pointers and answers `DAEGUN_NULL` rather than dereferencing.
-- daegun allocates and daegun frees. Calling C's `free()` on a daegun pointer is undefined behaviour.
-- A borrowed view is valid until the handle it came from is freed. Using it afterwards is
-  use-after-free, and nothing can catch that for you.
-- Handles are thread-safe, one handle across several threads at once. The GPU handles are the
-  carve-out, and the header says so where it matters.
+- daegun allocates and daegun frees. Calling C's `free()` on a daegun pointer is undefined behavior.
+- A borrowed view is valid until the handle it came from is freed, or changed by a call that takes it
+  as non-const, as a table map's set and remove do. Using it afterwards is use-after-free, and nothing
+  can catch that for you.
+- A handle a call takes as const may be shared by threads at once. One a call changes, a path being
+  built or a pen's target, needs that call to itself.
 
 **A crash caused by breaking those rules is a bug in the calling code, not a vulnerability in
 daegun.** A crash caused by following them is a vulnerability, and worth reporting.
@@ -95,7 +97,8 @@ call was given, is heap corruption. That path is exercised under AddressSanitize
 
 ## What is not a vulnerability
 
-- A font that renders incorrectly. Wrong pixels are a bug; report them as an issue.
-- A malformed font that is refused. Declining to parse hostile input is the intended behaviour.
-- Slow rendering on a pathological font, where the work is bounded and simply large.
+- Wrong output that crosses no security property above, such as a misplaced glyph or a badly hinted
+  outline. That is a bug; report it as an issue.
+- A malformed font that is refused. Declining to parse hostile input is the intended behavior.
+- Slow shaping or outlining on a pathological font, where the work is bounded and simply large.
 - A crash from breaking the C ABI's documented rules, as above.

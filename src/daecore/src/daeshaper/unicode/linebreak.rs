@@ -98,9 +98,8 @@ pub fn line_break_opportunities(text: &str) -> Vec<LineBreak> {
         run = if c == Lb::RI { run + 1 } else { 0 };
     }
 
-    // LB8, LB14, LB15 and LB25 all read `SP*` backwards from the same position, and `skip_spaces`
-    // rescanned the run for each of them — up to four scans per break position, over a run they
-    // share. One forward pass carries it, exactly as `ri_odd` above does for LB30a.
+    // LB8, LB14, LB15 and LB25 all read `SP*` backwards from the same position, so one forward pass
+    // carries it for all four, as `ri_odd` above does for LB30a, not a scan each per break position.
     const NONE: u32 = u32::MAX;
     let mut prev_non_sp: Vec<u32> = Vec::with_capacity(cls.len());
     let mut last = NONE;

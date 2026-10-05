@@ -2,15 +2,11 @@ use core::ffi::c_void;
 
 use crate::OutlinePen;
 
+// Reentrancy is safe, as the header promises: daegun holds no guard across a callback, the instanced
+// path locking only to clone an `Arc` out of the cache. A null callback skips that event, and one that
+// unwinds through these frames is undefined behavior nothing here can prevent.
 #[repr(C)]
 #[derive(Clone, Copy)]
-// Reentrancy is safe and the header promises it: a caller will want to ask the font something from
-// inside its own pen, and daegun holds no guard across the callback – the instanced path takes its
-// lock only long enough to clone an `Arc` out of the cache. Adding a guard here breaks that.
-//
-// A null callback means ignore that event, so a caller wanting only the on-curve points supplies
-// three of the five. A callback that unwinds through these frames is undefined behavior and
-// nothing here can prevent it.
 pub struct Pen {
     pub move_to: Option<extern "C" fn(*mut c_void, f32, f32)>,
     pub line_to: Option<extern "C" fn(*mut c_void, f32, f32)>,

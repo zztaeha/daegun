@@ -32,11 +32,24 @@ struct Ctx {
     store: ItemVariationStore,
     scalars: Vec<f64>,
     patched: Vec<u64>,
+    // Value records and anchors visited, each naming of a shared one counted, so the work is linear
+    // in the table's size whatever counts it states.
+    visits_left: usize,
+    // A record names a VariationIndex with a delta for a value it does not hold, so the table is
+    // written out afresh with that value added, which patching in place cannot do.
+    widen: bool,
 }
 
 impl Ctx {
     fn delta(&self, outer: u16, inner: u16) -> i32 {
         ot_round(compute_ivs_delta_f64(&self.store, outer as usize, inner as usize, &self.scalars))
+    }
+
+    fn visit(&mut self) -> bool {
+        match self.visits_left.checked_sub(1) {
+            Some(left) => { self.visits_left = left; true }
+            None => false,
+        }
     }
 }
 
@@ -58,9 +71,8 @@ pub(crate) fn apply_gpos_var(
     let scalars = precompute_region_scalars(&store, location);
 
     let mut out = gpos.to_vec();
-    let mut ctx = Ctx { store, scalars, patched: alloc::vec![0u64; out.len().div_ceil(64)] };
-
-    let mut visits_left = out.len() / 2;
+    let visits_left = out.len().saturating_mul(4);
+    let mut ctx = Ctx { store, scalars, patched: alloc::vec![0u64; out.len().div_ceil(64)], visits_left, widen: false };
 
     let lookup_list = read_u16_be(&out, 8)? as usize;
     let lookup_count = read_u16_be(&out, lookup_list)?;
@@ -72,16 +84,24 @@ pub(crate) fn apply_gpos_var(
 
         for j in 0..subtable_count {
             let Some(sub_rel) = read_u16_be(&out, lookup + 6 + j as usize * 2) else { break };
-            let Some((real_kind, at)) = resolve_extension(&out, lookup_kind, lookup + sub_rel as usize)
-            else {
-                continue;
-            };
-            let Some(left) = visits_left.checked_sub(1) else { return Some(out) };
-            visits_left = left;
-            patch_subtable(&mut out, &mut ctx, real_kind, at);
+            if !ctx.visit() {
+                return None;
+            }
+            if let Some((real_kind, at)) = resolve_extension(&out, lookup_kind, lookup + sub_rel as usize) {
+                patch_subtable(&mut out, &mut ctx, real_kind, at);
+            }
+            if ctx.visits_left == 0 {
+                return None;
+            }
         }
     }
 
+    if ctx.widen {
+        let n_glyphs = read_u16_be(table_map.get("maxp")?, 4)?;
+        let vary = |outer, inner| ctx.delta(outer, inner);
+        let mark_sets = crate::daecore::daetype::subsetter::mark_glyph_set_count(gdef);
+        return crate::daecore::daetype::subsetter::instance_gpos(gpos, n_glyphs, mark_sets, &vary);
+    }
     Some(out)
 }
 
@@ -121,7 +141,9 @@ fn patch_single(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
             let Some(count) = read_u16_be(buf, at + 6) else { return };
             let len = value_record_len(value_format);
             for i in 0..count as usize {
-                patch_value_record(buf, ctx, at, at + 8 + i * len, value_format);
+                let rec = at + 8 + i * len;
+                if rec >= buf.len() || !ctx.visit() { return; }
+                patch_value_record(buf, ctx, at, rec, value_format);
             }
         }
         _ => {}
@@ -145,8 +167,10 @@ fn patch_pair(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
                 let Some(pair_count) = read_u16_be(buf, set) else { continue };
                 for p in 0..pair_count as usize {
                     let rec = set + 2 + p * (2 + len1 + len2);
-                    patch_value_record(buf, ctx, at, rec + 2, format1);
-                    patch_value_record(buf, ctx, at, rec + 2 + len1, format2);
+                    // A PairSet's devices are offsets from the PairSet, not from the subtable.
+                    if rec >= buf.len() || !ctx.visit() { break; }
+                    patch_value_record(buf, ctx, set, rec + 2, format1);
+                    patch_value_record(buf, ctx, set, rec + 2 + len1, format2);
                 }
             }
         }
@@ -156,12 +180,12 @@ fn patch_pair(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
                 return;
             };
             let stride = len1 + len2;
-            for c1 in 0..count1 as usize {
-                for c2 in 0..count2 as usize {
-                    let cell = at + 16 + (c1 * count2 as usize + c2) * stride;
-                    patch_value_record(buf, ctx, at, cell, format1);
-                    patch_value_record(buf, ctx, at, cell + len1, format2);
-                }
+            let cells = usize::from(count1) * usize::from(count2);
+            for i in 0..cells {
+                let Some(cell) = i.checked_mul(stride).and_then(|o| o.checked_add(at + 16)) else { return };
+                if cell >= buf.len() || !ctx.visit() { return; }
+                patch_value_record(buf, ctx, at, cell, format1);
+                patch_value_record(buf, ctx, at, cell + len1, format2);
             }
         }
         _ => {}
@@ -171,8 +195,9 @@ fn patch_pair(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
 fn patch_cursive(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
     let Some(count) = read_u16_be(buf, at + 4) else { return };
     for i in 0..count as usize {
+        if !ctx.visit() { return; }
         for slot in 0..2 {
-            let Some(rel) = read_u16_be(buf, at + 6 + i * 4 + slot * 2) else { continue };
+            let Some(rel) = read_u16_be(buf, at + 6 + i * 4 + slot * 2) else { return };
             if rel != 0 {
                 patch_anchor(buf, ctx, at + rel as usize);
             }
@@ -199,7 +224,8 @@ fn patch_mark_lig(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
     let ligs = at + ligs_rel as usize;
     let Some(lig_count) = read_u16_be(buf, ligs) else { return };
     for i in 0..lig_count as usize {
-        let Some(attach_rel) = read_u16_be(buf, ligs + 2 + i * 2) else { continue };
+        if !ctx.visit() { return; }
+        let Some(attach_rel) = read_u16_be(buf, ligs + 2 + i * 2) else { return };
         if attach_rel != 0 {
             patch_anchor_matrix(buf, ctx, ligs + attach_rel as usize, class_count);
         }
@@ -209,7 +235,8 @@ fn patch_mark_lig(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
 fn patch_mark_array(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
     let Some(count) = read_u16_be(buf, at) else { return };
     for i in 0..count as usize {
-        let Some(rel) = read_u16_be(buf, at + 2 + i * 4 + 2) else { continue };
+        if !ctx.visit() { return; }
+        let Some(rel) = read_u16_be(buf, at + 2 + i * 4 + 2) else { return };
         if rel != 0 {
             patch_anchor(buf, ctx, at + rel as usize);
         }
@@ -219,7 +246,8 @@ fn patch_mark_array(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
 fn patch_anchor_matrix(buf: &mut [u8], ctx: &mut Ctx, at: usize, cols: u16) {
     let Some(rows) = read_u16_be(buf, at) else { return };
     for i in 0..(rows as usize).saturating_mul(cols as usize) {
-        let Some(rel) = read_u16_be(buf, at + 2 + i * 2) else { continue };
+        if !ctx.visit() { return; }
+        let Some(rel) = read_u16_be(buf, at + 2 + i * 2) else { return };
         if rel != 0 {
             patch_anchor(buf, ctx, at + rel as usize);
         }
@@ -235,10 +263,11 @@ fn patch_anchor(buf: &mut [u8], ctx: &mut Ctx, at: usize) {
         if dev_rel == 0 {
             continue;
         }
+        // A device table of sizes is not variation data and stays; only a VariationIndex goes.
         if let Some(delta) = variation_delta(buf, ctx, at + dev_rel as usize) {
             bump_i16(buf, ctx, at + coord, delta);
+            write_u16_be(buf, at + slot, 0);
         }
-        write_u16_be(buf, at + slot, 0);
     }
 }
 
@@ -255,12 +284,12 @@ fn patch_value_record(buf: &mut [u8], ctx: &mut Ctx, parent: usize, at: usize, f
         let dev_at = at + value_bytes + slot * 2;
         let Some(dev_rel) = read_u16_be(buf, dev_at) else { continue };
 
-        if dev_rel != 0 {
+        if dev_rel != 0 && let Some(delta) = variation_delta(buf, ctx, parent + dev_rel as usize) {
             if format & VALUE_FIELDS[i] != 0 {
                 let value_slot = (format & (VALUE_FIELDS[i] - 1) & 0x000F).count_ones() as usize;
-                if let Some(delta) = variation_delta(buf, ctx, parent + dev_rel as usize) {
-                    bump_i16(buf, ctx, at + value_slot * 2, delta);
-                }
+                bump_i16(buf, ctx, at + value_slot * 2, delta);
+            } else if delta != 0 {
+                ctx.widen = true;
             }
             write_u16_be(buf, dev_at, 0);
         }
@@ -289,4 +318,50 @@ fn bump_i16(buf: &mut [u8], ctx: &mut Ctx, at: usize, delta: i32) {
     let Some(current) = super::super::decoder::read_i16_be(buf, at) else { return };
     let next = i32::from(current).saturating_add(delta).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
     write_i16_be(buf, at, next);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(w: &[u16]) -> Vec<u8> {
+        w.iter().flat_map(|v| v.to_be_bytes()).collect()
+    }
+
+    // A SinglePos whose x advance device has no x advance, a VariationIndex of -40 at the peak, in a
+    // lookup filtering marks by GDEF's one mark glyph set when `filter`: the lookup instanced there.
+    fn instanced_lookup(filter: bool) -> (Vec<u8>, usize) {
+        let mut gpos = words(&[1, 0, 10, 12, 14, 0, 0, 1, 4]);
+        gpos.extend(if filter { words(&[1, 0x0010, 1, 10, 0]) } else { words(&[1, 0, 1, 8]) });
+        gpos.extend(words(&[1, 8, 0x0040, 14, 1, 1, 5, 0, 0, 0x8000]));
+        let mut gdef = words(&[1, 3, 0, 0, 0, 0, 18, 0, 32, 1, 1, 0, 8, 1, 1, 7]);
+        gdef.extend(crate::daecore::daetype::colr_v1::testing::store(1, -40));
+        let map: BTreeMap<String, TableBytes> = [("GPOS", gpos), ("GDEF", gdef), ("maxp", words(&[0, 0x5000, 10]))]
+            .into_iter()
+            .map(|(t, b)| (String::from(t), TableBytes::from(b)))
+            .collect();
+        let out = apply_gpos_var(&map, &[1.0]).expect("an instanced GPOS");
+        let lookups = usize::from(read_u16_be(&out, 8).expect("a lookup list"));
+        let lookup = lookups + usize::from(read_u16_be(&out, lookups + 2).expect("a lookup"));
+        (out, lookup)
+    }
+
+    // The missing value is 0, so the instance kerns by -40 as daegun's shaper and fontTools do, not
+    // dropping the delta.
+    #[test]
+    fn a_device_without_its_value_still_moves_the_glyph() {
+        let (out, lookup) = instanced_lookup(false);
+        let sub = lookup + usize::from(read_u16_be(&out, lookup + 6).expect("a subtable"));
+        let format = read_u16_be(&out, sub + 4).expect("a value format");
+        assert!(format & 0x0004 != 0, "no x advance in format {format:#06x}");
+        assert_eq!(super::super::super::decoder::read_i16_be(&out, sub + 6), Some(-40));
+    }
+
+    // Rebuilt to hold that value, the lookup keeps filtering by the mark glyph set GDEF still holds.
+    #[test]
+    fn a_rebuilt_lookup_keeps_its_mark_filtering_set() {
+        let (out, lookup) = instanced_lookup(true);
+        assert_eq!(read_u16_be(&out, lookup + 2), Some(0x0010));
+        assert_eq!(read_u16_be(&out, lookup + 8), Some(0));
+    }
 }

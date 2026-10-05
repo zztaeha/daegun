@@ -1,37 +1,38 @@
-use daegun::{Font, HintMode, RasterOptions};
+use daegun::{Font, HintMode};
 
 fn inter() -> Vec<u8> {
     let path = format!("{}/inter/InterVariable.ttf", crate::FONTS);
     std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing: {path} ({e})"))
 }
 
+fn outline(font: &Font, gid: u16, axes: &[(&str, f64)], mode: HintMode) -> daegun::Path {
+    let mut p = daegun::Path::default();
+    let g = font.prepared_outline(gid, 48.0, axes, &daegun::OutlineOptions::default().with_hinting(mode), &mut p)
+        .expect("H has an outline");
+    // Unhinted output still varies with the axes, so only this says the hinter ran.
+    assert_eq!(g.hinted, mode != HintMode::None, "{mode:?} at {axes:?}: hinted is {}", g.hinted);
+    p
+}
+
 #[test]
 fn variable_axes_reach_the_hinted_shape() {
-    let bytes = inter();
-    let font = Font::from_bytes(&bytes).expect("parses");
+    let font = Font::from_bytes(&inter()).expect("parses");
     let gid = font.glyph_id('H' as u32).expect("H");
-
     for hinting in [HintMode::None, HintMode::Auto, HintMode::AutoForce] {
-        let opts = RasterOptions::default().with_hinting(hinting);
-        let thin = font.rasterize_glyph_with(gid, 48.0, &[("wght", 100.0)], &opts).expect("thin");
-        let bold = font.rasterize_glyph_with(gid, 48.0, &[("wght", 900.0)], &opts).expect("bold");
         assert_ne!(
-            (thin.metrics.width, &thin.bitmap),
-            (bold.metrics.width, &bold.bitmap),
-            "{hinting:?}: wght 100 and wght 900 rasterized identically, so the axes never reached the outline",
+            outline(&font, gid, &[("wght", 100.0)], hinting),
+            outline(&font, gid, &[("wght", 900.0)], hinting),
+            "{hinting:?}: wght 100 and wght 900 gave the same outline, so the axes never reached it",
         );
     }
 }
 
 #[test]
 fn repeated_axis_values_are_stable() {
-    let bytes = inter();
-    let font = Font::from_bytes(&bytes).expect("parses");
+    let font = Font::from_bytes(&inter()).expect("parses");
     let gid = font.glyph_id('H' as u32).expect("H");
-    let opts = RasterOptions::default().with_hinting(HintMode::AutoForce);
-
-    let a = font.rasterize_glyph_with(gid, 48.0, &[("wght", 300.0)], &opts).expect("a");
-    let _ = font.rasterize_glyph_with(gid, 48.0, &[("wght", 800.0)], &opts).expect("interleaved");
-    let b = font.rasterize_glyph_with(gid, 48.0, &[("wght", 300.0)], &opts).expect("b");
-    assert_eq!(a.bitmap, b.bitmap, "the same axes gave different pixels either side of another location");
+    let a = outline(&font, gid, &[("wght", 300.0)], HintMode::AutoForce);
+    let _ = outline(&font, gid, &[("wght", 800.0)], HintMode::AutoForce);
+    let b = outline(&font, gid, &[("wght", 300.0)], HintMode::AutoForce);
+    assert_eq!(a, b, "the same axes gave a different outline either side of another location");
 }

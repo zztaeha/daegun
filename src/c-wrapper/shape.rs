@@ -4,19 +4,12 @@
 // from `daegun.h` and is not checkable here.
 
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char};
+use core::ffi::c_char;
 
 use crate::{ClusterLevel, Font, Ignorables, ShapeOptions};
 
-use crate::ffi::handle::{OwnedStr, Status, Str, borrow, deliver, release};
+use crate::ffi::handle::{OwnedStr, Status, Str, borrow, deliver, release, slice_of, str_of};
 use crate::ffi::list::{Axis, axes_of};
-
-pub(crate) unsafe fn str_of<'a>(s: *const c_char) -> Option<&'a str> {
-    if s.is_null() {
-        return None;
-    }
-    unsafe { CStr::from_ptr(s) }.to_str().ok()
-}
 
 pub struct Run {
     glyphs: Vec<u16>,
@@ -33,28 +26,36 @@ pub struct Run {
 
 impl Run {
     pub(crate) fn of(r: &crate::ShapedRun) -> Run {
+        let crate::ShapedRun {
+            glyphs,
+            advances,
+            offsets,
+            unsafe_to_break,
+            unsafe_to_concat,
+            safe_to_insert_tatweel,
+            clusters,
+            complete,
+            has_broken_syllable,
+            shaper,
+        } = r;
+        let bytes = |flags: &[bool]| flags.iter().map(|&b| u8::from(b)).collect();
         Run {
-            glyphs: r.glyphs.clone(),
-            advances: r.advances.clone(),
-            offsets: r.offsets.iter().flat_map(|(x, y)| [*x, *y]).collect(),
-            clusters: r.clusters.clone(),
-            unsafe_to_break: r.unsafe_to_break.iter().map(|b| u8::from(*b)).collect(),
-            unsafe_to_concat: r.unsafe_to_concat.iter().map(|b| u8::from(*b)).collect(),
-            safe_to_insert_tatweel: r
-                .safe_to_insert_tatweel
-                .iter()
-                .map(|b| u8::from(*b))
-                .collect(),
-            complete: r.complete,
-            has_broken_syllable: r.has_broken_syllable,
-            shaper: OwnedStr::new(r.shaper),
+            glyphs: glyphs.clone(),
+            advances: advances.clone(),
+            offsets: offsets.iter().flat_map(|&(x, y)| [x, y]).collect(),
+            clusters: clusters.clone(),
+            unsafe_to_break: bytes(unsafe_to_break),
+            unsafe_to_concat: bytes(unsafe_to_concat),
+            safe_to_insert_tatweel: bytes(safe_to_insert_tatweel),
+            complete: *complete,
+            has_broken_syllable: *has_broken_syllable,
+            shaper: OwnedStr::new(shaper),
         }
     }
 }
 
 macro_rules! run_view {
-    ($fn_name:ident, $field:ident, $elem:ty, $doc:literal) => {
-        #[doc = $doc]
+    ($fn_name:ident, $field:ident, $elem:ty) => {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $fn_name(run: *const Run, out_count: *mut usize) -> *const $elem {
             let Some(r) = (unsafe { borrow(run) }) else { return core::ptr::null() };
@@ -67,40 +68,13 @@ macro_rules! run_view {
     };
 }
 
-run_view!(daegun_run_glyphs, glyphs, u16, "The glyph ids, in visual order.");
-run_view!(daegun_run_advances, advances, f64, "How far each glyph advances the pen.");
-run_view!(
-    daegun_run_offsets,
-    offsets,
-    f64,
-    "Two doubles per glyph — x then y — so glyph `i` is at `2 * i`. `out_count` is the number of \
-     doubles, not of glyphs."
-);
-run_view!(
-    daegun_run_clusters,
-    clusters,
-    u32,
-    "Which byte of the input each glyph came from. Several glyphs may share a cluster and one glyph \
-     may span several characters."
-);
-run_view!(
-    daegun_run_unsafe_to_break,
-    unsafe_to_break,
-    u8,
-    "Non-zero where breaking the run before this glyph would change the shaping."
-);
-run_view!(
-    daegun_run_unsafe_to_concat,
-    unsafe_to_concat,
-    u8,
-    "Non-zero where joining another run here would change the shaping."
-);
-run_view!(
-    daegun_run_safe_to_insert_tatweel,
-    safe_to_insert_tatweel,
-    u8,
-    "Non-zero where an Arabic tatweel may be inserted without disturbing the shaping."
-);
+run_view!(daegun_run_glyphs, glyphs, u16);
+run_view!(daegun_run_advances, advances, f64);
+run_view!(daegun_run_offsets, offsets, f64);
+run_view!(daegun_run_clusters, clusters, u32);
+run_view!(daegun_run_unsafe_to_break, unsafe_to_break, u8);
+run_view!(daegun_run_unsafe_to_concat, unsafe_to_concat, u8);
+run_view!(daegun_run_safe_to_insert_tatweel, safe_to_insert_tatweel, u8);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_run_complete(run: *const Run, out: *mut bool) -> Status {
@@ -148,12 +122,9 @@ pub struct Feature {
 }
 const _: () = assert!(size_of::<Feature>() == 16);
 
-unsafe fn features_of<'a>(features: *const Feature, len: usize) -> Vec<(&'a str, u32)> {
-    if features.is_null() || len == 0 {
-        return Vec::new();
-    }
-    let slice = unsafe { core::slice::from_raw_parts(features, len) };
-    slice.iter().filter_map(|f| unsafe { str_of(f.tag) }.map(|t| (t, f.value))).collect()
+pub(crate) unsafe fn features_of<'a>(features: *const Feature, len: usize) -> Option<Vec<(&'a str, u32)>> {
+    let slice = unsafe { slice_of(features, len) }?;
+    Some(slice.iter().filter_map(|f| unsafe { str_of(f.tag) }.map(|t| (t, f.value))).collect())
 }
 
 #[unsafe(no_mangle)]
@@ -165,9 +136,12 @@ pub unsafe extern "C" fn daegun_font_shape(
     vertical: bool,
     out: *mut *mut Run,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let Some(r) = font.shape(text, &location, vertical) else { return Status::Absent };
     unsafe { deliver(out, Run::of(&r)) }
 }
@@ -182,10 +156,13 @@ pub unsafe extern "C" fn daegun_font_shape_with_language(
     language: *const c_char,
     out: *mut *mut Run,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
     let Some(language) = (unsafe { str_of(language) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let Some(r) = font.shape_with_language(text, &location, vertical, language) else {
         return Status::Absent;
     };
@@ -204,11 +181,14 @@ pub unsafe extern "C" fn daegun_font_shape_with_features(
     features_len: usize,
     out: *mut *mut Run,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let script = unsafe { str_of(script) };
-    let feats = unsafe { features_of(features, features_len) };
+    let Some(feats) = (unsafe { features_of(features, features_len) }) else { return Status::Null };
     let Some(r) = font.shape_with_features(text, &location, vertical, script, &feats) else {
         return Status::Absent;
     };
@@ -219,6 +199,10 @@ pub const CLUSTER_MONOTONE_GRAPHEMES: i32 = 0;
 pub const CLUSTER_MONOTONE_CHARACTERS: i32 = 1;
 pub const CLUSTER_CHARACTERS: i32 = 2;
 pub const CLUSTER_GRAPHEMES: i32 = 3;
+
+// The point size a run is tracked at when its options give none, in whole points as C reads it.
+pub const DEFAULT_POINT_SIZE: i32 = 12;
+const _: () = assert!(DEFAULT_POINT_SIZE as f64 == crate::DEFAULT_POINT_SIZE);
 
 pub const IGNORABLES_HIDE: i32 = 0;
 pub const IGNORABLES_REMOVE: i32 = 1;
@@ -243,8 +227,10 @@ pub struct ShapeOptionsC {
     pub suppress_dotted_circle: bool,
     pub has_invisible_glyph: bool,
     pub invisible_glyph: u16,
+    pub has_seed_script: bool,
+    pub seed_script: u16,
 }
-const _: () = assert!(size_of::<ShapeOptionsC>() == 80);
+const _: () = assert!(size_of::<ShapeOptionsC>() == 88);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_shape_options_default(out: *mut ShapeOptionsC) -> Status {
@@ -269,6 +255,8 @@ pub unsafe extern "C" fn daegun_shape_options_default(out: *mut ShapeOptionsC) -
             suppress_dotted_circle: false,
             has_invisible_glyph: false,
             invisible_glyph: 0,
+            has_seed_script: false,
+            seed_script: 0,
         }
     };
     Status::Ok
@@ -284,16 +272,22 @@ pub unsafe extern "C" fn daegun_font_shape_with_options(
     opts: *const ShapeOptionsC,
     out: *mut *mut Run,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
 
-    let mut built = ShapeOptions::default();
     let feats;
-    if let Some(o) = unsafe { borrow(opts) } {
-        feats = unsafe { apply_options(o, &mut built) };
-        built.features = &feats;
-    }
+    let built = match unsafe { borrow(opts) } {
+        None => ShapeOptions::default(),
+        Some(o) => {
+            let Some(f) = (unsafe { features_of(o.features, o.features_len) }) else { return Status::Null };
+            feats = f;
+            unsafe { options_of(o, &feats) }
+        }
+    };
 
     let Some(r) = font.shape_with_options(text, &location, vertical, &built) else {
         return Status::Absent;
@@ -301,34 +295,24 @@ pub unsafe extern "C" fn daegun_font_shape_with_options(
     unsafe { deliver(out, Run::of(&r)) }
 }
 
-pub(crate) unsafe fn apply_options<'a>(
-    o: &ShapeOptionsC,
-    built: &mut ShapeOptions<'a>,
-) -> Vec<(&'a str, u32)> {
-    {
-        built.cluster_level = match o.cluster_level {
-            CLUSTER_MONOTONE_CHARACTERS => ClusterLevel::MonotoneCharacters,
-            CLUSTER_CHARACTERS => ClusterLevel::Characters,
-            CLUSTER_GRAPHEMES => ClusterLevel::Graphemes,
-            _ => ClusterLevel::MonotoneGraphemes,
-        };
-        built.before = unsafe { str_of(o.before) }.unwrap_or("");
-        built.after = unsafe { str_of(o.after) }.unwrap_or("");
-        built.ignorables = match o.ignorables {
-            IGNORABLES_REMOVE => Ignorables::Remove,
-            IGNORABLES_PRESERVE => Ignorables::Preserve,
-            _ => Ignorables::Hide,
-        };
-        built.beginning_of_text = o.beginning_of_text;
-        built.point_size = o.has_point_size.then_some(o.point_size);
-        built.script = unsafe { str_of(o.script) };
-        built.language = unsafe { str_of(o.language) };
-        built.report_unsafe_to_concat = o.report_unsafe_to_concat;
-        built.report_tatweel_positions = o.report_tatweel_positions;
-        built.suppress_dotted_circle = o.suppress_dotted_circle;
-        built.invisible_glyph = o.has_invisible_glyph.then_some(o.invisible_glyph);
+// `features` is the caller's, read from `o.features` with `features_of`, as it outlives this call.
+pub(crate) unsafe fn options_of<'a>(o: &ShapeOptionsC, features: &'a [(&'a str, u32)]) -> ShapeOptions<'a> {
+    ShapeOptions {
+        cluster_level: cluster_of(o.cluster_level),
+        before: unsafe { str_of(o.before) }.unwrap_or(""),
+        after: unsafe { str_of(o.after) }.unwrap_or(""),
+        beginning_of_text: o.beginning_of_text,
+        point_size: o.has_point_size.then_some(o.point_size),
+        features,
+        script: unsafe { str_of(o.script) },
+        language: unsafe { str_of(o.language) },
+        report_unsafe_to_concat: o.report_unsafe_to_concat,
+        report_tatweel_positions: o.report_tatweel_positions,
+        ignorables: ignorables_of(o.ignorables),
+        suppress_dotted_circle: o.suppress_dotted_circle,
+        invisible_glyph: o.has_invisible_glyph.then_some(o.invisible_glyph),
+        seed_script: o.has_seed_script.then_some(crate::Script(o.seed_script)),
     }
-    unsafe { features_of(o.features, o.features_len) }
 }
 
 #[unsafe(no_mangle)]
@@ -345,7 +329,7 @@ pub unsafe extern "C" fn daegun_font_measure_width(
     if out.is_null() {
         return Status::Null;
     }
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     unsafe { *out = font.measure_width(text, &location, font_size) };
     Status::Ok
 }
@@ -361,12 +345,20 @@ pub unsafe extern "C" fn daegun_font_justification_extenders(
     unsafe { deliver(out, crate::ffi::list::U16List(font.justification_extenders(tag))) }
 }
 
-fn cluster_of(code: i32) -> ClusterLevel {
+pub(crate) fn cluster_of(code: i32) -> ClusterLevel {
     match code {
         CLUSTER_MONOTONE_CHARACTERS => ClusterLevel::MonotoneCharacters,
         CLUSTER_CHARACTERS => ClusterLevel::Characters,
         CLUSTER_GRAPHEMES => ClusterLevel::Graphemes,
         _ => ClusterLevel::MonotoneGraphemes,
+    }
+}
+
+pub(crate) fn ignorables_of(code: i32) -> Ignorables {
+    match code {
+        IGNORABLES_REMOVE => Ignorables::Remove,
+        IGNORABLES_PRESERVE => Ignorables::Preserve,
+        _ => Ignorables::Hide,
     }
 }
 
@@ -386,4 +378,43 @@ pub unsafe extern "C" fn daegun_cluster_level_is_monotone(level: i32, out: *mut 
     }
     unsafe { *out = i32::from(cluster_of(level).is_monotone()) };
     Status::Ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // "(" alone in an Arabic font, seeded Arabic as a layout seeds punctuation between Arabic words:
+    // C shapes it as Rust's seeded run is, the Arabic shaper and the mirrored parenthesis.
+    #[test]
+    fn a_seed_script_reaches_the_shaper() {
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/test-fonts/scheherazade-new/ScheherazadeNew-Regular.ttf")).unwrap();
+        let font = Font::from_bytes(&bytes).unwrap();
+        let arabic = crate::script_runs("\u{0633}\u{0644}\u{0627}\u{0645}")[0].script;
+        let seeded = ShapeOptions { seed_script: Some(arabic), ..Default::default() };
+        let want = font.shape_with_options("(", &[], false, &seeded).unwrap();
+        let plain = font.shape_with_options("(", &[], false, &ShapeOptions::default()).unwrap();
+        assert_ne!(want.glyphs, plain.glyphs, "seeding changes nothing here to test");
+
+        let mut handle = core::ptr::null_mut();
+        assert_eq!(unsafe { crate::ffi::daegun_font_open(bytes.as_ptr(), bytes.len(), &mut handle) }, Status::Ok);
+        let mut opts = core::mem::MaybeUninit::<ShapeOptionsC>::uninit();
+        assert_eq!(unsafe { daegun_shape_options_default(opts.as_mut_ptr()) }, Status::Ok);
+        let mut opts = unsafe { opts.assume_init() };
+        assert!(!opts.has_seed_script, "seeded by default");
+        opts.has_seed_script = true;
+        opts.seed_script = arabic.0;
+        let mut run = core::ptr::null_mut();
+        let text = c"(".as_ptr();
+        let st = unsafe { daegun_font_shape_with_options(handle, text, core::ptr::null(), 0, false, &opts, &mut run) };
+        assert_eq!(st, Status::Ok);
+        let (mut n, mut shaper) = (0, Str { data: core::ptr::null(), len: 0 });
+        let glyphs = unsafe { core::slice::from_raw_parts(daegun_run_glyphs(run, &mut n), n) };
+        assert_eq!(glyphs, &want.glyphs[..]);
+        assert_eq!(unsafe { daegun_run_shaper(run, &mut shaper) }, Status::Ok);
+        let name = unsafe { core::slice::from_raw_parts(shaper.data.cast::<u8>(), shaper.len) };
+        assert_eq!(name, want.shaper.as_bytes());
+        unsafe { daegun_run_free(run) };
+        unsafe { crate::ffi::daegun_font_free(handle) };
+    }
 }

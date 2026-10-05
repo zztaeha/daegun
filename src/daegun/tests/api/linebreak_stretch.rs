@@ -6,13 +6,9 @@ fn font() -> Font {
     Font::from_bytes(&bytes).expect("Inter parses")
 }
 
-// A line with nothing to fit into must not break at every word.
-//
-// `LayoutOptions::max_inline_size` defaults to infinity, and a line that may stretch without cost
-// carries infinite stretch, so the ratio between them is infinity over infinity. That is NaN, and
-// NaN loses every comparison in the optimal search: no node stays active, and the strategy falls
-// back to a break at each opportunity without raising anything. `ratio_between` answers 0.0 for
-// that pair instead, which is what this holds in place.
+// A line with nothing to fit into must not break at every word. An infinite measure over a line's
+// infinite stretch is NaN, which loses every comparison in the optimal search and so breaks at each
+// opportunity; `ratio_between` answers 0.0 for that pair instead.
 #[test]
 fn an_unbounded_line_does_not_break_at_every_word() {
     let f = font();

@@ -10,114 +10,78 @@ pub fn read_font_family_name(table_map: &BTreeMap<String, TableBytes>) -> Option
 
 pub fn read_name_string(table_map: &BTreeMap<String, TableBytes>, name_id: u16) -> Option<String> {
     let data = table_map.get("name")?;
-    if data.len() < 6 { return None; }
-
-    let count          = read_u16_be(data, 2)? as usize;
-    let storage_offset = read_u16_be(data, 4)? as usize;
-
-    if data.len() < 6 + count * 12 { return None; }
-
-    let mut best_score:    i32   = -1;
-    let mut best_offset:   usize = 0;
-    let mut best_length:   usize = 0;
-    let mut best_platform: u16   = 0;
-
-    for i in 0..count {
-        let rec = 6 + i * 12;
-        let (Some(platform_id), Some(encoding_id), Some(language_id), Some(rec_name_id), Some(length), Some(offset)) = (
-            read_u16_be(data, rec),
-            read_u16_be(data, rec + 2),
-            read_u16_be(data, rec + 4),
-            read_u16_be(data, rec + 6),
-            read_u16_be(data, rec + 8),
-            read_u16_be(data, rec + 10),
-        ) else { continue };
-        if rec_name_id != name_id { continue; }
-        let length = length as usize;
-        let offset = offset as usize;
-
-        let score: i32 = match (platform_id, encoding_id, language_id) {
-            (3, 1, 0x0409) => 2,
-            (1, _, _)      => 1,
-            _ => continue,
-        };
-
-        if score > best_score {
-            best_score    = score;
-            best_offset   = offset;
-            best_length   = length;
-            best_platform = platform_id;
-        }
-    }
-
-    if best_score < 0 { return None; }
-
-    let abs = storage_offset + best_offset;
-    if abs + best_length > data.len() { return None; }
-    let raw = &data[abs..abs + best_length];
-
+    let (_, platform, raw) = records(data)
+        .filter(|r| r.0 == name_id)
+        .reduce(|best, r| if score(r.1) > score(best.1) { r } else { best })?;
     let mut name = String::new();
-    decode_name_into(raw, best_platform, &mut name);
+    decode_name_into(raw, platform.0, &mut name);
+    let trimmed = name.trim_matches('\0').trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
 
-    let trimmed = name.trim_matches('\0').trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+// As FreeType picks a name: English Windows, then Windows in any language, then Mac Roman in English,
+// then any Mac Roman, then Unicode. Mac scripts other than Roman have no decoder here.
+fn score((platform, encoding, language): (u16, u16, u16)) -> u8 {
+    match (platform, encoding) {
+        (3, 0 | 1 | 10) if language & 0x3FF == 0x009 => 5,
+        (3, 0 | 1 | 10) => 4,
+        (1, 0) if language == 0 => 3,
+        (1, 0) => 2,
+        (0, _) => 1,
+        _ => 0,
+    }
+}
+
+type Record<'a> = (u16, (u16, u16, u16), &'a [u8]);
+
+// Each record a name can be read from: (name ID, (platform, encoding, language), its bytes). Records
+// that are empty, past the table or in an encoding with no decoder are skipped, as FreeType does.
+fn records(data: &[u8]) -> impl Iterator<Item = Record<'_>> {
+    let count = read_u16_be(data, 2).map_or(0, usize::from);
+    let storage = read_u16_be(data, 4).map_or(0, usize::from);
+    (0..count).filter_map(move |i| {
+        let rec = 6 + i * 12;
+        let field = |at: usize| read_u16_be(data, rec + at);
+        let key = (field(0)?, field(2)?, field(4)?);
+        let (length, offset) = (usize::from(field(8)?), usize::from(field(10)?));
+        let raw = data.get(storage + offset..storage + offset + length)?;
+        (length > 0 && score(key) > 0).then_some((field(6)?, key, raw))
+    })
 }
 
 fn decode_name_into(raw: &[u8], platform: u16, out: &mut String) {
     out.clear();
-    if platform == 3 {
-        out.extend(char::decode_utf16(raw.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]])))
-            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)));
-    } else {
+    if platform == 1 {
         out.extend(raw.iter().map(|&b| mac_roman_char(b)));
+    } else {
+        out.extend(char::decode_utf16(raw.as_chunks::<2>().0.iter().map(|b| u16::from_be_bytes([b[0], b[1]])))
+            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)));
     }
 }
 
 pub fn parse_all_name_strings(table_map: &BTreeMap<String, TableBytes>) -> BTreeMap<u16, String> {
     let mut out = BTreeMap::new();
     let Some(data) = table_map.get("name") else { return out };
-    if data.len() < 6 { return out; }
-    let (Some(count), Some(storage_offset)) = (read_u16_be(data, 2), read_u16_be(data, 4)) else { return out };
-    let count = count as usize;
-    let storage_offset = storage_offset as usize;
-    if data.len() < 6 + count * 12 { return out; }
-
-    let mut best: BTreeMap<u16, (i32, u16, usize, usize)> = BTreeMap::new();
-    for i in 0..count {
-        let rec = 6 + i * 12;
-        let (Some(platform_id), Some(encoding_id), Some(language_id), Some(rec_name_id), Some(length), Some(offset)) = (
-            read_u16_be(data, rec),
-            read_u16_be(data, rec + 2),
-            read_u16_be(data, rec + 4),
-            read_u16_be(data, rec + 6),
-            read_u16_be(data, rec + 8),
-            read_u16_be(data, rec + 10),
-        ) else { continue };
-
-        let score: i32 = match (platform_id, encoding_id, language_id) {
-            (3, 1, 0x0409) => 2,
-            (1, _, _)      => 1,
-            _ => continue,
-        };
-
-        let entry = best.entry(rec_name_id).or_insert((-1, 0, 0, 0));
-        if score > entry.0 {
-            *entry = (score, platform_id, offset as usize, length as usize);
+    let mut best: BTreeMap<u16, Record> = BTreeMap::new();
+    for record in records(data) {
+        let entry = best.entry(record.0).or_insert(record);
+        if score(record.1) > score(entry.1) {
+            *entry = record;
         }
     }
 
+    // Records may all share one long string, so the bytes decoded are capped by the table's size.
+    let mut budget = data.len().saturating_mul(4);
     let mut scratch = String::new();
-    for (name_id, (_score, platform, offset, length)) in best {
-        let abs = storage_offset + offset;
-        let Some(raw) = data.get(abs..abs + length) else { continue };
-
-        decode_name_into(raw, platform, &mut scratch);
+    for (name_id, (_, key, raw)) in best {
+        let Some(left) = budget.checked_sub(raw.len()) else { break };
+        budget = left;
+        decode_name_into(raw, key.0, &mut scratch);
         let trimmed = scratch.trim_matches('\0').trim();
         if !trimmed.is_empty() {
             out.insert(name_id, trimmed.to_string());
         }
     }
-
     out
 }
 
@@ -163,13 +127,30 @@ pub(crate) fn mac_turkish_byte(codepoint: u32) -> Option<u8> {
     (!MAC_TURKISH_OVERRIDES.iter().any(|&(k, _)| k == byte)).then_some(byte)
 }
 
+// MAC_ROMAN_HIGH in character order with each byte, for a binary search back from a character.
+const MAC_ROMAN_BY_CHAR: [(char, u8); 128] = {
+    let mut table = [('\0', 0u8); 128];
+    let mut i = 0;
+    while i < 128 {
+        table[i] = (MAC_ROMAN_HIGH[i], 0x80 + i as u8);
+        let mut j = i;
+        while j > 0 && table[j - 1].0 as u32 > table[j].0 as u32 {
+            let swap = table[j - 1];
+            table[j - 1] = table[j];
+            table[j] = swap;
+            j -= 1;
+        }
+        i += 1;
+    }
+    table
+};
+
 pub(crate) fn mac_roman_byte(codepoint: u32) -> Option<u8> {
     if codepoint < 0x80 {
         return Some(codepoint as u8);
     }
-    let wanted = char::from_u32(codepoint)?;
-    let index = MAC_ROMAN_HIGH.iter().position(|c| *c == wanted)?;
-    Some(0x80 + index as u8)
+    let at = MAC_ROMAN_BY_CHAR.binary_search_by_key(&codepoint, |&(c, _)| c as u32).ok()?;
+    Some(MAC_ROMAN_BY_CHAR[at].1)
 }
 
 pub fn read_font_style(table_map: &BTreeMap<String, TableBytes>) -> &'static str {
@@ -183,4 +164,19 @@ pub fn read_font_style(table_map: &BTreeMap<String, TableBytes>) -> &'static str
         .is_some_and(|v| v & 0x0002 != 0);
 
     if italic_os2 || italic_head { "italic" } else { "normal" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_bytes_and_characters_round_trip() {
+        for b in 0..=0xFFu8 {
+            assert_eq!(mac_roman_byte(mac_roman_char(b) as u32), Some(b), "MacRoman 0x{b:02X}");
+            assert_eq!(mac_turkish_byte(mac_turkish_char(b) as u32), Some(b), "MacOS Turkish 0x{b:02X}");
+        }
+        assert_eq!(mac_roman_byte(0x0100), None);
+        assert_eq!(mac_roman_byte('Ğ' as u32), None);
+    }
 }

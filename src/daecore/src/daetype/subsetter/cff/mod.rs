@@ -7,4 +7,4 @@ pub mod seac;
 mod subset;
 
 pub use subset::{subset_cff, subset_cff_compacting};
-pub use subset::cff_charstrings_for_closure;
+pub(crate) use subset::subset_cff_closed;

@@ -17,7 +17,7 @@ pub(crate) fn insert_dotted_circles(
         return false;
     }
     // Resolved to a glyph id, not left as the codepoint: every caller here is a pause, which runs
-    // after glyph mapping, so inserting U+25CC put 9676 in as a gid and the circle came out blank.
+    // after glyph mapping, where U+25CC would read as gid 9676 and the circle come out blank.
     // `insert_vowel_constraints` is the opposite case – it runs from `preprocess_text`.
     let Some(dotted_circle) = face.glyph_index(0x25CC) else {
         return false;

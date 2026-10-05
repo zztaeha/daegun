@@ -5,13 +5,27 @@
 
 use core::ffi::c_void;
 
-use crate::{Cap, Join, StrokeStyle};
+use crate::daecore::daetype::outline::stroke::Stroked;
 
 use crate::ffi::handle::{Status, borrow, release};
 use crate::ffi::pen::{Pen, PenBridge};
 use crate::ffi::raster::HintedOutline;
 
 pub struct Path(pub(crate) crate::Path);
+
+fn too_many_points() -> Status {
+    crate::ffi::set_error("the stroke would take more than DAEGUN_MAX_FLATTEN_POINTS points");
+    Status::Range
+}
+
+fn stroked(path: &Path, style: &StrokeStyleC, tolerance: f32) -> Result<Stroked, Status> {
+    let style = style.to_rust();
+    let s = Stroked::new(&path.0, &style, tolerance).ok_or_else(too_many_points)?;
+    if !style.width.is_finite() || !s.finite() {
+        return Err(crate::ffi::range("a stroke width or point is not finite"));
+    }
+    Ok(s)
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn daegun_path_new() -> *mut Path {
@@ -75,11 +89,11 @@ pub unsafe extern "C" fn daegun_path_bounds(
     out_max_x: *mut f64,
     out_max_y: *mut f64,
 ) -> Status {
-    let Some(path) = (unsafe { borrow(path) }) else { return Status::Null };
-    let Some((min_x, min_y, max_x, max_y)) = path.0.bounds() else { return Status::Absent };
     if out_min_x.is_null() || out_min_y.is_null() || out_max_x.is_null() || out_max_y.is_null() {
         return Status::Null;
     }
+    let Some(path) = (unsafe { borrow(path) }) else { return Status::Null };
+    let Some((min_x, min_y, max_x, max_y)) = path.0.bounds() else { return Status::Absent };
     unsafe {
         *out_min_x = min_x;
         *out_min_y = min_y;
@@ -133,9 +147,12 @@ pub unsafe extern "C" fn daegun_path_verbs(
     if out_count.is_null() {
         return Status::Null;
     }
+    if capacity != 0 && out.is_null() {
+        return Status::Null;
+    }
     let (verbs, _) = path.0.parts();
     unsafe { *out_count = verbs.len() };
-    if out.is_null() || capacity == 0 {
+    if capacity == 0 {
         return Status::Ok;
     }
     let n = capacity.min(verbs.len());
@@ -154,13 +171,16 @@ pub unsafe extern "C" fn daegun_path_replay(
 ) -> Status {
     let Some(path) = (unsafe { borrow(path) }) else { return Status::Null };
     let Some(pen) = (unsafe { borrow(pen) }) else { return Status::Null };
+    // Replayed from a copy: any pen callback may add to this very path, through daegun_path_as_pen or
+    // its own pointer to it, and growing it would move what is being read.
+    let path = path.0.clone();
     let mut bridge = PenBridge(*pen);
     if transform.is_null() {
-        path.0.replay(None, &mut bridge);
+        path.replay(None, &mut bridge);
     } else {
         let m = unsafe { core::slice::from_raw_parts(transform, 6) };
         let m: [f64; 6] = [m[0], m[1], m[2], m[3], m[4], m[5]];
-        path.0.replay(Some(&m), &mut bridge);
+        path.replay(Some(&m), &mut bridge);
     }
     Status::Ok
 }
@@ -183,20 +203,8 @@ const _: () = assert!(size_of::<StrokeStyleC>() == 16);
 const _: () = assert!(align_of::<StrokeStyleC>() == 4);
 
 impl StrokeStyleC {
-    fn to_rust(self) -> StrokeStyle {
-        StrokeStyle {
-            width: self.width,
-            cap: match self.cap {
-                crate::ffi::options::CAP_SQUARE => Cap::Square,
-                crate::ffi::options::CAP_ROUND => Cap::Round,
-                _ => Cap::Butt,
-            },
-            join: match self.join {
-                crate::ffi::options::JOIN_BEVEL => Join::Bevel,
-                crate::ffi::options::JOIN_ROUND => Join::Round,
-                _ => Join::Miter { limit: self.miter_limit },
-            },
-        }
+    fn to_rust(self) -> crate::StrokeStyle {
+        crate::ffi::options::stroke_of(self.width, self.join, self.miter_limit, self.cap)
     }
 }
 
@@ -210,8 +218,11 @@ pub unsafe extern "C" fn daegun_path_stroke(
     let Some(path) = (unsafe { borrow(path) }) else { return Status::Null };
     let Some(style) = (unsafe { borrow(style) }) else { return Status::Null };
     let Some(pen) = (unsafe { borrow(pen) }) else { return Status::Null };
-    let mut bridge = PenBridge(*pen);
-    crate::stroke(&path.0, &style.to_rust(), tolerance, &mut bridge);
+    let stroked = match stroked(path, style, tolerance) {
+        Ok(s) => s,
+        Err(status) => return status,
+    };
+    stroked.draw(&mut PenBridge(*pen));
     Status::Ok
 }
 
@@ -225,8 +236,11 @@ pub unsafe extern "C" fn daegun_path_stroke_simplified(
     let Some(path) = (unsafe { borrow(path) }) else { return Status::Null };
     let Some(style) = (unsafe { borrow(style) }) else { return Status::Null };
     let Some(pen) = (unsafe { borrow(pen) }) else { return Status::Null };
-    let mut bridge = PenBridge(*pen);
-    crate::stroke_simplified(&path.0, &style.to_rust(), tolerance, &mut bridge);
+    let stroked = match stroked(path, style, tolerance) {
+        Ok(s) => s,
+        Err(status) => return status,
+    };
+    stroked.draw_simplified(&mut PenBridge(*pen));
     Status::Ok
 }
 

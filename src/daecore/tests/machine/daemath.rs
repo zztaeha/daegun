@@ -289,19 +289,21 @@ fn from_colr_maps_every_composite_mode_to_its_own_index() {
             expected as u8,
         );
     }
+    // The spec: "If an unrecognized value is encountered, COMPOSITE_CLEAR must be used."
     for value in [28u8, 29, 100, 255] {
         assert_eq!(
-            Blend::from_colr(value), Blend::SrcOver,
-            "an unknown CompositeMode {value} did not fall back to SrcOver",
+            Blend::from_colr(value), Blend::Clear,
+            "an unknown CompositeMode {value} did not clear",
         );
     }
     assert_eq!(Blend::default(), Blend::SrcOver, "the default composite mode is not SrcOver");
 }
 
-use daegun::daecore::daemachine::daemath::gradient::Ramp;
+use daegun::daecore::daemachine::daemath::gradient::{Interpolation, Ramp};
 use daegun::daecore::daemachine::daemath::{resolve_stops, Extend, Gradient, GradientKind, Rgba, Stop, Stops};
 use daegun::daecore::daemachine::daemath::matrix::IDENTITY;
 
+// Black to white in sRGB as stored, so a color's red level reads back the t that made it.
 fn ramp_of(kind: GradientKind, extend: Extend) -> Ramp {
     let g = Gradient {
         kind,
@@ -312,7 +314,7 @@ fn ramp_of(kind: GradientKind, extend: Extend) -> Ramp {
         extend,
         transform: IDENTITY,
     };
-    Ramp::new(&g, &IDENTITY)
+    Ramp::with_interpolation(&g, &IDENTITY, Interpolation::Srgb)
 }
 
 fn t_at(r: &Ramp, x: f64, y: f64) -> f64 {
@@ -461,7 +463,7 @@ fn resolve_stops_normalizes_the_way_the_specification_asks() {
 #[test]
 fn a_sweep_reproduces_both_examples_the_specification_works_through() {
     let sweep = |start: f32, end: f32| {
-        Ramp::new(
+        Ramp::with_interpolation(
             &Gradient {
                 kind: GradientKind::Sweep { cx: 0.0, cy: 0.0, start_angle: start, end_angle: end },
                 stops: vec![
@@ -472,6 +474,7 @@ fn a_sweep_reproduces_both_examples_the_specification_works_through() {
                 transform: IDENTITY,
             },
             &IDENTITY,
+            Interpolation::Srgb,
         )
     };
     let ray = |r: &Ramp, deg: f64| {
@@ -526,7 +529,7 @@ fn an_ascending_sweep_can_still_reach_its_start_color() {
         extend: Extend::Pad,
         transform: IDENTITY,
     };
-    let r = Ramp::new(&g, &IDENTITY);
+    let r = Ramp::with_interpolation(&g, &IDENTITY, Interpolation::Srgb);
     let ray = |deg: f64| {
         let rad: f64 = deg.to_radians();
         r.at(4096.0 * rad.cos() - 0.5, 4096.0 * rad.sin() - 0.5).expect("unpainted").g
@@ -574,7 +577,6 @@ fn a_degenerate_gradient_paints_nothing_rather_than_its_last_stop() {
     for (what, kind) in degenerate {
         for extend in [Extend::Pad, Extend::Reflect, Extend::Repeat] {
             let r = ramp(kind, extend);
-            assert!(matches!(r, Ramp::Flat(None)), "{what} under {extend:?} was not flat-nothing");
             for (x, y) in probes {
                 assert_eq!(r.at(x, y), None, "{what} under {extend:?} painted at ({x}, {y})");
             }
@@ -595,4 +597,162 @@ fn a_degenerate_gradient_paints_nothing_rather_than_its_last_stop() {
             "an ordinary {what} gradient painted nothing anywhere",
         );
     }
+}
+
+// A sweep half a degree wide magnifies its angle error 720 times, so 1.5 levels of 255 here bound it
+// near 0.003°: six polynomial terms pass, tiny-skia's four (0.005°) do not.
+#[test]
+fn a_narrow_sweep_follows_the_true_angle() {
+    for start in [10.0f32, 50.0, 100.0, 170.0, 200.0, 260.0, 300.0, 350.0] {
+        let sweep = GradientKind::Sweep { cx: 0.0, cy: 0.0, start_angle: start, end_angle: start + 0.5 };
+        let r = ramp_of(sweep, Extend::Pad);
+        for k in 0..=20 {
+            let deg = f64::from(start) + 0.025 * f64::from(k);
+            let (x, y) = (100.0 * deg.to_radians().cos(), 100.0 * deg.to_radians().sin());
+            let want = (deg - f64::from(start)) / 0.5;
+            let got = t_at(&r, x - 0.5, y - 0.5);
+            assert!((got - want).abs() <= 1.5 / 255.0, "at {deg}° the sweep read {got}, not {want}");
+        }
+    }
+}
+
+// The definition worked in f64, sRGB as stored: a linear gradient moved and scaled by its transform,
+// through stops whose intervals start past 0, is within one level of 255 of it at every pixel.
+#[test]
+fn a_moved_linear_gradient_matches_its_definition() {
+    use daegun::daecore::daemachine::daemath::matrix::invert;
+    let stops = vec![
+        Stop { offset: 0.2, color: Rgba { r: 200, g: 10, b: 40, a: 255 } },
+        Stop { offset: 0.6, color: Rgba { r: 20, g: 220, b: 90, a: 128 } },
+        Stop { offset: 0.9, color: Rgba { r: 60, g: 30, b: 250, a: 255 } },
+    ];
+    let (x0, y0, x1, y1) = (5.0f32, -3.0, 90.0, 40.0);
+    let transform = [1.25, 0.1, -0.2, 0.8, 17.0, -9.0];
+    let kind = GradientKind::Linear { x0, y0, x1, y1 };
+    let r = Ramp::with_interpolation(
+        &Gradient { kind, stops: stops.clone(), extend: Extend::Pad, transform },
+        &IDENTITY,
+        Interpolation::Srgb,
+    );
+    let inv = invert(&transform).expect("invertible");
+    let (ax, ay) = (f64::from(x1 - x0), f64::from(y1 - y0));
+    let channel = |c: Rgba| [c.r, c.g, c.b, c.a].map(f64::from);
+    for y in 0..60 {
+        for x in 0..140 {
+            let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let (gx, gy) = (inv[0] * px + inv[2] * py + inv[4], inv[1] * px + inv[3] * py + inv[5]);
+            let t = (((gx - f64::from(x0)) * ax + (gy - f64::from(y0)) * ay) / (ax * ax + ay * ay)).clamp(0.0, 1.0);
+            let want = match stops.windows(2).find(|w| t <= f64::from(w[1].offset)) {
+                _ if t <= 0.2 => channel(stops[0].color),
+                Some(w) => {
+                    let f = (t - f64::from(w[0].offset)) / f64::from(w[1].offset - w[0].offset);
+                    let (a, b) = (channel(w[0].color), channel(w[1].color));
+                    [0, 1, 2, 3].map(|i| a[i] + (b[i] - a[i]) * f)
+                }
+                None => channel(stops[2].color),
+            };
+            let got = channel(r.at(f64::from(x), f64::from(y)).expect("a color"));
+            for i in 0..4 {
+                assert!((got[i] - want[i]).abs() <= 1.0, "at ({x}, {y}) channel {i} is {}, not {}", got[i], want[i]);
+            }
+        }
+    }
+}
+
+// A color between two stops rounds to the nearest level of 255; truncating would darken every gradient.
+#[test]
+fn a_gradient_color_rounds_to_the_nearest_level() {
+    let r = ramp_of(GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 10.0, y1: 0.0 }, Extend::Pad);
+    for (x, want) in [(4.5, 128), (2.0, 64), (7.0, 191)] {
+        let got = r.at(x, 0.0).expect("a color");
+        assert_eq!((got.r, got.g, got.b), (want, want, want), "at x {x}");
+    }
+}
+
+// Halfway from opaque red to transparent blue: the spec premultiplies, so no blue leaks in; sRGB as
+// stored, straight, goes through purple. Black to white: linear light lands at 188, not 128.
+#[test]
+fn a_gradient_blends_in_linear_light_with_alpha_premultiplied() {
+    let halfway = |from: Rgba, to: Rgba, how| {
+        let stops = vec![Stop { offset: 0.0, color: from }, Stop { offset: 1.0, color: to }];
+        let kind = GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 10.0, y1: 0.0 };
+        let g = Gradient { kind, stops, extend: Extend::Pad, transform: IDENTITY };
+        let c = Ramp::with_interpolation(&g, &IDENTITY, how).at(4.5, 0.0).expect("a color");
+        (c.r, c.g, c.b, c.a)
+    };
+    let (red, clear_blue) = (Rgba::opaque(255, 0, 0), Rgba { r: 0, g: 0, b: 255, a: 0 });
+    let (black, white) = (Rgba::opaque(0, 0, 0), Rgba::opaque(255, 255, 255));
+    assert_eq!(halfway(red, clear_blue, Interpolation::LinearLight), (255, 0, 0, 128));
+    assert_eq!(halfway(red, clear_blue, Interpolation::Srgb), (128, 0, 128, 128));
+    assert_eq!(halfway(black, white, Interpolation::LinearLight), (188, 188, 188, 255));
+    assert_eq!(halfway(black, white, Interpolation::Srgb), (128, 128, 128, 255));
+    let g = Gradient {
+        kind: GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 10.0, y1: 0.0 },
+        stops: vec![Stop { offset: 0.0, color: black }, Stop { offset: 1.0, color: white }],
+        extend: Extend::Pad,
+        transform: IDENTITY,
+    };
+    let spec = Ramp::with_interpolation(&g, &IDENTITY, Interpolation::LinearLight);
+    assert_eq!(Ramp::new(&g, &IDENTITY).at(4.5, 0.0), spec.at(4.5, 0.0), "the default is not the spec's way");
+}
+
+// The spec's algorithm worked in f64 with the exact sRGB curve: linearize, premultiply, interpolate,
+// divide by alpha, encode. Translucent stops past 0, under a moving transform, land within one level.
+#[test]
+fn a_gradient_matches_the_spec_interpolation_worked_in_f64() {
+    use daegun::daecore::daemachine::daemath::matrix::invert;
+    let stops = vec![
+        Stop { offset: 0.1, color: Rgba { r: 200, g: 10, b: 40, a: 255 } },
+        Stop { offset: 0.45, color: Rgba { r: 20, g: 220, b: 90, a: 30 } },
+        Stop { offset: 0.7, color: Rgba { r: 250, g: 250, b: 5, a: 0 } },
+        Stop { offset: 0.9, color: Rgba { r: 60, g: 30, b: 250, a: 255 } },
+    ];
+    let (x0, y0, x1, y1) = (5.0f32, -3.0, 90.0, 40.0);
+    let transform = [1.25, 0.1, -0.2, 0.8, 17.0, -9.0];
+    let kind = GradientKind::Linear { x0, y0, x1, y1 };
+    let r = Ramp::new(&Gradient { kind, stops: stops.clone(), extend: Extend::Pad, transform }, &IDENTITY);
+    let inv = invert(&transform).expect("invertible");
+    let (ax, ay) = (f64::from(x1 - x0), f64::from(y1 - y0));
+    let decode = |v: u8| {
+        let c = f64::from(v) / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let encode = |v: f64| {
+        let s = if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0 + 0.5).floor().clamp(0.0, 255.0)
+    };
+    let premultiplied = |c: Rgba| {
+        let a = f64::from(c.a) / 255.0;
+        [decode(c.r) * a, decode(c.g) * a, decode(c.b) * a, a]
+    };
+    let level = |c: Rgba| [c.r, c.g, c.b, c.a].map(f64::from);
+    let mut blended = 0;
+    for y in 0..60 {
+        for x in 0..140 {
+            let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let (gx, gy) = (inv[0] * px + inv[2] * py + inv[4], inv[1] * px + inv[3] * py + inv[5]);
+            let t = ((gx - f64::from(x0)) * ax + (gy - f64::from(y0)) * ay) / (ax * ax + ay * ay);
+            let want = if t <= 0.1 {
+                level(stops[0].color)
+            } else if t >= 0.9 {
+                level(stops[3].color)
+            } else {
+                let w = stops.windows(2).find(|w| t <= f64::from(w[1].offset)).expect("an interval");
+                let f = (t - f64::from(w[0].offset)) / f64::from(w[1].offset - w[0].offset);
+                let (a, b) = (premultiplied(w[0].color), premultiplied(w[1].color));
+                let p = [0, 1, 2, 3].map(|i| a[i] + (b[i] - a[i]) * f);
+                blended += 1;
+                if p[3] <= 0.0 {
+                    [0.0; 4]
+                } else {
+                    [encode(p[0] / p[3]), encode(p[1] / p[3]), encode(p[2] / p[3]), (p[3] * 255.0 + 0.5).floor()]
+                }
+            };
+            let got = level(r.at(f64::from(x), f64::from(y)).expect("a color"));
+            for i in 0..4 {
+                assert!((got[i] - want[i]).abs() <= 1.0, "at ({x}, {y}) channel {i} is {}, not {}", got[i], want[i]);
+            }
+        }
+    }
+    assert!(blended > 3000, "only {blended} pixels fell between stops");
 }

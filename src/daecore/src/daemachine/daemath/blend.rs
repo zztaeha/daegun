@@ -4,6 +4,9 @@ use crate::daecore::daemachine::float::FloatExt;
 
 pub type Rgb = [f32; 3];
 
+// Per pixel, like `composite` and the helpers both call: `#[inline]` lets a caller built without LTO
+// inline them, which more than halves a composite's time.
+#[inline]
 pub fn blend(mode: Blend, cb: Rgb, cs: Rgb) -> Rgb {
     use Blend::*;
     match mode {
@@ -28,6 +31,7 @@ pub fn blend(mode: Blend, cb: Rgb, cs: Rgb) -> Rgb {
     }
 }
 
+#[inline]
 fn coefficients(mode: Blend, a_s: f32, a_b: f32) -> (f32, f32) {
     use Blend::*;
     match mode {
@@ -47,11 +51,17 @@ fn coefficients(mode: Blend, a_s: f32, a_b: f32) -> (f32, f32) {
     }
 }
 
-// Two stages, which is the specification's structure rather than a choice here: the source is
-// blended against the backdrop only where they overlap, `Cs' = (1 - ab)*Cs + ab*B(Cb, Cs)`, so the
-// source keeps its own color where there is no backdrop – which is why it is not simply B(Cb, Cs).
+// The specification's two stages: the source blends with the backdrop only where they overlap,
+// `Cs' = (1 - ab)*Cs + ab*B(Cb, Cs)`. Colors go in straight and in 0..1 (past it the HSL modes can
+// answer NaN) and come back premultiplied by the alpha returned with them.
+#[inline]
 pub fn composite(mode: Blend, cs: Rgb, a_s: f32, cb: Rgb, a_b: f32) -> (Rgb, f32) {
     let (a_s, a_b) = (a_s.clamp(0.0, 1.0), a_b.clamp(0.0, 1.0));
+    // SrcOver, COLR's default and nearly every layer: B(Cb, Cs) = Cs, so the mix is Cs itself.
+    if mode == Blend::SrcOver {
+        let k = a_b * (1.0 - a_s);
+        return ([0, 1, 2].map(|i| (a_s * cs[i] + k * cb[i]).clamp(0.0, 1.0)), (a_s + k).clamp(0.0, 1.0));
+    }
     let b = blend(mode, cb, cs);
     let mixed = [
         (1.0 - a_b) * cs[0] + a_b * b[0],
@@ -67,6 +77,7 @@ pub fn composite(mode: Blend, cs: Rgb, a_s: f32, cb: Rgb, a_b: f32) -> (Rgb, f32
     (out, (a_s * fa + a_b * fb).clamp(0.0, 1.0))
 }
 
+#[inline]
 fn channels(cb: Rgb, cs: Rgb, f: impl Fn(f32, f32) -> f32) -> Rgb {
     [f(cb[0], cs[0]), f(cb[1], cs[1]), f(cb[2], cs[2])]
 }

@@ -141,9 +141,7 @@ fn shape_run_with_features(
     use crate::daecore::daeshaper::shape::{guess_segment_properties, shape, shaped_glyphs};
     use crate::daecore::daeshaper::ot::tag::{language_tags, script_tags};
 
-    // Instanced first, so the face needs no axes of its own. Handing them to it instead was compared
-    // over twenty runs across seven faces and five scripts and agreed exactly: the disagreement this
-    // once guarded against is gone. The instance is not redundant either, being where upm, the buffer
+    // Instanced first, so the face needs no axes of its own; the instance is also where upm, the buffer
     // and the metrics below come from.
     let instanced = fc.instanced_font_cache(axis_values);
     let face = Face::new(&instanced, &[]).with_point_size(opts.point_size);

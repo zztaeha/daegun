@@ -1,36 +1,6 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub(crate) struct GlyphKey {
-    pub gid: u16,
-    pub px_bits: u32,
-    pub layout: u64,
-    pub gamma_bits: Option<u32>,
-    pub transform_bits: Option<[u32; 6]>,
-    pub hinting: u8,
-    pub stroke: Option<(u32, u8, u32, u8)>,
-    pub embolden_bits: Option<u32>,
-    pub oblique_bits: Option<u32>,
-    pub axes: crate::sync::Shared<crate::daecore::cache::AxisKey>,
-}
-
-#[derive(Clone)]
-pub(crate) struct CachedGlyph {
-    pub bitmap: Vec<u8>,
-    pub width: usize,
-    pub height: usize,
-    pub xmin: i32,
-    pub ymin: i32,
-    pub bounds: crate::daerizer::daecpu::math::OutlineBounds,
-}
-
-impl CachedGlyph {
-    fn cost(&self) -> usize {
-        self.bitmap.len() + 64
-    }
-}
-
 pub(crate) struct ByteLru<K: Ord + Clone, V> {
     entries: BTreeMap<K, (V, u64)>,
     by_age: BTreeMap<u64, K>,
@@ -64,16 +34,17 @@ impl<K: Ord + Clone, V> ByteLru<K, V> {
 
         match self.by_age.remove(&old_tick) {
             Some(owned) => self.by_age.insert(tick, owned),
-            // Unreachable while the two maps agree, and `is_consistent` does not prove they do – it
-            // compares lengths only, which is what this arm keeps true.
+            // Unreachable while the two maps agree. Reinserting the key keeps their lengths equal if they
+            // ever do not.
             None => self.by_age.insert(tick, key.clone()),
         };
         Some(&slot.0)
     }
 
-    pub(crate) fn insert(&mut self, key: K, value: V) {
+    // False when the value alone is over budget and so was not kept.
+    pub(crate) fn insert(&mut self, key: K, value: V) -> bool {
         let cost = (self.cost)(&value);
-        if cost > self.budget { return; }
+        if cost > self.budget { return false; }
         if let Some((old, old_tick)) = self.entries.remove(&key) {
             self.bytes -= (self.cost)(&old);
             self.by_age.remove(&old_tick);
@@ -84,6 +55,7 @@ impl<K: Ord + Clone, V> ByteLru<K, V> {
         self.by_age.insert(tick, key.clone());
         self.entries.insert(key, (value, tick));
         self.evict_to_fit();
+        true
     }
 
     fn evict_to_fit(&mut self) {
@@ -108,12 +80,6 @@ impl<K: Ord + Clone, V> ByteLru<K, V> {
         self.budget = budget;
         self.evict_to_fit();
     }
-}
-
-pub(crate) type GlyphCache = ByteLru<GlyphKey, CachedGlyph>;
-
-pub(crate) fn glyph_cache(budget: usize) -> GlyphCache {
-    ByteLru::new(budget, CachedGlyph::cost)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

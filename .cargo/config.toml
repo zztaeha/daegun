@@ -1,5 +1,0 @@
-# Cross-compiling the tests to an Android device, which is the only way a vendor Vulkan driver gets
-# to answer — every GPU result here so far came from MoltenVK or WARP. Only the linker is needed:
-# rustc handles the rest. Set this to your own NDK path.
-[target.aarch64-linux-android]
-linker = "/opt/homebrew/share/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android35-clang"

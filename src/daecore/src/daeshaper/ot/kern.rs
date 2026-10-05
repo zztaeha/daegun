@@ -32,7 +32,9 @@ fn subtables(table: &[u8]) -> Option<(usize, u32, bool)> {
     }
 }
 
-fn parse_subtable(table: &[u8], at: usize, apple: bool) -> Option<(Subtable<'_>, usize)> {
+// The last OpenType subtable runs to the table's end, as HarfBuzz reads it: one of more than 10,920
+// pairs overflows its 16-bit length, and fonts write it wrapped.
+fn parse_subtable(table: &[u8], at: usize, apple: bool, last: bool) -> Option<(Subtable<'_>, usize)> {
     if apple {
         let h = window::<6>(table, at)?;
         let length = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as usize;
@@ -57,8 +59,9 @@ fn parse_subtable(table: &[u8], at: usize, apple: bool) -> Option<(Subtable<'_>,
                 at + length.max(6),
             ));
         }
+        let end = if last { table.len() } else { at + length.max(6) };
         let sub = Subtable {
-            data: table.get(at..at + length.max(6))?,
+            data: table.get(at..end)?,
             body: 6,
             format: (cov >> 8) as u8,
             horizontal: cov & coverage::HORIZONTAL != 0,
@@ -135,8 +138,8 @@ pub(crate) fn has_cross_stream(face: &Face) -> bool {
     let Some(table) = face.table("kern") else { return false };
     let Some((mut at, count, apple)) = subtables(table) else { return false };
 
-    for _ in 0..count {
-        let Some((sub, next)) = parse_subtable(table, at, apple) else { return false };
+    for i in 0..count {
+        let Some((sub, next)) = parse_subtable(table, at, apple, i + 1 == count) else { return false };
         if next <= at {
             return false;
         }
@@ -152,8 +155,8 @@ pub(crate) fn has_machine_kerning(face: &Face) -> bool {
     let Some(table) = face.table("kern") else { return false };
     let Some((mut at, count, apple)) = subtables(table) else { return false };
 
-    for _ in 0..count {
-        let Some((sub, next)) = parse_subtable(table, at, apple) else { return false };
+    for i in 0..count {
+        let Some((sub, next)) = parse_subtable(table, at, apple, i + 1 == count) else { return false };
         if next <= at {
             return false;
         }
@@ -171,8 +174,8 @@ pub(crate) fn apply(face: &Face, buffer: &mut Buffer, kern_mask: Mask, requested
 
     let mut seen_cross_stream = false;
 
-    for _ in 0..count {
-        let Some((sub, next)) = parse_subtable(table, at, apple) else { break };
+    for i in 0..count {
+        let Some((sub, next)) = parse_subtable(table, at, apple, i + 1 == count) else { break };
         if next <= at {
             break;
         }

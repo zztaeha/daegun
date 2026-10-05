@@ -62,7 +62,7 @@ definitions:
   sm = SM | SMPst
   # The spec's `{M}+[N]+[H]`, with MPst admitted alongside M.
   matras = z* (M | (sm? MPst)) N? H?
-  # The spec's `[SM] + [(VD)]` — `( )` is its notation for one or two occurrences.
+  # The spec's `[SM] + [(VD)]` – `( )` is its notation for one or two occurrences.
   trailing_signs = (z? sm sm? ZWNJ?)? A*
   # The spec's `H+[<ZWNJ|ZWJ>]`.
   halant_run = z? H (ZWJ N?)?

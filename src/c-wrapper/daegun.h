@@ -4,32 +4,31 @@
  *
  * The C ABI is behind daegun's `capi` feature. Ask for the shape you want:
  *
- *     cargo rustc --release --features capi --crate-type cdylib     # libdaegun.so / .dylib / .dll
+ *     cargo rustc --release --features capi --crate-type cdylib     # libdaegun.so / .dylib, daegun.dll
  *     cargo rustc --release --features capi --crate-type staticlib  # libdaegun.a / daegun.lib
  *
  * `capi` implies `threading`, which is what makes rule 5 below true.
  *
- * The static library needs the platform frameworks the GPU backends call into; the shared library
- * carries its own:
+ * The static library needs the system libraries Rust's standard library links against, as
+ * `--print native-static-libs` reports them; the shared library carries its own:
  *
- *     macOS / iOS   cc app.c libdaegun_c.a -framework Metal -framework Foundation \
- *                              -framework QuartzCore
- *     Linux         cc app.c libdaegun_c.a -lm -lpthread -ldl
- *     Windows       cl app.c daegun_c.lib ws2_32.lib userenv.lib ntdll.lib
- *
- * Vulkan and Direct3D are opened by name at run time, so neither adds anything here – a machine
- * without them answers DAEGUN_UNSUPPORTED instead of failing to load.
+ *     macOS / iOS   cc app.c libdaegun.a
+ *     Linux         cc app.c libdaegun.a -lgcc_s -lutil -lrt -lpthread -lm -ldl
+ *     Windows       cl app.c daegun.lib kernel32.lib ntdll.lib userenv.lib ws2_32.lib dbghelp.lib
  *
  * THE FIVE RULES. Every function here obeys all of them, so there is nothing to remember per call.
  *
  *   1. A fallible call returns daegun_status. Results come back through out-parameters.
- *   2. Passing NULL where a pointer is required returns DAEGUN_NULL. It is never dereferenced.
-*   3. daegun allocates and daegun frees. Never call free() on a pointer daegun gave you: this
+ *   2. Passing NULL where a pointer is required returns DAEGUN_NULL. It is never dereferenced. A
+ *      pointer that comes with a count above 0 is required, unless its call says it may be NULL.
+ *   3. daegun allocates and daegun frees. Never call free() on a pointer daegun gave you: this
  *      library has its own allocator, so that is undefined behavior rather than a matter of style.
  *   4. A borrowed view is a const pointer plus a count, valid until the handle it came from is
- *      freed. Copy it if you need it longer.
-*   5. Handles are thread-safe: one handle may be used from several threads at once. Correct but
- *      contended, so a thread-per-font arrangement will beat a shared one under load.
+ *      freed or changed by a call that takes it as non-const. Copy it if you need it longer.
+ *   5. A handle a call takes as const may be used from several threads at once. A font locks what
+ *      it caches, so sharing one is correct but contended, and a thread-per-font arrangement beats it
+ *      under load. A handle a call takes as non-const (a path being built, quads being rewound, a
+ *      packer, a table map), or one a pen draws into, needs that handle to itself until it returns.
  *
  * PANICS. The public path contains no unwrap, expect or panic!, and a gate step keeps it that way.
  * The library is built with panic = "abort": were one to occur it would end the process rather than
@@ -62,11 +61,10 @@ typedef int32_t daegun_status;
 #define DAEGUN_ABSENT      -4   /* the font has no such glyph, table or axis – an answer, not a
                                    failure. Separate from DAEGUN_OK because C has no Option and
                                    zero is a real glyph id (.notdef). */
-#define DAEGUN_UNSUPPORTED -5   /* the platform declined: no GPU, no driver, no such mode */
 
 /* borrowed views */
 
-/* A run of bytes daegun owns, lent to you. Valid until the handle it came from is freed. */
+/* A run of bytes daegun owns, lent to you. Valid until the handle it came from is freed or changed. */
 typedef struct {
     const uint8_t *data;
     size_t         len;
@@ -94,12 +92,12 @@ typedef struct daegun_font daegun_font;
  * is not detectable any other way. */
 uint32_t daegun_abi_version(void);
 
-#define DAEGUN_ABI_VERSION ((1u << 16) | (1u << 8) | 7u)
+#define DAEGUN_ABI_VERSION ((1u << 16) | (2u << 8) | 0u)
 
-/* What the last failing call ON THIS THREAD said, as UTF-8. Empty when nothing has failed.
- *
- * Per-thread, like errno, because handles are shared and a global slot would hand one thread
- * another's failure. Valid until the next failing call on this thread. */
+/* The reason the last failure ON THIS THREAD gave, as UTF-8, valid until the next that gives one;
+ * empty until one has. DAEGUN_PARSE always gives one, as does DAEGUN_RANGE from the outline, scene,
+ * compositing, subpixel, loca and table map calls; others leave the slot as it was. Per-thread, like
+ * errno, since handles are shared and a global slot would hand one thread another's failure. */
 daegun_str daegun_last_error(void);
 
 /* font */
@@ -118,17 +116,18 @@ daegun_status daegun_font_open(const uint8_t *data, size_t len, daegun_font **ou
  *     daegun_status st = daegun_font_open_owned(buf, len, &font);
  *     // buf belongs to the font now, pass or fail. Do not free it, do not read it.
  *
- * NULL for a zero length. This is not an ordinary pointer: never free() it. */
+ * NULL for a zero length, or when the allocation fails. This is not an ordinary pointer: never free()
+ * it. */
 uint8_t *daegun_font_buffer_new(size_t len);
 
-/* Frees a buffer you took but never handed over. Null is a no-op. Do NOT call this after
- * daegun_font_open_owned – that took ownership, whether it succeeded or not. */
+/* Frees a buffer you took but never handed over; `len` must be the length daegun_font_buffer_new was
+ * given, not how much you filled. Null is a no-op. Do NOT call this after daegun_font_open_owned –
+ * that took ownership, whether it succeeded or not. */
 void daegun_font_buffer_free(uint8_t *data, size_t len);
 
-/* Opens a font from a daegun buffer, taking ownership of it. Copies nothing.
- *
- * The buffer belongs to the font afterwards either way: freed with daegun_font_free, or immediately
- * if the bytes did not parse. `len` must be exactly what you passed to daegun_font_buffer_new. */
+/* Opens a font from a daegun buffer without a copy. The buffer belongs to the font afterwards either
+ * way: freed with daegun_font_free, or at once if the bytes did not parse or out is NULL. `len` must
+ * be exactly what you passed to daegun_font_buffer_new. */
 daegun_status daegun_font_open_owned(uint8_t *data, size_t len, daegun_font **out);
 
 /* The same, for one face of a .ttc collection. */
@@ -144,7 +143,8 @@ daegun_status daegun_font_glyph_id(const daegun_font *font, uint32_t codepoint, 
 /* How many glyphs the face has. */
 daegun_status daegun_font_num_glyphs(const daegun_font *font, uint16_t *out);
 
-/* Units per em: the denominator every em-space figure in this API is in. */
+/* Units per em: the grid the outlines are drawn on. Outlines, color scene paths, clip boxes and CFF
+ * hints are in these units; advances and metrics are on the 1000-unit em instead. */
 daegun_status daegun_font_upm(const daegun_font *font, uint16_t *out);
 
 /* How many faces a .ttc holds. Zero for data that is not a collection. Takes bytes rather than a
@@ -153,48 +153,31 @@ daegun_status daegun_ttc_font_count(const uint8_t *data, size_t len, size_t *out
 
 /* the cache */
 
-/* Resizes the rasterized-glyph cache, in bytes. Zero turns caching off.
- *
- * Bounded by bytes rather than entries because one glyph at 4096px outweighs thousands at 12px, so
- * a count would let a single large render blow the budget. */
-daegun_status daegun_font_set_glyph_cache_bytes(const daegun_font *font, size_t bytes);
+/* The caches, each a ceiling grown into rather than memory reserved up front. Every one of them
+ * is dead weight for some caller: a Latin-only program never approaches the cmap index bound, and
+ * text that never repeats gains nothing from the shape cache. Defaults are 4 MB outline, 8 MB shape,
+ * 64 MB instance, 25 MB index. */
 
-/* Drops every cached glyph, keeping the byte bound. */
-daegun_status daegun_font_clear_glyph_cache(const daegun_font *font);
-
-/* How many glyphs the cache holds, and how many bytes that is. Either pointer may be NULL. */
-daegun_status daegun_font_glyph_cache_stats(const daegun_font *font, size_t *out_count,
-                                            size_t *out_bytes);
-
-/* The remaining caches, each a ceiling grown into rather than memory reserved up front. Every one
- * of them is dead weight for some caller: a CPU-only program never fills the curve cache, a
- * Latin-only one never approaches the cmap index bound, a fixed-weight one never instances a
- * variable font. Defaults are 4 MB curve, 4 MB outline, 8 MB shape, 64 MB instance, 25 MB index. */
-
-/* Built glyph curves for the GPU backends. Zero on a program that only rasterizes. */
-daegun_status daegun_font_set_curve_cache_bytes(const daegun_font *font, size_t bytes);
-daegun_status daegun_font_clear_curve_cache(const daegun_font *font);
-daegun_status daegun_font_curve_cache_stats(const daegun_font *font, size_t *out_count,
-                                            size_t *out_bytes);
-
-/* Decoded outlines, shared by the raster and stroke paths. Emptied by daegun_font_clear_prewarm,
- * which is the call that fills it. */
+/* Decoded outlines, which the outline calls and the autohinter replay instead of decoding again; the
+ * bytecode and CFF hinters read the font. Filled by daegun_font_prewarm and emptied by
+ * daegun_font_clear_prewarm. Either stats pointer may be NULL. */
 daegun_status daegun_font_set_outline_cache_bytes(const daegun_font *font, size_t bytes);
 daegun_status daegun_font_outline_cache_stats(const daegun_font *font, size_t *out_count,
                                               size_t *out_bytes);
 
 /* Shaped runs, keyed by text. Worth lowering where the text never repeats, as in a log or a chat
- * transcript, since nothing cached there is ever read back. */
+ * transcript, since nothing cached there is ever read back. Either stats pointer may be NULL. */
 daegun_status daegun_font_set_shape_cache_bytes(const daegun_font *font, size_t bytes);
 daegun_status daegun_font_clear_shape_cache(const daegun_font *font);
 daegun_status daegun_font_shape_cache_stats(const daegun_font *font, size_t *out_count,
                                             size_t *out_bytes);
 
-/* Instanced variable fonts, the largest default by a wide margin. Only an animated axis fills it,
- * so a program that renders one fixed weight can set it close to zero. Reports the bytes held for
- * axis locations and for the instanced tables separately; either pointer may be NULL. */
+/* Instanced fonts, the largest default by far. The newest instance is kept whatever the budget, so one
+ * fixed weight runs on a budget of 0; a CFF2 font is instanced even at its default. Reports the bytes
+ * held as whole instanced fonts (daegun_font_instance, subsetting) and as instanced tables for the
+ * rest; either pointer may be NULL. */
 daegun_status daegun_font_set_instance_cache_bytes(const daegun_font *font, size_t bytes);
-daegun_status daegun_font_instance_cache_stats(const daegun_font *font, size_t *out_locations,
+daegun_status daegun_font_instance_cache_stats(const daegun_font *font, size_t *out_fonts,
                                                size_t *out_tables);
 
 /* Unlike the others this is what is left to spend rather than a ceiling: building a cmap index
@@ -205,7 +188,7 @@ daegun_status daegun_font_cmap_index_allowance(const daegun_font *font, size_t *
 /* options */
 
 /* Where the display puts its color samples. Anything unrecognized is grayscale, so a caller on a
- * newer header than the library gets plain antialiasing rather than a failed render. */
+ * newer header than the library gets a grayscale layout rather than a refusal. */
 #define DAEGUN_LAYOUT_GRAYSCALE          0
 #define DAEGUN_LAYOUT_RGB_H              1
 #define DAEGUN_LAYOUT_BGR_H              2
@@ -216,7 +199,9 @@ daegun_status daegun_font_cmap_index_allowance(const daegun_font *font, size_t *
 #define DAEGUN_LAYOUT_RGB_V_UNFILTERED   7
 #define DAEGUN_LAYOUT_BGR_V_UNFILTERED   8
 
-/* Whether to run the glyph's own TrueType bytecode, and under which interpretation. */
+/* Whether to run the glyph's own TrueType bytecode, and under which interpretation: SUBPIXEL and AUTO
+ * as FreeType's v40 interpreter does, CLASSIC as its v35. AUTO autohints a glyph the bytecode does not
+ * cover; AUTO_FORCE autohints every glyph. */
 #define DAEGUN_HINT_NONE        0
 #define DAEGUN_HINT_SUBPIXEL    1
 #define DAEGUN_HINT_CLASSIC     2
@@ -230,31 +215,6 @@ daegun_status daegun_font_cmap_index_allowance(const daegun_font *font, size_t *
 #define DAEGUN_CAP_BUTT    0
 #define DAEGUN_CAP_ROUND   1
 #define DAEGUN_CAP_SQUARE  2
-
-/* What you fill in and hand to anything that rasterizes.
- *
- * The has_ flags are how C says Option. Zeroing the struct gives the Rust default – grayscale, no
- * gamma, transform, hinting, stroke or synthesis – so memset(&o, 0, sizeof o) is a correct start;
- * daegun_raster_options_default() keeps working if a default ever stops being zero. */
-typedef struct {
-    int32_t layout;              /* DAEGUN_LAYOUT_* */
-    int32_t hinting;             /* DAEGUN_HINT_* */
-    int32_t has_gamma;
-    float   gamma;               /* coverage^(1/gamma), applied as coverage becomes a byte */
-    int32_t has_transform;
-    float   transform[6];        /* [a, b, c, d, dx, dy] in font units, before rasterizing */
-    int32_t has_stroke;
-    float   stroke_width;        /* font units, so it scales with the size as the glyph does */
-    int32_t stroke_join;         /* DAEGUN_JOIN_* */
-    float   stroke_miter_limit;  /* read only when stroke_join is DAEGUN_JOIN_MITER */
-    int32_t stroke_cap;          /* DAEGUN_CAP_* */
-    int32_t has_embolden;
-    float   embolden;            /* extra stem width in font units. THIS CHANGES THE ADVANCE. */
-    int32_t has_oblique;
-    float   oblique;             /* tangent of the angle from vertical; positive leans right */
-} daegun_raster_options;
-
-daegun_status daegun_raster_options_default(daegun_raster_options *out);
 
 /* owned results */
 
@@ -334,10 +294,10 @@ daegun_status daegun_font_name_string(const daegun_font *font, uint16_t name_id,
 daegun_status daegun_font_names(const daegun_font *font, daegun_u16_list **out_ids,
                                 daegun_str_list **out_strings);
 
-/* [xmin, ymin, xmax, ymax], in font units. */
+/* [xmin, ymin, xmax, ymax], on the 1000-unit em. */
 daegun_status daegun_font_bbox(const daegun_font *font, daegun_i32_list **out);
 
-/* Tracking at a point size, in font units. */
+/* Tracking at a point size, on the 1000-unit em. */
 daegun_status daegun_font_tracking(const daegun_font *font, double ptem, bool horizontal,
                                    double *out);
 
@@ -350,8 +310,8 @@ typedef struct {
 daegun_status daegun_font_line_metrics(const daegun_font *font, bool vertical,
                                        daegun_line_metrics *out);
 
-/* What OS/2 says. The has_ fields are Option again: a version below 4 carries no typographic
- * metrics, and a face may state no family class at all. */
+/* What OS/2 says. The has_ fields are Option again: a table too short to hold a field leaves it out,
+ * so a face may state no family class or no typographic metrics at all. */
 typedef struct {
     uint16_t version;
     uint16_t has_family_class;
@@ -369,7 +329,8 @@ typedef struct {
 
 daegun_status daegun_font_os2_info(const daegun_font *font, daegun_os2_info *out);
 
-/* The five selection predicates. All five are DAEGUN_ABSENT where the face states no OS/2 table. */
+/* The five selection predicates. All five are DAEGUN_ABSENT where the face states no OS/2 table.
+ * Oblique and typo metrics are bits an OS/2 table before version 4 reserves, so there they are false. */
 daegun_status daegun_font_is_italic(const daegun_font *font, bool *out);
 daegun_status daegun_font_is_bold(const daegun_font *font, bool *out);
 daegun_status daegun_font_is_regular(const daegun_font *font, bool *out);
@@ -401,6 +362,10 @@ daegun_status daegun_font_typographic_metrics(const daegun_font *font, const dae
  * [min, default, max] per axis – axis i is at 3 * i. Either may be NULL. */
 daegun_status daegun_font_axes(const daegun_font *font, daegun_str_list **out_tags,
                                daegun_f64_list **out_ranges);
+/* Each axis's flags and the name ID of its display name, in the same order. Flag 0x0001 is
+ * HIDDEN_AXIS: the font asks for the axis to be kept out of user interfaces. Either may be NULL. */
+daegun_status daegun_font_axis_flags(const daegun_font *font, daegun_u16_list **out_flags,
+                                     daegun_u16_list **out_name_ids);
 
 /* One -1..=1 coordinate per fvar axis, in the font's own axis order. */
 daegun_status daegun_font_normalized_axes(const daegun_font *font, const daegun_axis *axes,
@@ -513,7 +478,7 @@ daegun_status daegun_font_math_min_connector_overlap(const daegun_font *font, do
 #define DAEGUN_MATH_KERN_BOTTOM_LEFT   3
 
 /* An unrecognized corner is DAEGUN_RANGE rather than a default: the four are not interchangeable, so
- * guessing one would be a wrong answer rather than a fallback. */
+ * guessing one would be a wrong answer rather than a fallback. So is a height that is not a number. */
 daegun_status daegun_font_math_kern(const daegun_font *font, uint16_t gid, int32_t corner,
                                     double height, double *out);
 
@@ -522,14 +487,15 @@ typedef struct daegun_math_construction daegun_math_construction;
 daegun_status daegun_font_math_glyph_variants(const daegun_font *font, uint16_t gid, bool vertical,
                                               daegun_math_construction **out);
 
-/* The discrete variants: their glyph ids, with advances at matching indices. */
+/* The discrete variants: their glyph ids, with advances at matching indices. out_count is required;
+ * either list may be NULL. */
 daegun_status daegun_math_construction_variants(const daegun_math_construction *c, size_t *out_count,
                                                 const uint16_t **out_gids,
                                                 const double **out_advances);
 
 /* The assembly, if there is one. out_part_values holds FOUR doubles per part – start connector, end
  * connector, full advance, and is_extender as 0 or 1 – so part i begins at 4 * i.
- * DAEGUN_ABSENT where the construction carries no assembly. */
+ * DAEGUN_ABSENT where the construction carries no assembly. Any out may be NULL. */
 daegun_status daegun_math_construction_assembly(const daegun_math_construction *c,
                                                 double *out_italics_correction,
                                                 size_t *out_part_count,
@@ -542,19 +508,30 @@ void daegun_math_construction_free(daegun_math_construction *c);
 
 daegun_status daegun_font_base_is_glyph_free(const daegun_font *font, bool *out);
 
-/* What BASE says for one script. Any out-parameter may be NULL; a script that names no default
- * baseline writes a NULL handle rather than failing. */
+/* A script's baselines on one axis at a location, in the 1000-unit em, DFLT's when the script has
+ * none. Any out may be NULL; a script that names no default baseline writes a NULL handle. */
 daegun_status daegun_font_base_info(const daegun_font *font, const char *script_tag, bool vertical,
+                                    const daegun_axis *axes, size_t axes_len,
                                     daegun_text **out_default_baseline,
                                     daegun_str_list **out_baseline_tags,
                                     daegun_f64_list **out_baseline_coords);
+/* A script's lowest and highest extent on one axis at a location; language and feature may be NULL.
+ * A side the font leaves out gives false and 0. Any out may be NULL. */
+daegun_status daegun_font_base_extents(const daegun_font *font, const char *script_tag,
+                                       const char *language_tag, const char *feature_tag, bool vertical,
+                                       const daegun_axis *axes, size_t axes_len,
+                                       bool *out_has_min, double *out_min,
+                                       bool *out_has_max, double *out_max);
 
 typedef struct daegun_stat daegun_stat;
 
 daegun_status daegun_font_stat_info(const daegun_font *font, daegun_stat **out);
+/* Any out may be NULL. */
 daegun_status daegun_stat_axes(const daegun_stat *stat, size_t *out_count,
                                daegun_str_list **out_tags, const uint16_t **out_orderings);
-/* How many axis values STAT names. The values themselves are not exposed yet. */
+/* An axis's display name, BORROWED as daegun_stat_value_name's are. DAEGUN_ABSENT when unnamed. */
+daegun_status daegun_stat_axis_name(const daegun_stat *stat, size_t index, daegun_str *out);
+/* How many axis values STAT names; daegun_stat_value_at reads them. */
 daegun_status daegun_stat_value_count(const daegun_stat *stat, size_t *out);
 daegun_status daegun_stat_elided_fallback_name(const daegun_stat *stat, daegun_text **out);
 void daegun_stat_free(daegun_stat *stat);
@@ -586,7 +563,8 @@ daegun_status daegun_font_has_glyph(const daegun_font *font, uint32_t codepoint,
 daegun_status daegun_font_glyph_ids(const daegun_font *font, const char *text,
                                     daegun_u16_list **out_gids, daegun_blob **out_present);
 
-/* Every codepoint the cmap maps, with the glyph each reaches, at matching indices. */
+/* Every codepoint the cmap maps, with the glyph each reaches, at matching indices.
+ * Any out may be NULL. */
 daegun_status daegun_font_coverage(const daegun_font *font, daegun_u32_list **out_codepoints,
                                    daegun_u16_list **out_gids);
 daegun_status daegun_font_codepoints(const daegun_font *font, daegun_u32_list **out);
@@ -609,9 +587,11 @@ daegun_status daegun_font_vertical_origin(const daegun_font *font, uint16_t gid,
                                           const daegun_axis *axes, size_t axes_len, int32_t *out);
 daegun_status daegun_font_default_vertical_origin(const daegun_font *font, int32_t *out);
 
+/* A ligature's carets at a location, x or y by direction, one per caret the font lists. out_present
+ * holds a byte each, 0 where a caret cannot be resolved (its value 0). Either out may be NULL. */
 daegun_status daegun_font_ligature_carets(const daegun_font *font, uint16_t gid,
-                                          const daegun_axis *axes, size_t axes_len,
-                                          daegun_f64_list **out);
+                                          const daegun_axis *axes, size_t axes_len, bool vertical,
+                                          daegun_f64_list **out_values, daegun_blob **out_present);
 daegun_status daegun_font_caret_positions(const daegun_font *font, const char *text,
                                           const daegun_axis *axes, size_t axes_len, bool vertical,
                                           daegun_f64_list **out);
@@ -623,9 +603,11 @@ daegun_status daegun_font_caret_positions(const daegun_font *font, const char *t
 
 daegun_status daegun_font_glyph_class(const daegun_font *font, uint16_t gid, int32_t *out);
 daegun_status daegun_font_mark_attachment_class(const daegun_font *font, uint16_t gid, uint16_t *out);
+/* A glyph's name from post, else from the CFF charset. DAEGUN_ABSENT where neither names it; a name
+ * the font gives as empty, or longer than post's 63 bytes, counts as none. */
 daegun_status daegun_font_glyph_name(const daegun_font *font, uint16_t gid, daegun_text **out);
-/* Two lists again: an empty string is a name a font can genuinely state, so out_present says which
- * entries mean anything. */
+/* Every glyph's name, as daegun_font_glyph_name gives it. Two lists again: out_present says which
+ * glyphs have a name, the others' being empty strings. Any out may be NULL. */
 daegun_status daegun_font_glyph_names(const daegun_font *font, daegun_str_list **out_names,
                                       daegun_blob **out_present);
 
@@ -649,7 +631,9 @@ typedef struct {
     void *user;
 } daegun_pen;
 
-/* The stored outline – the default instance, whatever location you are working at. */
+/* The stored outline – the default instance, whatever location you are working at. DAEGUN_ABSENT
+ * for a gid past the font; DAEGUN_PARSE, with the reason in daegun_last_error, for a glyph that does
+ * not decode, by which time the pen may already hold part of it. */
 daegun_status daegun_font_outline_glyph(const daegun_font *font, uint16_t gid,
                                         const daegun_pen *pen);
 /* The same, resolving variation deltas at a location first. */
@@ -657,53 +641,25 @@ daegun_status daegun_font_outline_glyph_instanced(const daegun_font *font, uint1
                                                   const daegun_axis *axes, size_t axes_len,
                                                   const daegun_pen *pen);
 
+/* out_added, which may be NULL, counts the outlines the cache took: none past the outline budget, and
+ * a full cache drops its oldest to take each new one. */
 daegun_status daegun_font_prewarm(const daegun_font *font, const uint16_t *gids, size_t gids_len,
                                   const daegun_axis *axes, size_t axes_len, size_t *out_added);
 daegun_status daegun_font_clear_prewarm(const daegun_font *font);
-
-/* rasterizing */
-
-typedef struct daegun_bitmap daegun_bitmap;
-
-/* width and height are the bitmap's, in pixels. xmin and ymin place its bottom-left corner relative
- * to the pen. The bounds_ fields are the em-space box the pixels came from, which a caller
- * compositing at sub-pixel offsets needs and cannot recover from the integers. */
-typedef struct {
-    int32_t xmin;
-    int32_t ymin;
-    size_t  width;
-    size_t  height;
-    float   advance_width;
-    float   advance_height;
-    float   bounds_xmin;
-    float   bounds_ymin;
-    float   bounds_width;
-    float   bounds_height;
-} daegun_metrics;
-
-daegun_status daegun_bitmap_metrics(const daegun_bitmap *bitmap, daegun_metrics *out);
-/* The coverage, borrowed. One byte per pixel for grayscale, three for a subpixel layout – the LENGTH
- * is what says which, so divide by width * height rather than tracking what you asked for. */
-const uint8_t *daegun_bitmap_pixels(const daegun_bitmap *bitmap, size_t *out_len);
-void daegun_bitmap_free(daegun_bitmap *bitmap);
-
-/* DAEGUN_ABSENT for a glyph that draws nothing. A space rasterizes to no pixels, which is an answer
- * rather than a failure. */
-daegun_status daegun_font_rasterize_glyph(const daegun_font *font, uint16_t gid, float px,
-                                          const daegun_axis *axes, size_t axes_len,
-                                          daegun_bitmap **out);
-/* A NULL opts means the defaults, so you need not build the struct to get them. */
-daegun_status daegun_font_rasterize_glyph_with(const daegun_font *font, uint16_t gid, float px,
-                                               const daegun_axis *axes, size_t axes_len,
-                                               const daegun_raster_options *opts,
-                                               daegun_bitmap **out);
 
 /* hinting */
 
 typedef struct daegun_hinted_outline daegun_hinted_outline;
 
 #define DAEGUN_FLAG_ON_CURVE 0x01
+/* A cubic control point, in a hinted CFF outline; any other off-curve point is a quadratic control. */
+#define DAEGUN_FLAG_CUBIC    0x02
 
+/* DAEGUN_ABSENT where no hinter takes the glyph: DAEGUN_HINT_NONE, a px not finite and above zero or
+ * past 65,535 ppem, a glyph too large to hint at that size, or one no hinter reads, including a font
+ * whose bytecode fails or turns itself off at that size. Draw it unhinted then, as
+ * daegun_font_prepared_outline does. Points are in 26.6 from the glyph's origin, flags hold
+ * DAEGUN_FLAG_ON_CURVE and DAEGUN_FLAG_CUBIC only. */
 daegun_status daegun_font_hinted_glyph(const daegun_font *font, uint16_t gid, float px,
                                        const daegun_axis *axes, size_t axes_len, int32_t hint_mode,
                                        daegun_hinted_outline **out);
@@ -711,7 +667,8 @@ daegun_status daegun_font_hinted_glyph(const daegun_font *font, uint16_t gid, fl
 daegun_status daegun_hinted_outline_points(const daegun_hinted_outline *outline, size_t *out_count,
                                            const int32_t **out_x, const int32_t **out_y,
                                            const uint8_t **out_flags);
-/* Where each contour ends, as an index one past its last point. */
+/* Where each contour ends, as the index of its last point: contour i runs from the point after
+ * ends[i - 1] (point 0 for the first) through ends[i]. */
 const size_t *daegun_hinted_outline_contours(const daegun_hinted_outline *outline,
                                              size_t *out_count);
 void daegun_hinted_outline_free(daegun_hinted_outline *outline);
@@ -720,8 +677,16 @@ typedef struct daegun_cff_hints daegun_cff_hints;
 
 daegun_status daegun_font_cff_hints(const daegun_font *font, uint16_t gid, daegun_cff_hints **out);
 /* THREE doubles per stem – is_vertical as 0 or 1, then the edge positions min and max, so a stem's
- * width is max - min. out_count receives the number of STEMS, not of doubles. */
+ * width is max - min. An edge hint keeps the width of -20 or -21 its font gives it, so its max is below
+ * its min. out_count receives the number of STEMS, not of doubles. */
 const double *daegun_cff_hints_stems(const daegun_cff_hints *hints, size_t *out_count);
+/* The hint masks the charstring sets as it draws, in order. Mask i takes effect from point *out_point of
+ * the glyph, counted as daegun_font_hinted_glyph gives its points, and holds a bit per stem in
+ * daegun_cff_hints_stems order, high bit first; the bits are BORROWED until the hints are freed.
+ * DAEGUN_RANGE past the last mask. Any out may be NULL. */
+daegun_status daegun_cff_hints_mask_count(const daegun_cff_hints *hints, size_t *out);
+daegun_status daegun_cff_hints_mask_at(const daegun_cff_hints *hints, size_t index, size_t *out_point,
+                                       const uint8_t **out_bits, size_t *out_len);
 void daegun_cff_hints_free(daegun_cff_hints *hints);
 
 /* shaping */
@@ -733,8 +698,8 @@ const uint16_t *daegun_run_glyphs(const daegun_run *run, size_t *out_count);
 const double   *daegun_run_advances(const daegun_run *run, size_t *out_count);
 /* TWO doubles per glyph, x then y, so glyph i is at 2 * i. out_count is the number of DOUBLES. */
 const double   *daegun_run_offsets(const daegun_run *run, size_t *out_count);
-/* Which byte of the input each glyph came from. Several glyphs may share a cluster, and one glyph
- * may span several characters. */
+/* Which character of the input each glyph came from, as a character index rather than a byte offset.
+ * Several glyphs may share a cluster, and one glyph may span several characters. */
 const uint32_t *daegun_run_clusters(const daegun_run *run, size_t *out_count);
 const uint8_t  *daegun_run_unsafe_to_break(const daegun_run *run, size_t *out_count);
 const uint8_t  *daegun_run_unsafe_to_concat(const daegun_run *run, size_t *out_count);
@@ -774,7 +739,7 @@ daegun_status daegun_font_shape_with_features(const daegun_font *font, const cha
 #define DAEGUN_IGNORABLES_REMOVE    1
 #define DAEGUN_IGNORABLES_PRESERVE  2
 
-/* Everything the shaper can be told. Zeroing it is the default, as with daegun_raster_options. */
+/* Everything the shaper can be told. Zeroing it is the default, as with daegun_outline_options. */
 typedef struct {
     int32_t     cluster_level;   /* DAEGUN_CLUSTER_* */
     int32_t     ignorables;      /* DAEGUN_IGNORABLES_* */
@@ -792,7 +757,13 @@ typedef struct {
     bool        suppress_dotted_circle;
     bool        has_invisible_glyph;
     uint16_t    invisible_glyph;
+    bool        has_seed_script;
+    uint16_t    seed_script;     /* the run's script, an id as daegun_text_script_runs gives, kept in
+                                    place of the one its text would be scanned for */
 } daegun_shape_options;
+
+/* The point size a run is tracked at when its options give none. */
+#define DAEGUN_DEFAULT_POINT_SIZE 12
 
 daegun_status daegun_shape_options_default(daegun_shape_options *out);
 /* A NULL opts means the defaults. */
@@ -813,7 +784,8 @@ typedef struct daegun_justified       daegun_justified;
 
 daegun_status daegun_font_justification_extenders(const daegun_font *font, const char *script_tag,
                                                   daegun_u16_list **out);
-/* lang_sys_tag may be NULL. */
+/* Each level's lookups to enable and disable, at most 64, highest priority first. lang_sys_tag may be
+ * NULL; a language without data takes the default. JstfMax, which nothing applies, is not read. */
 daegun_status daegun_font_justification_priorities(const daegun_font *font, const char *script_tag,
                                                    const char *lang_sys_tag,
                                                    daegun_jstf_priorities **out);
@@ -822,6 +794,20 @@ daegun_status daegun_jstf_priorities_count(const daegun_jstf_priorities *p, size
 daegun_status daegun_jstf_priorities_at(const daegun_jstf_priorities *p, size_t index,
                                         const daegun_jstf_mods **out);
 void daegun_jstf_priorities_free(daegun_jstf_priorities *p);
+
+/* One of a level's eight lookup lists, BORROWED as the level is. DAEGUN_ABSENT where the level names no
+ * such list, which is not a list naming no lookups; DAEGUN_RANGE for a `which` not below. Either out
+ * may be NULL. */
+#define DAEGUN_JSTF_SHRINKAGE_ENABLE_GSUB   0
+#define DAEGUN_JSTF_SHRINKAGE_DISABLE_GSUB  1
+#define DAEGUN_JSTF_SHRINKAGE_ENABLE_GPOS   2
+#define DAEGUN_JSTF_SHRINKAGE_DISABLE_GPOS  3
+#define DAEGUN_JSTF_EXTENSION_ENABLE_GSUB   4
+#define DAEGUN_JSTF_EXTENSION_DISABLE_GSUB  5
+#define DAEGUN_JSTF_EXTENSION_ENABLE_GPOS   6
+#define DAEGUN_JSTF_EXTENSION_DISABLE_GPOS  7
+daegun_status daegun_jstf_mods_lookups(const daegun_jstf_mods *mods, int32_t which,
+                                       const uint16_t **out, size_t *out_count);
 
 daegun_status daegun_font_shape_justified(const daegun_font *font, const char *text,
                                           const daegun_axis *axes, size_t axes_len, bool vertical,
@@ -834,6 +820,7 @@ daegun_status daegun_font_justify(const daegun_font *font, const char *text,
                                   double target_width, double tolerance, daegun_justified **out);
 /* BORROWED. Do not pass it to daegun_run_free. */
 const daegun_run *daegun_justified_run(const daegun_justified *j);
+/* Any out may be NULL. */
 daegun_status daegun_justified_info(const daegun_justified *j, bool *out_has_level,
                                     size_t *out_level, bool *out_shrink, double *out_width,
                                     bool *out_best_effort);
@@ -853,7 +840,8 @@ daegun_status daegun_font_shape_bidi_with(const daegun_font *font, const char *t
                                           const daegun_shape_options *opts,
                                           daegun_bidi_runs **out);
 daegun_status daegun_bidi_runs_count(const daegun_bidi_runs *runs, size_t *out);
-/* The run is BORROWED, valid until the set is freed. Do not pass it to daegun_run_free. */
+/* The run is BORROWED, valid until the set is freed. Do not pass it to daegun_run_free.
+ * Any out may be NULL. */
 daegun_status daegun_bidi_runs_at(const daegun_bidi_runs *runs, size_t index,
                                   const daegun_run **out_run, uint8_t *out_level,
                                   const size_t **out_chars, size_t *out_chars_count);
@@ -906,14 +894,16 @@ daegun_status daegun_layout_options_default(daegun_layout_options *out);
 daegun_status daegun_font_layout(const daegun_font *font, const char *text,
                                  const daegun_axis *axes, size_t axes_len,
                                  const daegun_layout_options *opts, daegun_layout **out);
+/* Any out may be NULL. */
 daegun_status daegun_layout_info(const daegun_layout *layout, size_t *out_line_count,
                                  double *out_inline_size, double *out_block_size,
                                  bool *out_has_truncated, size_t *out_truncated);
+/* Any out may be NULL. */
 daegun_status daegun_layout_line(const daegun_layout *layout, size_t index, size_t *out_run_count,
                                  size_t *out_char_start, size_t *out_char_end, double *out_baseline,
                                  double *out_inline_size, double *out_ascent, double *out_descent,
                                  bool *out_hard_break);
-/* The run is BORROWED, valid until the layout is freed. */
+/* The run is BORROWED, valid until the layout is freed. Any out may be NULL. */
 daegun_status daegun_layout_run(const daegun_layout *layout, size_t line, size_t index,
                                 const daegun_run **out_run, double *out_offset_x,
                                 double *out_offset_y, uint8_t *out_level, size_t *out_char_start,
@@ -922,19 +912,22 @@ void daegun_layout_free(daegun_layout *layout);
 
 /* text analysis, which needs no font */
 
+/* Character indices, not byte offsets, with the start and the end of the text included. */
 daegun_status daegun_text_grapheme_boundaries(const char *text, daegun_u32_list **out);
 daegun_status daegun_text_word_boundaries(const char *text, daegun_u32_list **out);
-/* Two lists at matching indices: byte offsets, and one byte each, non-zero for a break the text
- * demands rather than merely allows. */
+/* Two lists at matching indices: character indices, and one byte each, non-zero for a break the text
+ * demands rather than merely allows, as the end of the text always does. Any out may be NULL. */
 daegun_status daegun_text_line_break_opportunities(const char *text, daegun_u32_list **out_at,
                                                    daegun_blob **out_mandatory);
 /* THREE numbers per run – start, end, and the script's id. Use daegun_script_name to name one; the
  * id is kept because a caller grouping runs compares ids rather than strings. */
 daegun_status daegun_text_script_runs(const char *text, daegun_u32_list **out);
 daegun_status daegun_script_name(uint16_t script, daegun_text **out);
-/* DAEGUN_ABSENT where the script has no inherent direction. */
+/* DAEGUN_ABSENT only for the scripts written either way: Old Hungarian, Old Italic, Runic and
+ * Tifinagh. Common, Inherited and unknown ids answer false. */
 daegun_status daegun_script_is_rtl(uint16_t script, bool *out);
 
+/* Any out may be NULL. */
 daegun_status daegun_text_resolve_bidi(const char *text, int32_t base, uint8_t *out_base_level,
                                        daegun_blob **out_levels, daegun_u32_list **out_visual_order);
 
@@ -952,6 +945,7 @@ void daegun_bidi_paragraph_free(daegun_bidi_paragraph *p);
 daegun_status daegun_text_line_visual_runs(const daegun_bidi_paragraph *p, size_t start, size_t end,
                                            daegun_visual_runs **out);
 daegun_status daegun_visual_runs_count(const daegun_visual_runs *runs, size_t *out);
+/* Any out may be NULL. */
 daegun_status daegun_visual_runs_at(const daegun_visual_runs *runs, size_t index,
                                     uint8_t *out_level, const size_t **out_chars,
                                     size_t *out_chars_count);
@@ -963,7 +957,6 @@ typedef struct daegun_colr_layers  daegun_colr_layers;
 typedef struct daegun_palettes     daegun_palettes;
 typedef struct daegun_glyph_bitmap daegun_glyph_bitmap;
 typedef struct daegun_paint        daegun_paint;
-typedef struct daegun_scene        daegun_scene;
 
 /* One COLR v0 layer. is_foreground means the layer takes YOUR text color rather than one from the
  * palette, and the four channels are then meaningless. */
@@ -994,26 +987,40 @@ typedef struct {
 
 daegun_status daegun_font_palette_count(const daegun_font *font, uint16_t *out);
 daegun_status daegun_font_palette_info(const daegun_font *font, daegun_palettes **out);
+/* Each palette entry's name ID, for labeling the colors a palette sets (CPAL version 1). Two lists:
+ * out_name_ids one ID per entry, out_present one byte per entry, 0 where the font names none. Both
+ * empty when it labels no entries. Either out may be NULL. */
+daegun_status daegun_font_palette_entry_labels(const daegun_font *font, daegun_u16_list **out_name_ids,
+                                               daegun_blob **out_present);
 const daegun_palette_info *daegun_palettes_data(const daegun_palettes *p, size_t *out_count);
 void daegun_palettes_free(daegun_palettes *p);
 
-/* An embedded bitmap, as PNG BYTES rather than pixels – the face stores them that way and daegun
- * does not decode images. You already have a PNG decoder or do not want one. */
+/* An embedded bitmap from the strike nearest target_ppem that holds the glyph: sbix, CBDT, then EBDT.
+ * Color images come as PNG BYTES, as the face stores them, since daegun does not decode images;
+ * monochrome and grayscale strikes come decoded, one byte of coverage a pixel. */
 daegun_status daegun_font_glyph_bitmap(const daegun_font *font, uint16_t gid, uint16_t target_ppem,
                                        daegun_glyph_bitmap **out);
-const uint8_t *daegun_glyph_bitmap_png(const daegun_glyph_bitmap *b, size_t *out_len,
-                                       uint16_t *out_ppem, int16_t *out_origin_x,
-                                       int16_t *out_origin_y);
+/* Where the image goes: its left and top edges in pixels at *out_ppem from the glyph origin, y up,
+ * for every format alike. out_mirrored is true for an image to draw mirrored left to right, Apple's
+ * sbix 'flip'. Any out may be NULL. */
+daegun_status daegun_glyph_bitmap_placement(const daegun_glyph_bitmap *b, uint16_t *out_ppem,
+                                            int16_t *out_left, int16_t *out_top, bool *out_mirrored);
+/* The PNG bytes, BORROWED until b is freed. NULL for a coverage image, or when b or out_len is NULL. */
+const uint8_t *daegun_glyph_bitmap_png(const daegun_glyph_bitmap *b, size_t *out_len);
+/* The coverage, BORROWED until b is freed: *out_width bytes a row, *out_height rows, top to bottom,
+ * 0 none to 255 full. NULL for a PNG, or when any argument is NULL. */
+const uint8_t *daegun_glyph_bitmap_coverage(const daegun_glyph_bitmap *b, uint16_t *out_width,
+                                            uint16_t *out_height);
 void daegun_glyph_bitmap_free(daegun_glyph_bitmap *b);
 
 /* COLR v1 */
 
-/* COLR v1 is a TREE – fifteen variants, nine holding a child – and it arrives flattened into an
+/* COLR v1 is a TREE – fourteen variants, ten holding children – and it arrives flattened into an
  * array where children are indices. Node 0 is the root.
  *
  * EVERY variant uses child_start and child_count, so walking children needs no knowledge of which
- * variant you are looking at: Layers has as many as it has, the nine transforming variants have one,
- * Composite has TWO – source first, backdrop second – and the leaves have none.
+ * variant you are looking at: Layers has as many as it has, Glyph, ColrGlyph and the six transforming
+ * variants have one, Composite has TWO – source first, backdrop second – and the four leaves have none.
  *
  * `numbers` means whatever `kind` says:
  *
@@ -1065,163 +1072,13 @@ const daegun_paint_node *daegun_paint_nodes(const daegun_paint *p, size_t *out_c
 /* A node's children are the child_count entries at child_start. */
 const uint32_t *daegun_paint_children(const daegun_paint *p, size_t *out_count);
 /* Every gradient's stops in one run: a node's are the stops_count entries at stops_start, and
- * out_colors holds FOUR bytes per stop, so stop i is at 4 * i. */
+ * out_colors holds FOUR bytes per stop, so stop i is at 4 * i. Any out may be NULL. */
 daegun_status daegun_paint_stops(const daegun_paint *p, size_t *out_count,
                                  const double **out_offsets, const uint8_t **out_colors);
+/* A byte per stop at the same indices, 1 where the stop takes YOUR text color, its four color bytes
+ * then meaningless, as a node's is_foreground says for a solid. */
+const uint8_t *daegun_paint_stops_foreground(const daegun_paint *p, size_t *out_count);
 void daegun_paint_free(daegun_paint *p);
-
-/* out_skipped_ops is how many paint operations the renderer could not carry out. Non-zero means the
- * image is incomplete rather than wrong, and anything showing it should know. */
-daegun_status daegun_font_render_colr_glyph(const daegun_font *font, uint16_t gid, float px,
-                                            const daegun_axis *axes, size_t axes_len,
-                                            uint16_t palette_index, daegun_scene **out);
-
-/* The same, with the text color a COLR layer takes when it defers to the caller instead of naming a
- * palette entry. foreground is four bytes, RGBA; NULL means opaque black, as the call above uses. */
-daegun_status daegun_font_render_colr_glyph_with(const daegun_font *font, uint16_t gid, float px,
-                                                 const daegun_axis *axes, size_t axes_len,
-                                                 uint16_t palette_index,
-                                                 const uint8_t foreground[4],
-                                                 daegun_scene **out);
-const uint8_t *daegun_scene_rgba(const daegun_scene *s, size_t *out_len, size_t *out_width,
-                                 size_t *out_height, int32_t *out_left, int32_t *out_top,
-                                 size_t *out_skipped_ops);
-void daegun_scene_free(daegun_scene *s);
-
-/* the GPU path */
-
-typedef struct daegun_batch daegun_batch;
-typedef struct daegun_drawn daegun_drawn;
-typedef struct daegun_color_slots daegun_color_slots;
-
-/* Where a glyph's geometry landed in a batch. */
-typedef struct {
-    uint32_t band_base;
-    uint32_t h_bands;
-    uint32_t v_bands;
-    uint32_t hull_base;
-    float    box_min[2];
-    float    box_max[2];
-} daegun_glyph_slot;
-
-/* What the batch's four buffers are made of. NONE of these were declared until round 9, so the
- * five calls below handed back `const void *` with a count and nothing to cast it to – the GPU data
- * path, which is the entire reason the batch is public, was unreadable from C. */
-
-/* One point of a quadratic, in em space. */
-typedef struct {
-    float x;
-    float y;
-} daegun_curve_point;
-
-/* One horizontal or vertical slice of a glyph, naming a run in the band-curve index. */
-typedef struct {
-    uint32_t first_curve;
-    uint32_t curve_count;
-} daegun_band;
-
-/* One vertex of the polygon actually drawn, with the per-corner dilation the shader needs. */
-typedef struct {
-    float pos[2];
-    float dilate[4];
-} daegun_hull_vertex;
-
-/* One flat-colored shape of a color glyph: the curves, and the shape's own tint in the 0..1
- * straight-alpha form daegun_glyph_instance.tint takes. Draw them in the order they came back –
- * they paint back to front and the shader does no depth testing. */
-typedef struct {
-    daegun_glyph_slot slot;
-    float             tint[4];
-} daegun_color_slot;
-
-daegun_status daegun_batch_new(daegun_batch **out);
-daegun_status daegun_batch_clear(daegun_batch *batch);
-daegun_status daegun_batch_append(daegun_batch *batch, const float *quads, size_t count,
-                                 daegun_glyph_slot *out);
-/* Bumped whenever the buffers change, so you know when to re-upload. */
-daegun_status daegun_batch_revision(const daegun_batch *batch, uint64_t *out);
-
-/* The four buffers, borrowed. Valid until the batch is CHANGED or freed – appending a glyph may
- * reallocate, so holding one of these across a draw is holding a dangling pointer.
- * daegun_batch_revision is how to tell. */
-const daegun_curve_point *daegun_batch_curves(const daegun_batch *batch, size_t *out_count);
-const uint32_t *daegun_batch_band_curves(const daegun_batch *batch, size_t *out_count);
-const daegun_band *daegun_batch_bands(const daegun_batch *batch, size_t *out_count);
-const daegun_hull_vertex *daegun_batch_hulls(const daegun_batch *batch, size_t *out_count);
-void daegun_batch_free(daegun_batch *batch);
-
-daegun_status daegun_font_gpu_glyph(const daegun_font *font, daegun_batch *batch, uint16_t gid,
-                                    const daegun_axis *axes, size_t axes_len,
-                                    daegun_glyph_slot *out);
-daegun_status daegun_font_gpu_color_glyph(const daegun_font *font, daegun_batch *batch,
-                                          uint16_t gid, const daegun_axis *axes, size_t axes_len,
-                                          uint16_t palette_index, daegun_color_slots **out);
-
-/* The same, with the text color for layers that defer to it. NULL foreground means opaque black. */
-daegun_status daegun_font_gpu_color_glyph_with(const daegun_font *font, daegun_batch *batch,
-                                               uint16_t gid, const daegun_axis *axes,
-                                               size_t axes_len, uint16_t palette_index,
-                                               const uint8_t foreground[4],
-                                               daegun_color_slots **out);
-const daegun_color_slot *daegun_color_slots_data(const daegun_color_slots *slots,
-                                                 size_t *out_count);
-void daegun_color_slots_free(daegun_color_slots *slots);
-
-#define DAEGUN_PREFER_AUTO       0
-#define DAEGUN_PREFER_CPU        1
-#define DAEGUN_PREFER_GPU        2
-#define DAEGUN_PREFER_REFERENCE  3
-
-/* Zeroing this is the default. */
-typedef struct {
-    int32_t prefer;              /* DAEGUN_PREFER_* */
-    bool    strict;
-    bool    has_cpu_below_ppem;
-    float   cpu_below_ppem;
-    bool    avoid_software_gpu;
-} daegun_policy;
-
-daegun_status daegun_policy_default(daegun_policy *out);
-
-#define DAEGUN_DRAWN_NOTHING     0
-#define DAEGUN_DRAWN_CPU         1
-#define DAEGUN_DRAWN_GPU         2
-#define DAEGUN_DRAWN_GPU_COLOR   3
-#define DAEGUN_DRAWN_SCENE       4
-#define DAEGUN_DRAWN_REFERENCE   5
-#define DAEGUN_DRAWN_BATCH_FULL  6
-#define DAEGUN_DRAWN_REFUSED     7
-
-/* Draws one glyph wherever the policy and the device say it belongs.
- *
- * THERE IS NO DRAW TARGET HANDLE, and that is deliberate. DrawTarget borrows the batch mutably, and
- * a handle would let you outlive the borrow – a use-after-free C cannot see. Building it inside the
- * call makes that unrepresentable: a NULL device is the CPU-only arrangement, a non-NULL one is the
- * device-aware one, and the policy is a parameter rather than something you configure and keep.
- *
- * palette is the color palette index, or -1 for none. opts, policy and device may all be NULL. */
-daegun_status daegun_font_draw_glyph(const daegun_font *font, daegun_batch *batch,
-                                     const void *device, const daegun_policy *policy, uint16_t gid,
-                                     float px, const daegun_axis *axes, size_t axes_len,
-                                     const daegun_raster_options *opts, int32_t palette,
-                                     daegun_drawn **out);
-
-/* The same, with the text color for layers that defer to it. NULL foreground means opaque black. */
-daegun_status daegun_font_draw_glyph_with(const daegun_font *font, daegun_batch *batch,
-                                          const void *device, const daegun_policy *policy,
-                                          uint16_t gid, float px, const daegun_axis *axes,
-                                          size_t axes_len, const daegun_raster_options *opts,
-                                          int32_t palette, const uint8_t foreground[4],
-                                          daegun_drawn **out);
-
-daegun_status daegun_drawn_kind(const daegun_drawn *d, int32_t *out);
-daegun_status daegun_drawn_is_ok(const daegun_drawn *d, bool *out);
-/* BORROWED. Do not free these separately – they belong to the draw result. */
-daegun_status daegun_drawn_bitmap(const daegun_drawn *d, const daegun_bitmap **out);
-daegun_status daegun_drawn_slot(const daegun_drawn *d, daegun_glyph_slot *out);
-const daegun_color_slot *daegun_drawn_color_slots(const daegun_drawn *d, size_t *out_count);
-daegun_status daegun_drawn_scene(const daegun_drawn *d, const daegun_scene **out);
-void daegun_drawn_free(daegun_drawn *d);
 
 /* paths and stroking */
 
@@ -1239,8 +1096,8 @@ typedef struct daegun_path daegun_path;
 #define DAEGUN_VERB_CUBIC 3  /* three points: two controls, end */
 #define DAEGUN_VERB_CLOSE 4  /* no points */
 
-/* How a path is stroked. The same fields daegun_raster_options carries, standalone so a path can be
- * stroked without a rasterizer. `miter_limit` is read only when `join` is DAEGUN_JOIN_MITER. */
+/* How a path is stroked: the stroke fields of daegun_outline_options, standalone so a path can be
+ * stroked on its own. `miter_limit` is read only when `join` is DAEGUN_JOIN_MITER. */
 typedef struct {
     float   width;
     int32_t cap;   /* DAEGUN_CAP_* */
@@ -1259,80 +1116,312 @@ daegun_status daegun_path_curve_to(daegun_path *path, float c1x, float c1y,
 daegun_status daegun_path_close(daegun_path *path);
 
 daegun_status daegun_path_is_empty(const daegun_path *path, int32_t *out);
-/* What the path costs to fill, in the engine's own units – the number daegun_policy compares
- * against to decide whether a glyph is worth a GPU round trip. */
+/* The bytes the path holds, one per verb and eight per point. The outline cache charges 176 more for
+ * each outline it keeps. */
 daegun_status daegun_path_cost(const daegun_path *path, size_t *out);
 /* DAEGUN_ABSENT when the path has no points. */
 daegun_status daegun_path_bounds(const daegun_path *path, double *out_min_x, double *out_min_y,
                                  double *out_max_x, double *out_max_y);
 
 /* The verbs and points, COPIED into your buffers – the one place this ABI copies rather than
- * borrowing. Call with capacity 0 to learn the count, then again to fill. */
+ * borrowing. Call with capacity 0 to learn the count, then again to fill; out_x or out_y may be NULL
+ * to skip that coordinate. */
 daegun_status daegun_path_verbs(const daegun_path *path, uint8_t *out, size_t capacity,
                                 size_t *out_count);
 daegun_status daegun_path_points(const daegun_path *path, float *out_x, float *out_y,
                                  size_t capacity, size_t *out_count);
 
-/* Replays onto a pen, optionally through a 2x3 transform [a, b, c, d, e, f], or NULL for none. */
+/* Replays onto a pen, optionally through a 2x3 transform [a, b, c, d, e, f], or NULL for none. The
+ * path is replayed as it was when the call began, so a pen may add to it. Every contour reaches the pen
+ * closed, as a fill reads it; daegun_path_verbs gives the path as it was built. */
 daegun_status daegun_path_replay(const daegun_path *path, const double *transform,
                                  const daegun_pen *pen);
 
 /* A pen that appends to this path – the other direction through daegun_pen, so a glyph outline can
- * be captured as a value. BORROWS the path: valid until the path is freed. */
+ * be captured as a value. BORROWS the path: valid until the path is freed. A path may be replayed or
+ * stroked into its own pen. */
 daegun_status daegun_path_as_pen(daegun_path *path, daegun_pen *out);
 
-/* `tolerance` is how far the flattened curves may sit from the true ones, in the path's units. */
+/* `tolerance` is how far the flattened curves may sit from the true ones, in the path's units; one
+ * not above zero, or NaN, means 0.1. A curve, round join or cap takes at most 256 segments, so a very
+ * long one can sit further out. DAEGUN_RANGE, drawing nothing, for a stroke of more than
+ * DAEGUN_MAX_FLATTEN_POINTS points or one whose width or points are not finite: a miter's tip
+ * overflows long before its width. */
 daegun_status daegun_path_stroke(const daegun_path *path, const daegun_stroke_style *style,
                                  float tolerance, const daegun_pen *pen);
 /* The same, with the outline's self-intersections resolved into one boundary – what a filler that
- * does not do non-zero winding needs, since a stroke overlaps itself at every join. */
+ * does not do non-zero winding needs, since a stroke overlaps itself at every join. A stroke of more
+ * than 16,384 edges, one that crosses itself into more than 131,072 pieces or past a fixed work
+ * budget, or one whose resolved boundary fails its own check, comes back unresolved, as
+ * daegun_path_stroke draws it. */
 daegun_status daegun_path_stroke_simplified(const daegun_path *path,
                                             const daegun_stroke_style *style,
                                             float tolerance, const daegun_pen *pen);
 
-/* Building a scene of your own, rather than receiving one from a color glyph.
-
- * A builder holds paths and the fills over them. Push each path once, keep the id it hands back,
- * and fill it as many times as you like at different transforms – which is how one glyph outline
- * serves every place it appears. Render turns the whole thing into a daegun_scene you read with
- * daegun_scene_rgba above.
- *
- * The scene is authored y-up. Render applies `[s, 0, 0, -s, 0, 0]` with `s = px / upem`, so that
- * scale is yours to choose: px = 2, upem = 1 draws a layout expressed in CSS pixels at 2x. */
-typedef struct daegun_scene_builder daegun_scene_builder;
-
-daegun_scene_builder *daegun_scene_builder_new(void);
-void daegun_scene_builder_free(daegun_scene_builder *b);
-
-/* Copies the path in, so you may free or reuse yours immediately. */
-daegun_status daegun_scene_builder_push_path(daegun_scene_builder *b, const daegun_path *path,
-                                             size_t *out_id);
-
-/* `rgba` is four bytes, `transform` six doubles [a, b, c, d, e, f] for x' = a*x + c*y + e.
- * `rule` is DAEGUN_FILL_NONZERO or DAEGUN_FILL_EVENODD. DAEGUN_RANGE for an unknown path id, an
- * unknown rule, or a transform that is not finite. */
-#define DAEGUN_FILL_NONZERO 0
-#define DAEGUN_FILL_EVENODD 1
-daegun_status daegun_scene_builder_fill(daegun_scene_builder *b, size_t path_id,
-                                        const uint8_t rgba[4], int32_t rule,
-                                        const double transform[6]);
-
-/* The canvas is fitted to the ink, so fill a full-bleed background first if you want a fixed size.
- * Free the result with daegun_scene_free. */
-daegun_status daegun_scene_builder_render(const daegun_scene_builder *b, float px, float upem,
-                                          daegun_scene **out);
-
-/* Reading a builder back. `op_count` is how many fills it holds; `path` hands back a copy of one
- * you pushed, which you free with daegun_path_free. */
-daegun_status daegun_scene_builder_is_empty(const daegun_scene_builder *b, bool *out);
-daegun_status daegun_scene_builder_op_count(const daegun_scene_builder *b, size_t *out);
-daegun_status daegun_scene_builder_path(const daegun_scene_builder *b, size_t path_id,
-                                        daegun_path **out);
-
-/* Replays a hinted glyph onto a pen, converting F26Dot6 to whole pixels on the way. The other half
+/* Replays a hinted glyph onto a pen, converting F26Dot6 to pixels on the way. The other half
  * of daegun_font_hinted_glyph: that one grid-fits, this turns the result back into geometry. */
 daegun_status daegun_hinted_outline_draw(const daegun_hinted_outline *outline,
                                          const daegun_pen *pen);
+
+/* prepared outlines */
+
+/* What daegun_font_prepared_outline does to an outline. All zeros is the default, the stored outline
+ * unhinted; daegun_outline_options_default() stays correct if a default ever stops being zero. A stroke
+ * or embolden overlaps itself, which a coverage-summing rasterizer counts twice: see
+ * daegun_contours_resolve_overlaps. */
+typedef struct {
+    int32_t hinting;             /* DAEGUN_HINT_* */
+    int32_t has_transform;
+    float   transform[6];        /* [a, b, c, d, dx, dy], offsets in font units, applied after hinting
+                                    and before a stroke or embolden; the advances ignore it */
+    int32_t has_stroke;
+    float   stroke_width;        /* font units, scaled with the size and not by the transform */
+    int32_t stroke_join;         /* DAEGUN_JOIN_* */
+    float   stroke_miter_limit;  /* read only when stroke_join is DAEGUN_JOIN_MITER */
+    int32_t stroke_cap;          /* DAEGUN_CAP_* */
+    int32_t has_embolden;
+    float   embolden;            /* extra stem width in font units. THIS CHANGES THE ADVANCE. Ignored
+                                    when has_stroke is set, since a stroke takes its place, and
+                                    unless it is finite and above zero. */
+    int32_t has_oblique;
+    float   oblique;             /* tangent of the angle from vertical; positive leans right. Applied
+                                    before the transform, so the glyph leans in its own frame. */
+} daegun_outline_options;
+
+daegun_status daegun_outline_options_default(daegun_outline_options *out);
+
+/* Advances in pixels, the embolden widening both; advance_height is 0 for a font without vertical
+ * metrics. hinted is 1 when a hinter ran. */
+typedef struct {
+    float   advance_width;
+    float   advance_height;
+    int32_t hinted;
+} daegun_prepared_glyph;
+
+/* A glyph's outline onto your pen: pixels, y up, origin at the glyph origin. NULL opts means the
+ * defaults; out may be NULL. DAEGUN_RANGE, drawing nothing, unless px is finite and above zero; for a
+ * transform, oblique or stroke width that is not finite, anything that overflows once scaled, or a
+ * stroke or embolden past DAEGUN_MAX_FLATTEN_POINTS points. DAEGUN_ABSENT for no such glyph. */
+daegun_status daegun_font_prepared_outline(const daegun_font *font, uint16_t gid, float px,
+                                           const daegun_axis *axes, size_t axes_len,
+                                           const daegun_outline_options *opts, const daegun_pen *pen,
+                                           daegun_prepared_glyph *out);
+
+/* quadratic curves */
+
+/* An outline as quadratic curves in em units, y up, as a curve-evaluating GPU shader takes it: a line
+ * becomes a curve with its control at the midpoint, a cubic splits to within about 1/4096 em.
+ * DAEGUN_ABSENT for an empty outline, such as a space; DAEGUN_RANGE past DAEGUN_MAX_CURVES_PER_GLYPH
+ * curves, or for a coordinate not finite or past FLT_MAX / 16; daegun_last_error() says which. */
+typedef struct daegun_quads daegun_quads;
+
+#define DAEGUN_MAX_CURVES_PER_GLYPH 16384
+
+/* Wound so the total signed area is not positive: clockwise, the TrueType convention. A rewound curve
+ * keeps its place, so the curves need not run end to start; each stands alone, as a shader takes it. */
+daegun_status daegun_font_glyph_quads(const daegun_font *font, uint16_t gid, const daegun_axis *axes,
+                                      size_t axes_len, daegun_quads **out);
+/* Any path, divided by units_per_em, in the order it was drawn and not rewound. DAEGUN_RANGE too unless
+ * units_per_em is finite and above zero, with a finite reciprocal. */
+daegun_status daegun_path_quads(const daegun_path *path, float units_per_em, daegun_quads **out);
+/* Rewinds in place to the orientation daegun_font_glyph_quads gives, swapping each curve's ends where
+ * it keeps its place in the list. */
+daegun_status daegun_quads_normalize_winding(daegun_quads *quads);
+/* Six floats per curve – x0 y0 cx cy x1 y1 – BORROWED until the quads are freed. out_count is the
+ * number of CURVES, not of floats. */
+const float *daegun_quads_data(const daegun_quads *quads, size_t *out_count);
+void daegun_quads_free(daegun_quads *quads);
+
+/* flattening and overlapping contours */
+
+/* A path as closed polygons. A curve halves until twice the area of its ends-and-midpoint triangle,
+ * and of a cubic's quarter-point ones too, is within max_area; a NaN, infinite or non-positive one
+ * halves all the way. DAEGUN_ABSENT if no contour of three points is left; DAEGUN_RANGE for a point
+ * not finite or past FLT_MAX / 16, or past DAEGUN_MAX_FLATTEN_POINTS points kept or twice that read. */
+#define DAEGUN_MAX_FLATTEN_POINTS 1048576
+typedef struct daegun_contours daegun_contours;
+
+/* The max_area 1.1.7's CPU rasterizer flattened with, for a path in font units drawn at px pixels
+ * per em. DAEGUN_RANGE unless both are finite and above zero. */
+daegun_status daegun_flatten_max_area_for(float px, float units_per_em, float *out);
+daegun_status daegun_path_flatten(const daegun_path *path, float max_area, daegun_contours **out);
+daegun_status daegun_contours_count(const daegun_contours *contours, size_t *out);
+/* Two floats per point, x then y, BORROWED until the contours are freed. out_count is the number of
+ * POINTS. NULL for an index past the last contour. */
+const float *daegun_contours_points(const daegun_contours *contours, size_t index, size_t *out_count);
+
+/* One boundary in place of contours that overlap, for a rasterizer that sums coverage. Points match to
+ * 1e-4, so contours belong in font units of an em up to about 2048; at em scale or far larger, more come
+ * back DAEGUN_ABSENT, which means keep what you have: no overlap, a union that did not verify, more than
+ * DAEGUN_MAX_RESOLVE_EDGES points, or crossings into more than 16 times that many pieces. */
+#define DAEGUN_MAX_RESOLVE_EDGES 512
+/* The boundary comes back counterclockwise, filled side on the left, whatever the input's winding. */
+daegun_status daegun_contours_resolve_overlaps(const daegun_contours *contours, daegun_contours **out);
+void daegun_contours_free(daegun_contours *contours);
+
+/* subpixel filters */
+
+/* How a display's color samples are filtered from a glyph's coverage, for a rasterizer doing subpixel
+ * antialiasing itself. Coverage is sampled oversample_x by oversample_y times a pixel, and a channel is
+ * its weights over a taps_x by taps_y window of samples, starting origin samples from the pixel's
+ * first. Grow a glyph's box by pad pixels a side, which covers the window before and past the pixel. */
+typedef struct daegun_subpixel_layout daegun_subpixel_layout;
+
+#define DAEGUN_MAX_OVERSAMPLE        4
+#define DAEGUN_MAX_SUBPIXEL_TAPS     8
+#define DAEGUN_MAX_SUBPIXEL_WEIGHTS 64   /* DAEGUN_MAX_SUBPIXEL_TAPS squared, per channel */
+
+/* A named layout, DAEGUN_LAYOUT_*. Anything unrecognized is grayscale. */
+daegun_status daegun_subpixel_layout_new(int32_t layout, daegun_subpixel_layout **out);
+/* A filter of your own: `weights` is taps_x * taps_y floats for each of three channels, one channel
+ * after another, each row by row: tap (x, y) is at y * taps_x + x. DAEGUN_RANGE for an oversample of
+ * zero or past DAEGUN_MAX_OVERSAMPLE, taps of zero or past DAEGUN_MAX_SUBPIXEL_TAPS, or a weight that is
+ * not finite. */
+daegun_status daegun_subpixel_layout_from_weights(uint8_t oversample_x, uint8_t oversample_y,
+                                                  uint8_t taps_x, uint8_t taps_y,
+                                                  int8_t origin_x, int8_t origin_y,
+                                                  const float *weights, daegun_subpixel_layout **out);
+daegun_status daegun_subpixel_layout_oversample(const daegun_subpixel_layout *layout,
+                                                uint8_t *out_x, uint8_t *out_y);
+daegun_status daegun_subpixel_layout_taps(const daegun_subpixel_layout *layout, uint8_t *out_x,
+                                          uint8_t *out_y);
+daegun_status daegun_subpixel_layout_origin(const daegun_subpixel_layout *layout, int8_t *out_x,
+                                            int8_t *out_y);
+daegun_status daegun_subpixel_layout_pad(const daegun_subpixel_layout *layout, size_t *out_x,
+                                         size_t *out_y);
+/* 1 for grayscale, 3 for a color layout. */
+daegun_status daegun_subpixel_layout_channels(const daegun_subpixel_layout *layout, uint8_t *out);
+daegun_status daegun_subpixel_layout_is_grayscale(const daegun_subpixel_layout *layout, int32_t *out);
+/* taps_x * taps_y weights, BORROWED until the layout is freed. NULL past the last channel. */
+const float *daegun_subpixel_layout_weights(const daegun_subpixel_layout *layout, size_t channel,
+                                            size_t *out_count);
+/* A layout's identity, for use as a cache key: a 64-bit hash of the parameters as given, so two filters
+ * share one only by a collision, and one written another way (an extra zero weight, a -0.0) gets a key
+ * of its own; the named layouts are written one way each. The first form takes a DAEGUN_LAYOUT_*. */
+daegun_status daegun_subpixel_layout_key(int32_t layout, uint64_t *out);
+daegun_status daegun_subpixel_layout_cache_key(const daegun_subpixel_layout *layout, uint64_t *out);
+void daegun_subpixel_layout_free(daegun_subpixel_layout *layout);
+
+/* color scenes */
+
+/* A color glyph as the ops that draw it, COLR v0 and v1 alike: fill a path, push or pop a clip, push or
+ * pop a layer, at most 128 deep. Paint them in order, back to front. Paths are in font units, y up, each
+ * placed by its op's transform and held once however many ops name it. A v1 glyph comes clipped to its
+ * clip box, and one the spec says not to draw (unbounded, with no box) gives its v0 layers if it has
+ * any. DAEGUN_ABSENT for no color description; DAEGUN_RANGE past DAEGUN_MAX_FLATTEN_POINTS points. */
+typedef struct daegun_color_scene daegun_color_scene;
+
+#define DAEGUN_SCENE_FILL        0
+#define DAEGUN_SCENE_PUSH_CLIP   1
+#define DAEGUN_SCENE_POP_CLIP    2
+#define DAEGUN_SCENE_PUSH_LAYER  3
+#define DAEGUN_SCENE_POP_LAYER   4
+
+#define DAEGUN_SCENE_PAINT_SOLID     0
+#define DAEGUN_SCENE_PAINT_GRADIENT  1
+
+#define DAEGUN_FILL_NONZERO 0
+#define DAEGUN_FILL_EVENODD 1
+
+/* One op, with the variants flattened into one shape as daegun_paint_node is. A field means something
+ * only for the kinds named beside it. `blend` is COLR's composite mode, 0 clear to 27 HSL luminosity,
+ * the numbering daegun_paint_node.composite_mode uses. */
+typedef struct {
+    double   transform[6];  /* FILL: [a, b, c, d, e, f] for x' = a*x + c*y + e */
+    int32_t  kind;          /* DAEGUN_SCENE_* */
+    int32_t  rule;          /* FILL: DAEGUN_FILL_NONZERO or DAEGUN_FILL_EVENODD */
+    int32_t  paint;         /* FILL: DAEGUN_SCENE_PAINT_* */
+    int32_t  blend;         /* PUSH_LAYER */
+    uint32_t path;          /* FILL: for daegun_color_scene_path */
+    uint32_t gradient;      /* FILL with a gradient: an index into daegun_color_scene_gradients */
+    uint32_t clip_start;    /* PUSH_CLIP: the union of the clip_count shapes at clip_start */
+    uint32_t clip_count;
+    float    opacity;       /* PUSH_LAYER */
+    uint8_t  rgba[4];       /* FILL with a solid paint, straight alpha */
+} daegun_scene_op;
+
+/* One shape of a PUSH_CLIP's union: its own path, placed by its own transform as a FILL's is. */
+typedef struct {
+    double   transform[6];  /* [a, b, c, d, e, f] for x' = a*x + c*y + e */
+    uint32_t path;          /* for daegun_color_scene_path */
+    int32_t  rule;          /* DAEGUN_FILL_NONZERO or DAEGUN_FILL_EVENODD */
+} daegun_scene_clip;
+
+#define DAEGUN_GRADIENT_LINEAR 0
+#define DAEGUN_GRADIENT_RADIAL 1
+#define DAEGUN_GRADIENT_SWEEP  2
+
+/* COLR's numbering, the values daegun_paint_node.extend holds. */
+#define DAEGUN_EXTEND_PAD     0
+#define DAEGUN_EXTEND_REPEAT  1
+#define DAEGUN_EXTEND_REFLECT 2
+
+/* `numbers` means whatever `kind` says: LINEAR [0..4) = x0, y0, x1, y1; RADIAL [0..6) = x0, y0, r0,
+ * x1, y1, r1; SWEEP [0..4) = cx, cy, start_angle, end_angle in degrees. `transform` takes the gradient's
+ * own space into the scene's. Stops come sorted within 0..1, the geometry moved to a color line's first
+ * and last stop, so a radius can fall below 0, painting nothing; one stop is a solid, none nothing. */
+typedef struct {
+    double   transform[6];
+    double   numbers[6];
+    int32_t  kind;          /* DAEGUN_GRADIENT_* */
+    int32_t  extend;        /* DAEGUN_EXTEND_* */
+    uint32_t stops_start;
+    uint32_t stops_count;
+} daegun_scene_gradient;
+
+daegun_status daegun_font_colr_scene(const daegun_font *font, uint16_t gid, const daegun_axis *axes,
+                                     size_t axes_len, uint16_t palette_index,
+                                     daegun_color_scene **out);
+/* The same, with the four-byte RGBA a layer takes when it defers to your text color. NULL means
+ * opaque black, which is what daegun_font_colr_scene uses. */
+daegun_status daegun_font_colr_scene_with(const daegun_font *font, uint16_t gid,
+                                          const daegun_axis *axes, size_t axes_len,
+                                          uint16_t palette_index, const uint8_t *foreground,
+                                          daegun_color_scene **out);
+/* A COLR v1 glyph's clip box at the location, out[4] = x_min, y_min, x_max, y_max in font units:
+ * all it draws stays inside, which sizes a surface without walking the scene. DAEGUN_ABSENT for none. */
+daegun_status daegun_font_colr_clip_box(const daegun_font *font, uint16_t gid, const daegun_axis *axes,
+                                        size_t axes_len, int32_t *out);
+/* All BORROWED until the scene is freed. */
+const daegun_scene_op *daegun_color_scene_ops(const daegun_color_scene *scene, size_t *out_count);
+const daegun_scene_clip *daegun_color_scene_clips(const daegun_color_scene *scene, size_t *out_count);
+const daegun_scene_gradient *daegun_color_scene_gradients(const daegun_color_scene *scene,
+                                                          size_t *out_count);
+/* Every gradient's stops in one run: a gradient's are the stops_count entries at stops_start, and
+ * out_colors holds FOUR bytes per stop, so stop i is at 4 * i. */
+daegun_status daegun_color_scene_stops(const daegun_color_scene *scene, size_t *out_count,
+                                       const double **out_offsets, const uint8_t **out_colors);
+/* A COPY of one path, freed with daegun_path_free. DAEGUN_RANGE for an unknown id. */
+daegun_status daegun_color_scene_path(const daegun_color_scene *scene, uint32_t path_id,
+                                      daegun_path **out);
+void daegun_color_scene_free(daegun_color_scene *scene);
+
+/* A gradient made ready to sample, so that linear, radial and sweep colors and the three extend modes
+ * come out as COLR defines them, blended as the OpenType spec says: in linear light, with alpha
+ * premultiplied. `to_device` takes the scene's space to your pixels; build one ramp per gradient and
+ * transform, not one per pixel. DAEGUN_RANGE for an unknown gradient or a transform not finite. */
+typedef struct daegun_ramp daegun_ramp;
+
+daegun_status daegun_color_scene_ramp(const daegun_color_scene *scene, uint32_t gradient,
+                                      const double to_device[6], daegun_ramp **out);
+
+/* The same, blended as `interpolation` says. DAEGUN_INTERPOLATE_SRGB blends the stored sRGB values
+ * with alpha straight, as Chrome and Cairo draw COLR gradients. DAEGUN_RANGE for any other value. */
+#define DAEGUN_INTERPOLATE_LINEAR_LIGHT 0
+#define DAEGUN_INTERPOLATE_SRGB         1
+daegun_status daegun_color_scene_ramp_with(const daegun_color_scene *scene, uint32_t gradient,
+                                           const double to_device[6], int32_t interpolation,
+                                           daegun_ramp **out);
+/* The color at the CENTER of device pixel (x, y), four bytes RGBA, straight alpha. DAEGUN_ABSENT where
+ * the gradient paints nothing, as a radial one does outside its cone. */
+daegun_status daegun_ramp_sample(const daegun_ramp *ramp, double x, double y, uint8_t out_rgba[4]);
+void daegun_ramp_free(daegun_ramp *ramp);
+
+/* COLR's composite of one source pixel over one backdrop pixel, so a rasterizer drawing a scene's
+ * layers needs no blend math of its own: `mode` is a layer's blend, 0 to 27. src and backdrop are
+ * straight-alpha RGBA in 0..1; out comes back PREMULTIPLIED, its color already scaled by out[3].
+ * DAEGUN_RANGE for a mode outside 0 to 27 or a value outside 0..1, where some modes answer NaN. */
+daegun_status daegun_composite(int32_t mode, const float src[4], const float backdrop[4], float out[4]);
 
 /* raw tables and font building */
 
@@ -1358,8 +1447,8 @@ daegun_status daegun_font_has_table(const daegun_font *font, const char *tag, in
  * the point of it. */
 typedef struct daegun_table_map daegun_table_map;
 
-/* Every table of the font pinned to `axes`. DAEGUN_ABSENT only when a variable font's own variation
- * tables do not parse.
+/* Every table of the font pinned to `axes`; a font whose variation tables do not parse comes back as
+ * stored, as a static font does.
  *
  * The bytes are COPIED out of the font. The Rust call borrows wherever a table passes through
  * untouched, and that borrow cannot cross into C – nothing would stop the font being freed while
@@ -1368,7 +1457,8 @@ typedef struct daegun_table_map daegun_table_map;
 daegun_status daegun_font_instance_tables(const daegun_font *font, const daegun_axis *axes,
                                           size_t axis_count, daegun_table_map **out);
 
-/* One table of the font pinned to `axes`, copied. Free with daegun_blob_free. */
+/* One table of the font pinned to `axes`, copied, or as stored as above. DAEGUN_ABSENT for a tag the
+ * font lacks. Free with daegun_blob_free. */
 daegun_status daegun_font_instance_table(const daegun_font *font, const daegun_axis *axes,
                                          size_t axis_count, const char *tag, daegun_blob **out);
 
@@ -1390,7 +1480,8 @@ daegun_status daegun_table_map_remove(daegun_table_map *map, const char *tag);
 daegun_status daegun_table_map_build(const daegun_table_map *map, daegun_blob **out);
 
 /* The offsets `loca` stores, one per glyph plus a terminator. `format` is head's indexToLocFormat:
- * 0 for the short form, 1 for the long one. Free with daegun_usize_list_free. */
+ * 0 for the short form, 1 for the long one. DAEGUN_RANGE for more than 65,535 glyphs, which no font
+ * has. Free with daegun_usize_list_free. */
 daegun_status daegun_parse_loca(const uint8_t *loca, size_t len, int16_t format,
                                 size_t num_glyphs, daegun_usize_list **out);
 
@@ -1485,7 +1576,7 @@ typedef struct {
 typedef struct daegun_aat_state_table daegun_aat_state_table;
 
 /* `extra_words` is how many type-specific words each entry carries: none for rearrangement, one for
- * ligature and contextual substitution. */
+ * ligature, two for contextual substitution. */
 daegun_status daegun_aat_state_table_open(const uint8_t *data, size_t len, size_t extra_words,
                                           uint16_t num_glyphs, daegun_aat_state_table **out);
 /* Out-of-bounds glyphs get the table's own out-of-bounds class. */
@@ -1524,8 +1615,9 @@ daegun_status daegun_feature_variations_open(const uint8_t *layout, size_t len,
  * the accessors bounds-check, so reporting a failure here would mean inventing one. */
 daegun_status daegun_feature_variations_at(const uint8_t *layout, size_t len, size_t at,
                                            daegun_feature_variations **out);
-/* Which variation record applies at `coords` – normalized axis coordinates in 2.14 fixed point, as
- * daegun_font_normalized_axes produces. DAEGUN_ABSENT when none does. */
+/* Which variation record applies at `coords`, one 2.14 integer per axis: each -1..=1 coordinate
+ * daegun_font_normalized_axes gives, times 16384 and rounded. A record with a condition on an axis
+ * past `coord_count` is passed over, as the spec says. DAEGUN_ABSENT when none applies. */
 daegun_status daegun_feature_variations_find(const daegun_feature_variations *vars,
                                              const int32_t *coords, size_t coord_count,
                                              uint16_t *out);
@@ -1578,7 +1670,7 @@ daegun_status daegun_delta_set_index_map_parse(const uint8_t *buf, size_t len, s
                                                daegun_delta_set_index_map **out);
 daegun_status daegun_delta_set_index_map_count(const daegun_delta_set_index_map *map, size_t *out);
 /* An index past the end is not an error: the map clamps to its last entry, which is what the spec
- * says a map shorter than the item count means. */
+ * says a map shorter than the item count means. An empty map is no map: index i is (0, i). */
 daegun_status daegun_delta_set_index_map_lookup(const daegun_delta_set_index_map *map, size_t index,
                                                 size_t *out_outer, size_t *out_inner);
 void daegun_delta_set_index_map_free(daegun_delta_set_index_map *map);
@@ -1631,332 +1723,9 @@ daegun_status daegun_char_is_upright(uint32_t codepoint, int32_t has_vertical_fo
  * vertical one, an ideographic comma moves to the corner of its box. */
 daegun_status daegun_char_vertical_form(uint32_t codepoint, uint32_t *out);
 
-/* the GPU backends and routing */
-
-/* THE ONE CARVE-OUT FROM RULE 5. Everything above is thread-safe; nothing in this section is.
- * A renderer, a target and a geometry each hold raw device handles, command queues and function
- * tables, and none of the three is safe to drive from two threads at once – which is true of
- * Metal, Vulkan and Direct3D themselves, not something this ABI added. One thread per renderer.
- *
- * Rules 1 to 4 hold here unchanged. In particular a target or a geometry keeps its renderer alive:
- * freeing the renderer first is allowed, and the device goes when the last of them does. */
-
-/* The shader source, so an application that already owns a device can compile the pipeline itself
- * and draw daegun's output through it. */
-#define DAEGUN_SHADER_GLSL 0  /* OpenGL 4.3+ / ES 3.1+. Prepend your own #version line. */
-#define DAEGUN_SHADER_HLSL 1  /* D3D11 and D3D12 at SM 5.0, and Vulkan through DXC. */
-#define DAEGUN_SHADER_MSL  2  /* Metal Shading Language 2.2 and up. */
-
-#define DAEGUN_STAGE_VERTEX            0
-#define DAEGUN_STAGE_FRAGMENT          1
-#define DAEGUN_STAGE_SUBPIXEL_FRAGMENT 2
-
-/* Free with daegun_text_free. An owned string rather than a borrowed view of the static source,
- * because every shader compiler wants either a NUL or a length and daegun_text carries both. */
-daegun_status daegun_shader_source(int32_t language, int32_t stage, daegun_text **out);
-
-/* One glyph's instance data, uploaded straight to the GPU. Fields are public and this struct IS the
- * wire format: the size assertion at the bottom of this header is what keeps the two in step. */
-typedef struct {
-    float    glyph_box[4];
-    float    tint[4];
-    float    offset[2];
-    float    em_pixels[2];
-    float    scale;
-    uint32_t band_base;
-    uint32_t bands_per_axis;
-    uint32_t hull_base;
-    float    inv_scale;
-    float    _pad[3];
-} daegun_glyph_instance;
-
-#define DAEGUN_MAX_SUBPIXEL_WEIGHTS 64
-#define DAEGUN_MAX_SUBPIXEL_TAPS     8
-#define DAEGUN_MAX_SUPERSAMPLE       4
-
-/* The subpixel filter. Build it with daegun_subpixel_params_from_layout rather than by hand: most
- * of it is a kernel the engine derives from the layout, and `taps` past DAEGUN_MAX_SUBPIXEL_TAPS
- * indexes past the shader's own table. */
-typedef struct {
-    float    weights[DAEGUN_MAX_SUBPIXEL_WEIGHTS * 3];
-    uint32_t oversample[2];
-    uint32_t taps[2];
-    int32_t  origin[2];
-    uint32_t channels;
-    uint32_t supersample;
-} daegun_subpixel_params;
-
-/* Builds a glyph's instance data from where its geometry landed in the batch.
- *
- * Use this rather than filling daegun_glyph_instance in yourself. `inv_scale` must be zero and not
- * infinity at a zero scale, or the coordinate the fragment shader rebuilds stops being finite; and
- * `bands_per_axis` is one number because both axes are sliced by the same n, which is not something
- * the struct can say. `offset` and `em_pixels` are two floats, `tint` is four, RGBA. */
-daegun_status daegun_glyph_slot_instance(const daegun_glyph_slot *slot, const float *offset,
-                                         float scale, const float *em_pixels, const float *tint,
-                                         daegun_glyph_instance *out);
-
-/* `layout` is one of the DAEGUN_LAYOUT_* constants; DAEGUN_LAYOUT_GRAYSCALE is the default. */
-daegun_status daegun_subpixel_params_from_layout(int32_t layout, daegun_subpixel_params *out);
-
-#define DAEGUN_MODE_GRAYSCALE 0
-#define DAEGUN_MODE_SUBPIXEL  1
-
-/* What a device is, and what it calls itself.
- *
- * Every backend's _renderer_profile produces one, and daegun_device_profile_new builds one without
- * a device at all – for a caller that opened its own, or that is deciding before opening any. */
-typedef struct daegun_device_profile daegun_device_profile;
-
-#define DAEGUN_DEVICE_UNKNOWN    0
-#define DAEGUN_DEVICE_DISCRETE   1
-#define DAEGUN_DEVICE_INTEGRATED 2
-#define DAEGUN_DEVICE_VIRTUAL    3
-#define DAEGUN_DEVICE_SOFTWARE   4
-
-daegun_status daegun_device_profile_new(int32_t kind, const char *name,
-                                        daegun_device_profile **out);
-/* From a VkPhysicalDeviceType, for a caller that already called vkGetPhysicalDeviceProperties. */
-daegun_status daegun_device_profile_from_vulkan(int32_t device_type, const char *name,
-                                                daegun_device_profile **out);
-daegun_status daegun_device_profile_kind(const daegun_device_profile *profile, int32_t *out);
-/* Free with daegun_text_free. */
-daegun_status daegun_device_profile_name(const daegun_device_profile *profile, daegun_text **out);
-void daegun_device_profile_free(daegun_device_profile *profile);
-
-/* What the GPU extraction said about a glyph, which is one input to the routing decision. */
-#define DAEGUN_GPU_OK             0
-#define DAEGUN_GPU_NO_OUTLINE     1
-#define DAEGUN_GPU_TOO_COMPLEX    2
-#define DAEGUN_GPU_NON_FINITE     3
-#define DAEGUN_GPU_BATCH_FULL     4
-#define DAEGUN_GPU_NOT_FLAT_COLOR 5
-
-/* Where the glyph belongs. Rendered::Refused carries a reason in Rust, so it is two codes here –
- * a C caller switches once and both arms are distinct outcomes. */
-#define DAEGUN_ROUTED_NOTHING                   0
-#define DAEGUN_ROUTED_CPU                       1
-#define DAEGUN_ROUTED_GPU                       2
-#define DAEGUN_ROUTED_REFERENCE                 3
-#define DAEGUN_ROUTED_SCENE                     4
-#define DAEGUN_ROUTED_FLUSH_AND_RETRY           5
-#define DAEGUN_ROUTED_REFUSED_NON_FINITE        6
-#define DAEGUN_ROUTED_REFUSED_PREFERENCE_UNMET  7
-
-/* What a caller is asking for. The flags are int32_t rather than bool for the same reason every
- * other flag in this header is. */
-typedef struct {
-    float   ppem;
-    int32_t hinted;
-    int32_t stroked;
-    int32_t gamma;
-    int32_t emboldened;
-    int32_t obliqued;
-} daegun_request;
-
-/* The routing decision on its own, without drawing anything – for a caller with its own drawing to
- * do that wants only the policy answered. `device` may be NULL, meaning there is no GPU. */
-daegun_status daegun_route(int32_t attempt, const daegun_request *request,
-                           const daegun_device_profile *device, const daegun_policy *policy,
-                           int32_t *out);
-
-/* Why a backend declined, when one did. The detail is in daegun_last_error; this is the part every
- * backend agrees on, since a VkResult means nothing to a caller drawing through Metal. */
-#define DAEGUN_REFUSAL_NO_DEVICE   0
-#define DAEGUN_REFUSAL_BAD_TARGET  1
-#define DAEGUN_REFUSAL_UNSUPPORTED 2
-#define DAEGUN_REFUSAL_FAILED      3
-
-/* Declares one backend's surface; the four are identical by construction.
- *
- * Availability: metal on Apple platforms, d3d11 and d3d12 on Windows, vulkan everywhere. Vulkan is
- * opened by name at run time, so a machine without it answers DAEGUN_UNSUPPORTED from _renderer_new
- * instead of failing to load this library. */
-#define DAEGUN_DECLARE_BACKEND(b)                                                                  \
-    typedef struct daegun_##b##_renderer daegun_##b##_renderer;                                    \
-    typedef struct daegun_##b##_target   daegun_##b##_target;                                      \
-    typedef struct daegun_##b##_geometry daegun_##b##_geometry;                                    \
-                                                                                                   \
-    /* DAEGUN_UNSUPPORTED when there is no such device, which is an answer and not a failure. */    \
-    daegun_status daegun_##b##_renderer_new(daegun_##b##_renderer **out);                           \
-    /* Safe to call while a target or geometry is still alive; the device goes with the last. */    \
-    void daegun_##b##_renderer_free(daegun_##b##_renderer *renderer);                               \
-    /* Free with daegun_text_free. */                                                               \
-    daegun_status daegun_##b##_renderer_device_name(const daegun_##b##_renderer *renderer,          \
-                                                    daegun_text **out);                             \
-    /* Free with daegun_device_profile_free. */                                                     \
-    daegun_status daegun_##b##_renderer_profile(const daegun_##b##_renderer *renderer,              \
-                                                daegun_device_profile **out);                       \
-    daegun_status daegun_##b##_renderer_supports_subpixel(const daegun_##b##_renderer *renderer,     \
-                                                          int32_t *out);                            \
-    /* The default projection, column-major. Needs no device: it depends on this API's clip-space   \
-     * convention and nothing else, so it can be built before anything is opened. */                \
-    daegun_status daegun_##b##_ortho(uint32_t width, uint32_t height, float *out);                  \
-                                                                                                   \
-    daegun_status daegun_##b##_target_new(const daegun_##b##_renderer *renderer,                        \
-                                      uint32_t width, uint32_t height,                              \
-                                      daegun_##b##_target **out);                                   \
-    daegun_status daegun_##b##_target_width(const daegun_##b##_target *target, uint32_t *out);      \
-    daegun_status daegun_##b##_target_height(const daegun_##b##_target *target, uint32_t *out);     \
-    /* BORROWED, BGRA. What the last _read_pixels left behind, without the round trip. Valid until  \
-     * the target is drawn into again or freed. */                                                  \
-    const uint8_t *daegun_##b##_target_pixels(const daegun_##b##_target *target,                    \
-                                              size_t *out_count);                                   \
-    /* One pixel as BGRA into four bytes. DAEGUN_RANGE outside the target. */                       \
-    daegun_status daegun_##b##_target_pixel(const daegun_##b##_target *target,                      \
-                                            uint32_t x, uint32_t y, uint8_t *out);                  \
-    void daegun_##b##_target_free(daegun_##b##_target *target);                                     \
-    /* An offscreen target in the caller's byte order. format is a DAEGUN_SURFACE_* value. */        \
-    daegun_status daegun_##b##_target_with_format(const daegun_##b##_renderer *renderer,             \
-                                                  uint32_t width, uint32_t height, int32_t format,   \
-                                                  daegun_##b##_target **out);                        \
-    /* What the target clears to before each draw, four bytes RGBA. NULL keeps what it already       \
-     * holds, which is how a second geometry draws over the first rather than erasing it. */         \
-    daegun_status daegun_##b##_target_set_clear(daegun_##b##_target *target,                         \
-                                                const uint8_t clear[4]);                             \
-                                                                                                   \
-    daegun_status daegun_##b##_geometry_new(const daegun_##b##_renderer *renderer,                      \
-                                        const daegun_batch *batch,                                  \
-                                        daegun_##b##_geometry **out);                               \
-    /* Compare against daegun_batch_revision to know whether this upload is stale. */               \
-    daegun_status daegun_##b##_geometry_revision(const daegun_##b##_geometry *geometry,              \
-                                                 uint64_t *out);                                    \
-    void daegun_##b##_geometry_free(daegun_##b##_geometry *geometry);                                \
-                                                                                                   \
-    daegun_status daegun_##b##_draw(const daegun_##b##_renderer *renderer,                          \
-                                    daegun_##b##_target *target,                                    \
-                                    const daegun_##b##_geometry *geometry,                          \
-                                    const daegun_glyph_instance *instances, size_t instance_count,  \
-                                    const daegun_subpixel_params *subpixel, int32_t mode);          \
-    /* Under a projection of your own – column-major, NULL for the default. */                      \
-    daegun_status daegun_##b##_draw_with(const daegun_##b##_renderer *renderer,                     \
-                                         daegun_##b##_target *target,                               \
-                                         const daegun_##b##_geometry *geometry,                     \
-                                         const daegun_glyph_instance *instances,                    \
-                                         size_t instance_count,                                     \
-                                         const daegun_subpixel_params *subpixel, int32_t mode,      \
-                                         const float *projection);                                  \
-    daegun_status daegun_##b##_wait(const daegun_##b##_renderer *renderer,                          \
-                                    daegun_##b##_target *target);                                   \
-    /* Waits, copies off the device, and hands back BGRA. BORROWED, valid until the target is drawn \
-     * into again or freed. NULL on failure, with the reason in daegun_last_error.                  \
-     *                                                                                              \
-     * THIS IS THE EXPENSIVE CALL. On a discrete GPU the readback dominates: 489 us of a 513 us     \
-     * frame at 1024x1024, measured. A caller that can consume the target on the device should not  \
-     * call it at all. */                                                                           \
-    const uint8_t *daegun_##b##_read_pixels(const daegun_##b##_renderer *renderer,                  \
-                                            daegun_##b##_target *target, size_t *out_count)
-
-/* The byte order of a surface. CAMetalLayer and most swapchains are BGRA; daegun's own offscreen
- * targets are RGBA unless asked otherwise. */
-#define DAEGUN_SURFACE_RGBA8 0
-#define DAEGUN_SURFACE_BGRA8 1
-
-#if defined(__APPLE__)
-DAEGUN_DECLARE_BACKEND(metal);
-
-/* Metal only: re-uploads into an existing geometry if the batch changed, and does nothing if it did
- * not – so it may be called every frame. The plain _geometry call allocates a new upload each time.
- * The other three backends have no equivalent to translate. */
-daegun_status daegun_metal_geometry_sync(daegun_metal_geometry *geometry,
-                                         const daegun_metal_renderer *renderer,
-                                         const daegun_batch *batch);
-
-/* Adopts a device the caller already made, which is what lets daegun draw into that device's
- * surfaces: a drawable's texture belongs to the device its CAMetalLayer was created on. daegun
- * retains the device and releases only its own reference, so it survives the renderer even if you
- * release yours first. */
-daegun_status daegun_metal_renderer_from_device(void *device, daegun_metal_renderer **out);
-
-/* A target over an MTLTexture daegun did not create. No format argument, unlike the other three
- * backends: the texture carries its own, and anything but RGBA8 or BGRA8 answers DAEGUN_RANGE. */
-daegun_status daegun_metal_target_from_texture(const daegun_metal_renderer *renderer, void *texture,
-                                               uint32_t width, uint32_t height,
-                                               daegun_metal_target **out);
-
-/* The same over a CAMetalDrawable. daegun presents it on the command buffer carrying the draw, so
- * the queue orders the two – do NOT present it yourself as well. Hold the drawable until the draw
- * is submitted; daegun retains it and releases it with the target. */
-daegun_status daegun_metal_target_from_drawable(const daegun_metal_renderer *renderer,
-                                                void *drawable, uint32_t width, uint32_t height,
-                                                daegun_metal_target **out);
-#endif
-
-DAEGUN_DECLARE_BACKEND(vulkan);
-
-/* What the target clears to before each draw, four bytes RGBA. NULL keeps what the target already
- * holds, which is how a second geometry draws over the first rather than erasing it. */
-
-
-/* A target over a VkImage daegun did not create, such as one acquired from a swapchain. daegun
- * builds a view and framebuffer over it and destroys only those. It leaves the image in
- * VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, so presenting it is still yours to arrange. */
-daegun_status daegun_vulkan_target_from_image(const daegun_vulkan_renderer *renderer,
-                                              uint64_t image, uint32_t width, uint32_t height,
-                                              int32_t format, daegun_vulkan_target **out);
-
-/* Adopts a device the caller already made, which is what lets daegun draw into that device's
- * swapchain. daegun destroys neither the device nor the instance, so both must outlive it.
- *
- * dual_src_blend is what you ENABLED at device creation, not what the hardware supports: daegun
- * cannot tell them apart, and without it there is no subpixel pipeline. */
-/* The handles behind the renderer, for building a swapchain on the device daegun made. They belong
- * to the renderer and die with it, so nothing built on them may outlive it. Vulkan's dispatchable
- * handles are pointers, so each arrives as a plain void *. Any out-pointer may be NULL. */
-daegun_status daegun_vulkan_renderer_handles(const daegun_vulkan_renderer *renderer,
-                                             void **out_instance, void **out_physical_device,
-                                             void **out_device, uint32_t *out_queue_family);
-
-daegun_status daegun_vulkan_renderer_from_device(void *instance, void *physical_device,
-                                                 void *device, uint32_t queue_family,
-                                                 int32_t dual_src_blend,
-                                                 daegun_vulkan_renderer **out);
-
-#if defined(_WIN32)
-DAEGUN_DECLARE_BACKEND(d3d11);
-DAEGUN_DECLARE_BACKEND(d3d12);
-/* Direct3D only: the feature level as a string like "11_1", and whether the adapter is WARP –
- * which daegun_policy's avoid_software_gpu exists to steer away from. */
-daegun_status daegun_d3d11_feature_level(const daegun_d3d11_renderer *renderer, daegun_text **out);
-daegun_status daegun_d3d11_is_software(const daegun_d3d11_renderer *renderer, int32_t *out);
-/* The device and its immediate context, for drawing into a swapchain the caller owns. Both belong
- * to the renderer and die with it. Either out-pointer may be NULL. */
-daegun_status daegun_d3d11_renderer_handles(const daegun_d3d11_renderer *renderer,
-                                            void **out_device, void **out_second);
-/* Adopts a device the caller already made, which is what lets daegun draw into that device's
- * swapchain: a backbuffer belongs to the device its swapchain was created on. daegun takes a COM
- * reference on each handle and releases only those.
- *
- * D3D11 takes the device and its immediate context. D3D12 takes the device and a direct command
- * queue – using the caller's queue is what orders the draw against their Present without a fence. */
-daegun_status daegun_d3d11_renderer_from_device(void *device, void *context,
-                                                daegun_d3d11_renderer **out);
-daegun_status daegun_d3d12_renderer_from_device(void *device, void *queue,
-                                                daegun_d3d12_renderer **out);
-
-/* A target over a texture daegun did not create, such as a swapchain backbuffer. format is a
- * DAEGUN_SURFACE_* value. D3D12 leaves the resource in D3D12_RESOURCE_STATE_RENDER_TARGET, so
- * transitioning it to PRESENT is yours, as presentation itself is. */
-daegun_status daegun_d3d11_target_from_texture(const daegun_d3d11_renderer *renderer, void *texture,
-                                               uint32_t width, uint32_t height, int32_t format,
-                                               daegun_d3d11_target **out);
-daegun_status daegun_d3d12_target_from_texture(const daegun_d3d12_renderer *renderer, void *texture,
-                                               uint32_t width, uint32_t height, int32_t format,
-                                               daegun_d3d12_target **out);
-
-daegun_status daegun_d3d12_feature_level(const daegun_d3d12_renderer *renderer, daegun_text **out);
-daegun_status daegun_d3d12_is_software(const daegun_d3d12_renderer *renderer, int32_t *out);
-/* The device and its command queue – the second handle is the queue on D3D12 where it is the
- * immediate context on D3D11. Either out-pointer may be NULL. */
-daegun_status daegun_d3d12_renderer_handles(const daegun_d3d12_renderer *renderer,
-                                            void **out_device, void **out_second);
-#endif
-
 /* the atlas packer, and rules */
 
-/* Everything in this section is a rule the engine owns and a caller would otherwise re-derive.
- * They exist because the verification round went looking for `pub fn` on re-exported *types* – the
- * one shape no version of the parity check could see – and found a whole type with no C form. */
+/* Everything in this section is a rule the engine owns and a caller would otherwise re-derive. */
 
 /* Where a glyph landed in an atlas. */
 typedef struct {
@@ -1966,16 +1735,13 @@ typedef struct {
     size_t h;
 } daegun_rect;
 
-/* A shelf packer for an atlas of a given size: the same one daegun's own glyph cache uses.
- *
- * Rasterizing gives you pixels and a size; putting a thousand of them into one texture is a packing
- * problem, and this is the solved version of it. */
+/* A shelf packer for an atlas of a given size. Your rasterizer gives you pixels and a size; putting a
+ * thousand of them into one texture is a packing problem, and this is the solved version of it. */
 typedef struct daegun_shelf_packer daegun_shelf_packer;
 
 daegun_shelf_packer *daegun_shelf_packer_new(size_t width, size_t height);
 void daegun_shelf_packer_free(daegun_shelf_packer *packer);
-/* DAEGUN_ABSENT when the atlas is full – an answer, not a bad argument. Flush and start a new one,
- * which is what daegun's own cache does. */
+/* DAEGUN_ABSENT when the atlas is full – an answer, not a bad argument. Flush and start a new one. */
 daegun_status daegun_shelf_packer_insert(daegun_shelf_packer *packer, size_t width, size_t height,
                                          daegun_rect *out);
 /* Empties the atlas, keeping its size. */
@@ -2002,7 +1768,7 @@ daegun_status daegun_hint_mode_may_autohint(int32_t mode, int32_t *out);
 daegun_status daegun_cluster_level_is_graphemes(int32_t level, int32_t *out);
 daegun_status daegun_cluster_level_is_monotone(int32_t level, int32_t *out);
 
-/* The OpenType tags a script maps to, most specific first – Devanagari is dev2 then deva, and a
+/* The OpenType tags a script maps to, most specific first – Devanagari is dev3, dev2, deva, and a
  * shaper tries them in order. Free with daegun_str_list_free. */
 daegun_status daegun_script_opentype_tags(uint16_t script, daegun_str_list **out);
 /* Whether a script takes its identity from what surrounds it rather than standing alone: true for
@@ -2029,6 +1795,7 @@ typedef struct {
     uint16_t axis_index;    /* meaningless for COMBO, which spans axes */
     uint8_t  elidable;
     uint8_t  has_name;      /* whether daegun_stat_value_name will answer */
+    uint8_t  older_sibling; /* describes other fonts of the family, not this one */
     double   value;         /* SINGLE's value, RANGE's nominal, LINKED's value; 0 for COMBO */
     double   min;           /* RANGE only */
     double   max;           /* RANGE only */
@@ -2050,59 +1817,14 @@ daegun_status daegun_stat_value_name(const daegun_stat *stat, size_t index, daeg
 /* BORROWED. Index from a value's combo_start for combo_count entries. */
 const daegun_axis_value *daegun_stat_combo_values(const daegun_stat *stat, size_t *out_count);
 
-/* more of the GPU wire format */
-
-/* A device profile from what Direct3D or Metal reports. `uma` is a tri-state – negative unknown,
- * zero discrete, positive unified – because the Rust argument is Option<bool> and the third state is
- * the one that matters: whether a readback crosses a bus is not something to guess at. */
-daegun_status daegun_device_profile_from_d3d(int32_t software, int32_t uma, const char *name,
-                                             daegun_device_profile **out);
-daegun_status daegun_device_profile_from_metal(int32_t uma, const char *name,
-                                               daegun_device_profile **out);
-/* Whether this is a software rasterizer pretending to be a GPU. Not kind == DAEGUN_DEVICE_SOFTWARE,
- * which is what you would write and what breaks the day a second kind counts. */
-daegun_status daegun_device_profile_is_software(const daegun_device_profile *profile, int32_t *out);
-
-/* The affine variant of daegun_glyph_slot_instance: `transform` is the 2x2 part [a, b, c, d], and
- * the em-space extent each axis needs is the length of its column. For a rotation or a skew. */
-daegun_status daegun_glyph_slot_instance_affine(const daegun_glyph_slot *slot, const float *offset,
-                                                float scale, const float *transform,
-                                                const float *tint, daegun_glyph_instance *out);
-
-/* How far past its box a glyph's coverage reaches, per axis. Two of these, and they are different:
- * _dilation is fractional pixels, _pad is the whole pixels an atlas slot must grow by, rounding up
- * on the negative origin only. */
-daegun_status daegun_subpixel_params_dilation(const daegun_subpixel_params *params, float *out);
-daegun_status daegun_subpixel_params_pad(const daegun_subpixel_params *params, size_t *out);
-
-/* The same filter, supersampled n times. */
-daegun_status daegun_subpixel_params_with_supersampling(const daegun_subpixel_params *params,
-                                                        uint32_t n, daegun_subpixel_params *out);
-
-/* A filter of your own: three arrays of taps_x * taps_y weights, one per channel, laid end to end.
- * DAEGUN_RANGE past DAEGUN_MAX_SUBPIXEL_TAPS or DAEGUN_MAX_SUPERSAMPLE. */
-daegun_status daegun_subpixel_params_from_weights(uint8_t oversample_x, uint8_t oversample_y,
-                                                  uint8_t taps_x, uint8_t taps_y,
-                                                  int8_t origin_x, int8_t origin_y,
-                                                  const float *weights,
-                                                  daegun_subpixel_params *out);
-
-/* A named layout's identity, for use as a cache key: two layouts that filter identically share one,
- * so a glyph cached under either is valid under the other. */
-daegun_status daegun_subpixel_layout_key(int32_t layout, uint64_t *out);
-
 /* layouts */
 
-/* Repeated on the Rust side as `const _: () = assert!(size_of::<…>() == …)`.
- *
- * Both must agree or neither builds. This is the discipline that caught a four-byte
- * VkPhysicalDeviceProperties and a four-byte D3D11_SHADER_RESOURCE_VIEW_DESC: a layout believed
- * rather than measured is a layout that is wrong eventually. */
+/* Repeated on the Rust side as `const _: () = assert!(size_of::<…>() == …)`. Both must agree or
+ * neither builds: a layout believed rather than measured is a layout that is wrong eventually. */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(daegun_status) == 4, "status must be an int32");
 _Static_assert(sizeof(daegun_bytes) == 2 * sizeof(size_t), "bytes view must be two words");
 _Static_assert(sizeof(daegun_str) == 2 * sizeof(size_t), "string view must be two words");
-_Static_assert(sizeof(daegun_raster_options) == 80, "raster options must be twenty words");
 _Static_assert(sizeof(daegun_line_metrics) == 24, "line metrics must be three doubles");
 _Static_assert(sizeof(daegun_typographic_metrics) == 52, "typographic metrics must be thirteen ints");
 _Static_assert(sizeof(daegun_axis) == sizeof(void *) + 8, "an axis is a pointer and a double");
@@ -2112,57 +1834,62 @@ _Static_assert(sizeof(daegun_glyph_value) == 4, "a glyph-value pair is two uint1
 _Static_assert(sizeof(daegun_aat_entry) == 8, "a state-table entry is four uint16");
 _Static_assert(sizeof(daegun_region_axis) == 24, "a region axis is three doubles");
 _Static_assert(sizeof(daegun_stroke_style) == 16, "a stroke style is four words");
-_Static_assert(sizeof(daegun_glyph_instance) == 80, "a glyph instance is twenty words");
-_Static_assert(sizeof(daegun_subpixel_params) == 800, "subpixel params are two hundred words");
-_Static_assert(sizeof(daegun_request) == 24, "a request is a float and five ints");
 _Static_assert(sizeof(daegun_rect) == 4 * sizeof(size_t), "a rect is four size_t");
-_Static_assert(sizeof(daegun_stat_value) == 48, "a STAT value is six words and four doubles");
+_Static_assert(sizeof(daegun_stat_value) == 56, "a STAT value is its kind and flags, four doubles and two uint32");
 _Static_assert(sizeof(daegun_axis_value) == 16, "an axis value is a uint16 and a double");
 _Static_assert(sizeof(daegun_feature) == 16, "a feature is a tag, a value and a range");
-_Static_assert(sizeof(daegun_glyph_slot) == 32, "a glyph slot is four uints and two float pairs");
 _Static_assert(sizeof(daegun_layout_options) == 64, "layout options are sixteen words");
-_Static_assert(sizeof(daegun_metrics) == 48, "glyph metrics are twelve words");
 _Static_assert(sizeof(daegun_os2_info) == 36, "OS/2 info is nine words");
 _Static_assert(sizeof(daegun_paint_node) == 96, "a paint node is eight doubles and its tags");
 _Static_assert(sizeof(daegun_palette_info) == 8, "palette info is two words");
-_Static_assert(sizeof(daegun_policy) == 16, "a policy is four words");
-_Static_assert(sizeof(daegun_shape_options) == 80, "shape options are twenty words");
+_Static_assert(sizeof(daegun_shape_options) == 88, "shape options are twenty-two words");
+_Static_assert(sizeof(daegun_outline_options) == 68, "outline options must be seventeen words");
+_Static_assert(sizeof(daegun_prepared_glyph) == 12, "a prepared glyph is three words");
+_Static_assert(sizeof(daegun_scene_op) == 88, "a scene op is six doubles and ten words");
+_Static_assert(sizeof(daegun_scene_clip) == 56, "a scene clip is six doubles and two words");
+_Static_assert(sizeof(daegun_scene_gradient) == 112, "a scene gradient is twelve doubles, four words");
 
-/* Offsets, not only sizes: daegun_glyph_slot is 32 bytes however its six fields are arranged, so a
- * reordering passes every sizeof check and hands a caller the wrong number. These types live in
- * daecore and daerizer, so they can move without anyone editing this file. Mirrored by offset_of!
- * on the Rust side. */
-_Static_assert(offsetof(daegun_glyph_slot, band_base) == 0, "glyph slot layout");
-_Static_assert(offsetof(daegun_glyph_slot, h_bands) == 4, "glyph slot layout");
-_Static_assert(offsetof(daegun_glyph_slot, v_bands) == 8, "glyph slot layout");
-_Static_assert(offsetof(daegun_glyph_slot, hull_base) == 12, "glyph slot layout");
-_Static_assert(offsetof(daegun_glyph_slot, box_min) == 16, "glyph slot layout");
-_Static_assert(offsetof(daegun_glyph_slot, box_max) == 24, "glyph slot layout");
+/* Offsets, not only sizes: a reordering passes every sizeof check and hands a caller the wrong
+ * number. Mirrored by offset_of! on the Rust side. */
+_Static_assert(offsetof(daegun_outline_options, hinting) == 0, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, has_transform) == 4, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, transform) == 8, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, has_stroke) == 32, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, stroke_width) == 36, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, stroke_join) == 40, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, stroke_miter_limit) == 44, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, stroke_cap) == 48, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, has_embolden) == 52, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, embolden) == 56, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, has_oblique) == 60, "outline options layout");
+_Static_assert(offsetof(daegun_outline_options, oblique) == 64, "outline options layout");
 
-_Static_assert(offsetof(daegun_glyph_instance, glyph_box) == 0, "glyph instance layout");
-_Static_assert(offsetof(daegun_glyph_instance, tint) == 16, "glyph instance layout");
-_Static_assert(offsetof(daegun_glyph_instance, offset) == 32, "glyph instance layout");
-_Static_assert(offsetof(daegun_glyph_instance, em_pixels) == 40, "glyph instance layout");
-_Static_assert(offsetof(daegun_glyph_instance, scale) == 48, "glyph instance layout");
-_Static_assert(offsetof(daegun_glyph_instance, band_base) == 52, "glyph instance layout");
-_Static_assert(offsetof(daegun_glyph_instance, bands_per_axis) == 56, "glyph instance layout");
-_Static_assert(offsetof(daegun_glyph_instance, hull_base) == 60, "glyph instance layout");
-_Static_assert(offsetof(daegun_glyph_instance, inv_scale) == 64, "glyph instance layout");
+_Static_assert(offsetof(daegun_prepared_glyph, advance_width) == 0, "prepared glyph layout");
+_Static_assert(offsetof(daegun_prepared_glyph, advance_height) == 4, "prepared glyph layout");
+_Static_assert(offsetof(daegun_prepared_glyph, hinted) == 8, "prepared glyph layout");
 
-_Static_assert(offsetof(daegun_subpixel_params, weights) == 0, "subpixel params layout");
-_Static_assert(offsetof(daegun_subpixel_params, oversample) == 768, "subpixel params layout");
-_Static_assert(offsetof(daegun_subpixel_params, taps) == 776, "subpixel params layout");
-_Static_assert(offsetof(daegun_subpixel_params, origin) == 784, "subpixel params layout");
-_Static_assert(offsetof(daegun_subpixel_params, channels) == 792, "subpixel params layout");
-_Static_assert(offsetof(daegun_subpixel_params, supersample) == 796, "subpixel params layout");
+_Static_assert(offsetof(daegun_scene_op, transform) == 0, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, kind) == 48, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, rule) == 52, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, paint) == 56, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, blend) == 60, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, path) == 64, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, gradient) == 68, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, clip_start) == 72, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, clip_count) == 76, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, opacity) == 80, "scene op layout");
+_Static_assert(offsetof(daegun_scene_op, rgba) == 84, "scene op layout");
 
-_Static_assert(sizeof(daegun_curve_point) == 8, "a curve point is two floats");
-_Static_assert(sizeof(daegun_band) == 8, "a band is two uint32");
-_Static_assert(offsetof(daegun_band, curve_count) == 4, "band layout");
-_Static_assert(sizeof(daegun_hull_vertex) == 24, "a hull vertex is six floats");
-_Static_assert(offsetof(daegun_hull_vertex, dilate) == 8, "hull vertex layout");
-_Static_assert(sizeof(daegun_color_slot) == 48, "a color slot is a glyph slot and a tint");
-_Static_assert(offsetof(daegun_color_slot, tint) == 32, "color slot layout");
+_Static_assert(offsetof(daegun_scene_clip, transform) == 0, "scene clip layout");
+_Static_assert(offsetof(daegun_scene_clip, path) == 48, "scene clip layout");
+_Static_assert(offsetof(daegun_scene_clip, rule) == 52, "scene clip layout");
+
+_Static_assert(offsetof(daegun_scene_gradient, transform) == 0, "scene gradient layout");
+_Static_assert(offsetof(daegun_scene_gradient, numbers) == 48, "scene gradient layout");
+_Static_assert(offsetof(daegun_scene_gradient, kind) == 96, "scene gradient layout");
+_Static_assert(offsetof(daegun_scene_gradient, extend) == 100, "scene gradient layout");
+_Static_assert(offsetof(daegun_scene_gradient, stops_start) == 104, "scene gradient layout");
+_Static_assert(offsetof(daegun_scene_gradient, stops_count) == 108, "scene gradient layout");
 #endif
 
 #ifdef __cplusplus

@@ -5,19 +5,12 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char};
+use core::ffi::c_char;
 
 use crate::{Font, MathKernCorner};
 
-use crate::ffi::handle::{Status, borrow, deliver, release, OwnedStr, Str};
-use crate::ffi::list::{Axis, Blob, F64List, StrList, Text, U16List, axes_of};
-
-unsafe fn tag_of<'a>(tag: *const c_char) -> Option<&'a str> {
-    if tag.is_null() {
-        return None;
-    }
-    unsafe { CStr::from_ptr(tag) }.to_str().ok()
-}
+use crate::ffi::handle::{OwnedStr, Status, Str, borrow, deliver, release, slice_of, str_of};
+use crate::ffi::list::{Axis, F64List, StrList, Text, U16List, axes_of};
 
 pub struct SubsetHandle(crate::SubsetResult);
 
@@ -26,12 +19,14 @@ pub unsafe extern "C" fn daegun_subset_ttf(
     subset: *const SubsetHandle,
     out_len: *mut usize,
 ) -> *const u8 {
-    let Some(s) = (unsafe { borrow(subset) }) else { return core::ptr::null() };
+    let Some(SubsetHandle(crate::SubsetResult { ttf, gid_map: _ })) = (unsafe { borrow(subset) }) else {
+        return core::ptr::null();
+    };
     if out_len.is_null() {
         return core::ptr::null();
     }
-    unsafe { *out_len = s.0.ttf.len() };
-    s.0.ttf.as_ptr()
+    unsafe { *out_len = ttf.len() };
+    ttf.as_ptr()
 }
 
 #[unsafe(no_mangle)]
@@ -61,12 +56,12 @@ pub unsafe extern "C" fn daegun_font_subset(
     axes_len: usize,
     out: *mut *mut SubsetHandle,
 ) -> Status {
-    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    if gids.is_null() && gids_len != 0 {
+    if out.is_null() {
         return Status::Null;
     }
-    let ids = if gids_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(gids, gids_len) } };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let Some(ids) = (unsafe { slice_of(gids, gids_len) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     match font.subset(ids, &location) {
         Ok(r) => unsafe { deliver(out, SubsetHandle(r)) },
         Err(e) => {
@@ -84,9 +79,12 @@ pub unsafe extern "C" fn daegun_font_subset_text(
     axes_len: usize,
     out: *mut *mut SubsetHandle,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(text) = (unsafe { tag_of(text) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     match font.subset_text(text, &location) {
         Ok(r) => unsafe { deliver(out, SubsetHandle(r)) },
         Err(e) => {
@@ -105,12 +103,12 @@ pub unsafe extern "C" fn daegun_font_glyph_closure(
     axes_len: usize,
     out: *mut *mut U16List,
 ) -> Status {
-    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    if gids.is_null() && gids_len != 0 {
+    if out.is_null() {
         return Status::Null;
     }
-    let ids = if gids_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(gids, gids_len) } };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let Some(ids) = (unsafe { slice_of(gids, gids_len) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     match font.glyph_closure(ids, &location) {
         Ok(v) => unsafe { deliver(out, U16List(v)) },
         Err(e) => {
@@ -130,64 +128,124 @@ pub unsafe extern "C" fn daegun_font_math_constant(
     if out.is_null() {
         return Status::Null;
     }
-    let Some(m) = font.math_constants() else { return Status::Absent };
+    let Some(crate::MathConstants {
+        script_percent_scale_down,
+        script_script_percent_scale_down,
+        delimited_sub_formula_min_height,
+        display_operator_min_height,
+        math_leading,
+        axis_height,
+        accent_base_height,
+        flattened_accent_base_height,
+        subscript_shift_down,
+        subscript_top_max,
+        subscript_baseline_drop_min,
+        superscript_shift_up,
+        superscript_shift_up_cramped,
+        superscript_bottom_min,
+        superscript_baseline_drop_max,
+        sub_superscript_gap_min,
+        superscript_bottom_max_with_subscript,
+        space_after_script,
+        upper_limit_gap_min,
+        upper_limit_baseline_rise_min,
+        lower_limit_gap_min,
+        lower_limit_baseline_drop_min,
+        stack_top_shift_up,
+        stack_top_display_style_shift_up,
+        stack_bottom_shift_down,
+        stack_bottom_display_style_shift_down,
+        stack_gap_min,
+        stack_display_style_gap_min,
+        stretch_stack_top_shift_up,
+        stretch_stack_bottom_shift_down,
+        stretch_stack_gap_above_min,
+        stretch_stack_gap_below_min,
+        fraction_numerator_shift_up,
+        fraction_numerator_display_style_shift_up,
+        fraction_denominator_shift_down,
+        fraction_denominator_display_style_shift_down,
+        fraction_numerator_gap_min,
+        fraction_num_display_style_gap_min,
+        fraction_rule_thickness,
+        fraction_denominator_gap_min,
+        fraction_denom_display_style_gap_min,
+        skewed_fraction_horizontal_gap,
+        skewed_fraction_vertical_gap,
+        overbar_vertical_gap,
+        overbar_rule_thickness,
+        overbar_extra_ascender,
+        underbar_vertical_gap,
+        underbar_rule_thickness,
+        underbar_extra_descender,
+        radical_vertical_gap,
+        radical_display_style_vertical_gap,
+        radical_rule_thickness,
+        radical_extra_ascender,
+        radical_kern_before_degree,
+        radical_kern_after_degree,
+        radical_degree_bottom_raise_percent,
+    }) = font.math_constants()
+    else {
+        return Status::Absent;
+    };
     let value = match which {
-        0 => m.script_percent_scale_down,
-        1 => m.script_script_percent_scale_down,
-        2 => m.delimited_sub_formula_min_height,
-        3 => m.display_operator_min_height,
-        4 => m.math_leading,
-        5 => m.axis_height,
-        6 => m.accent_base_height,
-        7 => m.flattened_accent_base_height,
-        8 => m.subscript_shift_down,
-        9 => m.subscript_top_max,
-        10 => m.subscript_baseline_drop_min,
-        11 => m.superscript_shift_up,
-        12 => m.superscript_shift_up_cramped,
-        13 => m.superscript_bottom_min,
-        14 => m.superscript_baseline_drop_max,
-        15 => m.sub_superscript_gap_min,
-        16 => m.superscript_bottom_max_with_subscript,
-        17 => m.space_after_script,
-        18 => m.upper_limit_gap_min,
-        19 => m.upper_limit_baseline_rise_min,
-        20 => m.lower_limit_gap_min,
-        21 => m.lower_limit_baseline_drop_min,
-        22 => m.stack_top_shift_up,
-        23 => m.stack_top_display_style_shift_up,
-        24 => m.stack_bottom_shift_down,
-        25 => m.stack_bottom_display_style_shift_down,
-        26 => m.stack_gap_min,
-        27 => m.stack_display_style_gap_min,
-        28 => m.stretch_stack_top_shift_up,
-        29 => m.stretch_stack_bottom_shift_down,
-        30 => m.stretch_stack_gap_above_min,
-        31 => m.stretch_stack_gap_below_min,
-        32 => m.fraction_numerator_shift_up,
-        33 => m.fraction_numerator_display_style_shift_up,
-        34 => m.fraction_denominator_shift_down,
-        35 => m.fraction_denominator_display_style_shift_down,
-        36 => m.fraction_numerator_gap_min,
-        37 => m.fraction_num_display_style_gap_min,
-        38 => m.fraction_rule_thickness,
-        39 => m.fraction_denominator_gap_min,
-        40 => m.fraction_denom_display_style_gap_min,
-        41 => m.skewed_fraction_horizontal_gap,
-        42 => m.skewed_fraction_vertical_gap,
-        43 => m.overbar_vertical_gap,
-        44 => m.overbar_rule_thickness,
-        45 => m.overbar_extra_ascender,
-        46 => m.underbar_vertical_gap,
-        47 => m.underbar_rule_thickness,
-        48 => m.underbar_extra_descender,
-        49 => m.radical_vertical_gap,
-        50 => m.radical_display_style_vertical_gap,
-        51 => m.radical_rule_thickness,
-        52 => m.radical_extra_ascender,
-        53 => m.radical_kern_before_degree,
-        54 => m.radical_kern_after_degree,
-        55 => m.radical_degree_bottom_raise_percent,
+        0 => script_percent_scale_down,
+        1 => script_script_percent_scale_down,
+        2 => delimited_sub_formula_min_height,
+        3 => display_operator_min_height,
+        4 => math_leading,
+        5 => axis_height,
+        6 => accent_base_height,
+        7 => flattened_accent_base_height,
+        8 => subscript_shift_down,
+        9 => subscript_top_max,
+        10 => subscript_baseline_drop_min,
+        11 => superscript_shift_up,
+        12 => superscript_shift_up_cramped,
+        13 => superscript_bottom_min,
+        14 => superscript_baseline_drop_max,
+        15 => sub_superscript_gap_min,
+        16 => superscript_bottom_max_with_subscript,
+        17 => space_after_script,
+        18 => upper_limit_gap_min,
+        19 => upper_limit_baseline_rise_min,
+        20 => lower_limit_gap_min,
+        21 => lower_limit_baseline_drop_min,
+        22 => stack_top_shift_up,
+        23 => stack_top_display_style_shift_up,
+        24 => stack_bottom_shift_down,
+        25 => stack_bottom_display_style_shift_down,
+        26 => stack_gap_min,
+        27 => stack_display_style_gap_min,
+        28 => stretch_stack_top_shift_up,
+        29 => stretch_stack_bottom_shift_down,
+        30 => stretch_stack_gap_above_min,
+        31 => stretch_stack_gap_below_min,
+        32 => fraction_numerator_shift_up,
+        33 => fraction_numerator_display_style_shift_up,
+        34 => fraction_denominator_shift_down,
+        35 => fraction_denominator_display_style_shift_down,
+        36 => fraction_numerator_gap_min,
+        37 => fraction_num_display_style_gap_min,
+        38 => fraction_rule_thickness,
+        39 => fraction_denominator_gap_min,
+        40 => fraction_denom_display_style_gap_min,
+        41 => skewed_fraction_horizontal_gap,
+        42 => skewed_fraction_vertical_gap,
+        43 => overbar_vertical_gap,
+        44 => overbar_rule_thickness,
+        45 => overbar_extra_ascender,
+        46 => underbar_vertical_gap,
+        47 => underbar_rule_thickness,
+        48 => underbar_extra_descender,
+        49 => radical_vertical_gap,
+        50 => radical_display_style_vertical_gap,
+        51 => radical_rule_thickness,
+        52 => radical_extra_ascender,
+        53 => radical_kern_before_degree,
+        54 => radical_kern_after_degree,
+        55 => radical_degree_bottom_raise_percent,
         _ => return Status::Range,
     };
     unsafe { *out = value };
@@ -247,6 +305,16 @@ pub const MATH_KERN_TOP_LEFT: i32 = 1;
 pub const MATH_KERN_BOTTOM_RIGHT: i32 = 2;
 pub const MATH_KERN_BOTTOM_LEFT: i32 = 3;
 
+pub(crate) fn corner_of(code: i32) -> Option<MathKernCorner> {
+    match code {
+        MATH_KERN_TOP_RIGHT => Some(MathKernCorner::TopRight),
+        MATH_KERN_TOP_LEFT => Some(MathKernCorner::TopLeft),
+        MATH_KERN_BOTTOM_RIGHT => Some(MathKernCorner::BottomRight),
+        MATH_KERN_BOTTOM_LEFT => Some(MathKernCorner::BottomLeft),
+        _ => None,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_font_math_kern(
     font: *const Font,
@@ -259,14 +327,9 @@ pub unsafe extern "C" fn daegun_font_math_kern(
     if out.is_null() {
         return Status::Null;
     }
-    let corner = match corner {
-        MATH_KERN_TOP_RIGHT => MathKernCorner::TopRight,
-        MATH_KERN_TOP_LEFT => MathKernCorner::TopLeft,
-        MATH_KERN_BOTTOM_RIGHT => MathKernCorner::BottomRight,
-        MATH_KERN_BOTTOM_LEFT => MathKernCorner::BottomLeft,
-        _ => return Status::Range,
-    };
-    unsafe { *out = font.math_kern(gid, corner, height) };
+    let Some(corner) = corner_of(corner) else { return Status::Range };
+    let Some(kern) = font.math_kern(gid, corner, height) else { return Status::Range };
+    unsafe { *out = kern };
     Status::Ok
 }
 
@@ -300,28 +363,39 @@ pub unsafe extern "C" fn daegun_font_math_glyph_variants(
     vertical: bool,
     out: *mut *mut MathConstruction,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(c) = font.math_glyph_variants(gid, vertical) else { return Status::Absent };
-    let asm = c.assembly;
+    let Some(crate::MathGlyphConstruction { variants, assembly }) = font.math_glyph_variants(gid, vertical) else {
+        return Status::Absent;
+    };
+    let (variant_gids, variant_advances) =
+        variants.iter().map(|&crate::MathGlyphVariant { glyph_id, advance }| (glyph_id, advance)).unzip();
+    let (has_assembly, italics_correction, parts) = match assembly {
+        Some(crate::GlyphAssembly { italics_correction, parts }) => (true, italics_correction, parts),
+        None => (false, 0.0, Vec::new()),
+    };
+    let mut part_gids = Vec::with_capacity(parts.len());
+    let mut part_values = Vec::with_capacity(parts.len() * 4);
+    for part in parts {
+        let crate::GlyphPart { glyph_id, start_connector_length, end_connector_length, full_advance, is_extender } =
+            part;
+        part_gids.push(glyph_id);
+        part_values.extend_from_slice(&[
+            start_connector_length,
+            end_connector_length,
+            full_advance,
+            f64::from(u8::from(is_extender)),
+        ]);
+    }
     let built = MathConstruction {
-        variant_gids: c.variants.iter().map(|v| v.glyph_id).collect(),
-        variant_advances: c.variants.iter().map(|v| v.advance).collect(),
-        has_assembly: asm.is_some(),
-        italics_correction: asm.as_ref().map_or(0.0, |a| a.italics_correction),
-        part_gids: asm.as_ref().map_or_else(Vec::new, |a| a.parts.iter().map(|p| p.glyph_id).collect()),
-        part_values: asm.as_ref().map_or_else(Vec::new, |a| {
-            a.parts
-                .iter()
-                .flat_map(|p| {
-                    [
-                        p.start_connector_length,
-                        p.end_connector_length,
-                        p.full_advance,
-                        f64::from(u8::from(p.is_extender)),
-                    ]
-                })
-                .collect()
-        }),
+        variant_gids,
+        variant_advances,
+        has_assembly,
+        italics_correction,
+        part_gids,
+        part_values,
     };
     unsafe { deliver(out, built) }
 }
@@ -401,16 +475,22 @@ pub unsafe extern "C" fn daegun_font_base_info(
     font: *const Font,
     script_tag: *const c_char,
     vertical: bool,
+    axes: *const Axis,
+    axes_len: usize,
     out_default_baseline: *mut *mut Text,
     out_baseline_tags: *mut *mut StrList,
     out_baseline_coords: *mut *mut F64List,
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(tag) = (unsafe { tag_of(script_tag) }) else { return Status::Null };
-    let Some(info) = font.base_info(tag, vertical) else { return Status::Absent };
+    let Some(tag) = (unsafe { str_of(script_tag) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
+    let Some(crate::BaseScriptInfo { default_baseline_tag, baseline_coords }) = font.base_info(tag, vertical, &location)
+    else {
+        return Status::Absent;
+    };
 
     if !out_default_baseline.is_null() {
-        match &info.default_baseline_tag {
+        match &default_baseline_tag {
             Some(t) => {
                 let st = unsafe { deliver(out_default_baseline, Text::new(t)) };
                 if st != Status::Ok {
@@ -421,15 +501,49 @@ pub unsafe extern "C" fn daegun_font_base_info(
         }
     }
     if !out_baseline_tags.is_null() {
-        let tags: Vec<String> = info.baseline_coords.keys().cloned().collect();
+        let tags: Vec<String> = baseline_coords.keys().cloned().collect();
         let st = unsafe { deliver(out_baseline_tags, StrList::new(tags)) };
         if st != Status::Ok {
             return st;
         }
     }
     if !out_baseline_coords.is_null() {
-        let coords: Vec<f64> = info.baseline_coords.values().map(|v| f64::from(*v)).collect();
+        let coords: Vec<f64> = baseline_coords.values().copied().collect();
         return unsafe { deliver(out_baseline_coords, F64List(coords)) };
+    }
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_base_extents(
+    font: *const Font,
+    script_tag: *const c_char,
+    language_tag: *const c_char,
+    feature_tag: *const c_char,
+    vertical: bool,
+    axes: *const Axis,
+    axes_len: usize,
+    out_has_min: *mut bool,
+    out_min: *mut f64,
+    out_has_max: *mut bool,
+    out_max: *mut f64,
+) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let Some(tag) = (unsafe { str_of(script_tag) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
+    let (language, feature) = unsafe { (str_of(language_tag), str_of(feature_tag)) };
+    let Some((min, max)) = font.base_extents(tag, language, feature, vertical, &location) else {
+        return Status::Absent;
+    };
+    for (has, out, side) in [(out_has_min, out_min, min), (out_has_max, out_max, max)] {
+        unsafe {
+            if !has.is_null() {
+                *has = side.is_some();
+            }
+            if !out.is_null() {
+                *out = side.unwrap_or(0.0);
+            }
+        }
     }
     Status::Ok
 }
@@ -450,7 +564,7 @@ pub unsafe extern "C" fn daegun_font_language_tags(
     out: *mut *mut StrList,
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(script) = (unsafe { tag_of(script) }) else { return Status::Null };
+    let Some(script) = (unsafe { str_of(script) }) else { return Status::Null };
     unsafe { deliver(out, StrList::new(font.language_tags(script))) }
 }
 
@@ -462,8 +576,8 @@ pub unsafe extern "C" fn daegun_font_feature_tags(
     out: *mut *mut StrList,
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let script = unsafe { tag_of(script) };
-    let language = unsafe { tag_of(language) };
+    let script = unsafe { str_of(script) };
+    let language = unsafe { str_of(language) };
     unsafe { deliver(out, StrList::new(font.feature_tags(script, language))) }
 }
 
@@ -473,14 +587,18 @@ pub unsafe extern "C" fn daegun_font_justification_glyphs(
     script_tag: *const c_char,
     out: *mut *mut U16List,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(tag) = (unsafe { tag_of(script_tag) }) else { return Status::Null };
+    let Some(tag) = (unsafe { str_of(script_tag) }) else { return Status::Null };
     let Some(v) = font.justification_glyphs(tag) else { return Status::Absent };
     unsafe { deliver(out, U16List(v)) }
 }
 
 pub struct StatHandle {
     axis_tags: Vec<String>,
+    axis_names: Vec<Option<OwnedStr>>,
     axis_orderings: Vec<u16>,
     values: Vec<StatValueC>,
     names: Vec<Option<OwnedStr>>,
@@ -495,6 +613,7 @@ pub struct StatValueC {
     pub axis_index: u16,
     pub elidable: u8,
     pub has_name: u8,
+    pub older_sibling: u8,
     pub value: f64,
     pub min: f64,
     pub max: f64,
@@ -503,7 +622,7 @@ pub struct StatValueC {
     pub combo_count: u32,
 }
 
-const _: () = assert!(size_of::<StatValueC>() == 48);
+const _: () = assert!(size_of::<StatValueC>() == 56);
 const _: () = assert!(align_of::<StatValueC>() == 8);
 
 #[repr(C)]
@@ -525,23 +644,37 @@ pub unsafe extern "C" fn daegun_font_stat_info(
     font: *const Font,
     out: *mut *mut StatHandle,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(info) = font.stat_info() else { return Status::Absent };
-    let mut values = Vec::with_capacity(info.values.len());
-    let mut names = Vec::with_capacity(info.values.len());
+    let Some(crate::StatInfo { axes, values: stat_values, elided_fallback_name }) = font.stat_info() else {
+        return Status::Absent;
+    };
+    let mut values = Vec::with_capacity(stat_values.len());
+    let mut names = Vec::with_capacity(stat_values.len());
     let mut combos = Vec::new();
-    for v in &info.values {
+    for v in &stat_values {
         let (flat, name) = flatten_stat_value(v, &mut combos);
         values.push(flat);
         names.push(name.map(OwnedStr::new));
     }
+    let mut axis_tags = Vec::with_capacity(axes.len());
+    let mut axis_names = Vec::with_capacity(axes.len());
+    let mut axis_orderings = Vec::with_capacity(axes.len());
+    for crate::StatAxis { tag, name, ordering } in axes {
+        axis_tags.push(tag);
+        axis_names.push(name.as_deref().map(OwnedStr::new));
+        axis_orderings.push(ordering);
+    }
     let built = StatHandle {
-        axis_tags: info.axes.iter().map(|a| a.tag.clone()).collect(),
-        axis_orderings: info.axes.iter().map(|a| a.ordering).collect(),
+        axis_tags,
+        axis_names,
+        axis_orderings,
         values,
         names,
         combos,
-        elided_fallback: info.elided_fallback_name,
+        elided_fallback: elided_fallback_name,
     };
     unsafe { deliver(out, built) }
 }
@@ -556,6 +689,7 @@ fn flatten_stat_value<'a>(
         axis_index: 0,
         elidable: 0,
         has_name: 0,
+        older_sibling: 0,
         value: 0.0,
         min: 0.0,
         max: 0.0,
@@ -564,22 +698,24 @@ fn flatten_stat_value<'a>(
         combo_count: 0,
     };
     match v {
-        V::Single { axis_index, name, value, elidable } => (
+        V::Single { axis_index, name, value, elidable, older_sibling } => (
             StatValueC {
                 kind: STAT_SINGLE,
                 axis_index: *axis_index,
                 elidable: u8::from(*elidable),
+                older_sibling: u8::from(*older_sibling),
                 has_name: u8::from(name.is_some()),
                 value: *value,
                 ..blank
             },
             name.as_deref(),
         ),
-        V::Range { axis_index, name, nominal, min, max, elidable } => (
+        V::Range { axis_index, name, nominal, min, max, elidable, older_sibling } => (
             StatValueC {
                 kind: STAT_RANGE,
                 axis_index: *axis_index,
                 elidable: u8::from(*elidable),
+                older_sibling: u8::from(*older_sibling),
                 has_name: u8::from(name.is_some()),
                 value: *nominal,
                 min: *min,
@@ -588,11 +724,12 @@ fn flatten_stat_value<'a>(
             },
             name.as_deref(),
         ),
-        V::Linked { axis_index, name, value, linked_value, elidable } => (
+        V::Linked { axis_index, name, value, linked_value, elidable, older_sibling } => (
             StatValueC {
                 kind: STAT_LINKED,
                 axis_index: *axis_index,
                 elidable: u8::from(*elidable),
+                older_sibling: u8::from(*older_sibling),
                 has_name: u8::from(name.is_some()),
                 value: *value,
                 linked_value: *linked_value,
@@ -600,7 +737,7 @@ fn flatten_stat_value<'a>(
             },
             name.as_deref(),
         ),
-        V::Combo { name, values, elidable } => {
+        V::Combo { name, values, elidable, older_sibling } => {
             let start = combos.len();
             combos.extend(
                 values.iter().map(|(axis_index, value)| AxisValueC {
@@ -612,6 +749,7 @@ fn flatten_stat_value<'a>(
                 StatValueC {
                     kind: STAT_COMBO,
                     elidable: u8::from(*elidable),
+                    older_sibling: u8::from(*older_sibling),
                     has_name: u8::from(name.is_some()),
                     combo_start: u32::try_from(start).unwrap_or(u32::MAX),
                     combo_count: u32::try_from(values.len()).unwrap_or(0),
@@ -646,6 +784,22 @@ pub unsafe extern "C" fn daegun_stat_axes(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_stat_axis_name(
+    stat: *const StatHandle,
+    index: usize,
+    out: *mut Str,
+) -> Status {
+    let Some(stat) = (unsafe { borrow(stat) }) else { return Status::Null };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(slot) = stat.axis_names.get(index) else { return Status::Range };
+    let Some(name) = slot.as_ref() else { return Status::Absent };
+    unsafe { *out = name.as_str() };
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_stat_value_count(
     stat: *const StatHandle,
     out: *mut usize,
@@ -663,6 +817,9 @@ pub unsafe extern "C" fn daegun_stat_elided_fallback_name(
     stat: *const StatHandle,
     out: *mut *mut Text,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(stat) = (unsafe { borrow(stat) }) else { return Status::Null };
     let Some(name) = &stat.elided_fallback else { return Status::Absent };
     unsafe { deliver(out, Text::new(name)) }
@@ -672,8 +829,6 @@ pub unsafe extern "C" fn daegun_stat_elided_fallback_name(
 pub unsafe extern "C" fn daegun_stat_free(stat: *mut StatHandle) {
     unsafe { release(stat) }
 }
-
-const _: Option<core::marker::PhantomData<Blob>> = None;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_stat_value_at(

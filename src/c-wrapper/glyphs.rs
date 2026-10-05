@@ -4,19 +4,12 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char};
+use core::ffi::c_char;
 
 use crate::{Font, GlyphClass};
 
-use crate::ffi::handle::{Status, borrow, deliver};
+use crate::ffi::handle::{Status, borrow, deliver, slice_of, str_of};
 use crate::ffi::list::{Axis, Blob, F64List, StrList, Text, U16List, U32List, axes_of};
-
-unsafe fn str_of<'a>(s: *const c_char) -> Option<&'a str> {
-    if s.is_null() {
-        return None;
-    }
-    unsafe { CStr::from_ptr(s) }.to_str().ok()
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_font_has_glyph(
@@ -99,7 +92,7 @@ pub unsafe extern "C" fn daegun_font_glyph_bounds(
     if out.is_null() {
         return Status::Null;
     }
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let Some((x0, y0, x1, y1)) = font.glyph_bounds(gid, &location) else {
         return Status::Absent;
     };
@@ -138,12 +131,8 @@ pub unsafe extern "C" fn daegun_font_advance_widths(
     out: *mut *mut F64List,
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    if gids.is_null() && gids_len != 0 {
-        return Status::Null;
-    }
-    let ids =
-        if gids_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(gids, gids_len) } };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(ids) = (unsafe { slice_of(gids, gids_len) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     unsafe { deliver(out, F64List(font.advance_widths(ids, &location))) }
 }
 
@@ -159,7 +148,7 @@ pub unsafe extern "C" fn daegun_font_vertical_advance(
     if out.is_null() {
         return Status::Null;
     }
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     unsafe { *out = font.vertical_advance(gid, &location) };
     Status::Ok
 }
@@ -176,7 +165,7 @@ pub unsafe extern "C" fn daegun_font_vertical_origin(
     if out.is_null() {
         return Status::Null;
     }
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let Some(v) = font.vertical_origin(gid, &location) else { return Status::Absent };
     unsafe { *out = v };
     Status::Ok
@@ -201,11 +190,25 @@ pub unsafe extern "C" fn daegun_font_ligature_carets(
     gid: u16,
     axes: *const Axis,
     axes_len: usize,
-    out: *mut *mut F64List,
+    vertical: bool,
+    out_values: *mut *mut F64List,
+    out_present: *mut *mut Blob,
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
-    unsafe { deliver(out, F64List(font.ligature_carets(gid, &location))) }
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
+    let carets = font.ligature_carets(gid, &location, vertical);
+    if !out_values.is_null() {
+        let values: Vec<f64> = carets.iter().map(|c| c.unwrap_or(0.0)).collect();
+        let st = unsafe { deliver(out_values, F64List(values)) };
+        if st != Status::Ok {
+            return st;
+        }
+    }
+    if !out_present.is_null() {
+        let present: Vec<u8> = carets.iter().map(|c| u8::from(c.is_some())).collect();
+        return unsafe { deliver(out_present, Blob(present)) };
+    }
+    Status::Ok
 }
 
 #[unsafe(no_mangle)]
@@ -217,9 +220,12 @@ pub unsafe extern "C" fn daegun_font_caret_positions(
     vertical: bool,
     out: *mut *mut F64List,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let Some(v) = font.caret_positions(text, &location, vertical) else { return Status::Absent };
     unsafe { deliver(out, F64List(v)) }
 }
@@ -271,6 +277,9 @@ pub unsafe extern "C" fn daegun_font_glyph_name(
     gid: u16,
     out: *mut *mut Text,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(name) = font.glyph_name(gid) else { return Status::Absent };
     unsafe { deliver(out, Text::new(&name)) }

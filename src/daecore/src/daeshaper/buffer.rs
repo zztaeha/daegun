@@ -588,8 +588,7 @@ impl Buffer {
         self.out_len = 0;
         self.idx = 0;
         // Not an unconditional `true`: the flush above can hit the ceiling, where `push_out` clears
-        // `successful` and drops the rest. Reporting success there swapped a truncated buffer in and
-        // told the caller nothing had gone wrong.
+        // `successful` and drops the rest, and success would hand back a truncated buffer as whole.
         self.successful
     }
 
@@ -608,11 +607,10 @@ impl Buffer {
         self.out_len += 1;
     }
 
+    // Bounded by the input side's ceiling too, which `ensure` checks only on input: substitutions that
+    // expand without limit would otherwise run until memory does, 294,915 glyphs from three.
     #[cold]
     #[inline(never)]
-    // The output side is bounded by the same ceiling as the input side. It was not, and `ensure` –
-    // where that ceiling lives – is only on the input path, so a font whose substitutions expand
-    // without limit ran until memory did: 294,915 glyphs from three.
     fn grow_out(&mut self) -> bool {
         if self.out_len >= self.max_len {
             self.successful = false;

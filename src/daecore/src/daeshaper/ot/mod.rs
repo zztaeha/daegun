@@ -695,8 +695,8 @@ impl<'a> LayoutTable<'a> {
         (0..count).filter_map(move |i| read_u16_be(self.data, at.unwrap_or(0) + 4 + i as usize * 2))
     }
 
-    pub(crate) fn find_variation_index(&self, coords: &[i32]) -> Option<u16> {
-        FeatureVariations::at(self.data, self.feature_variations?).find(coords)
+    pub(crate) fn find_variation_index(&self, coords: &[i32], axis_count: usize) -> Option<u16> {
+        FeatureVariations::at(self.data, self.feature_variations?).with_axis_count(axis_count).find(coords)
     }
 
     pub(crate) fn variation_substitute(&self, variation: u16, feature: u16) -> Option<usize> {

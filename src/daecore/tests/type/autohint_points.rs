@@ -161,7 +161,7 @@ fn horizontal_bars_never_collapse_to_nothing() {
     let e = pts_of(gid_of('E').expect("Inter maps E")).expect("E has an outline");
 
     for ppem in [8u16, 10, 12, 16, 24] {
-        let out = hinter.hint(&e, ppem);
+        let out = hinter.hint(&e, ppem.into());
         let mut levels: Vec<i32> = out.y.clone();
         levels.sort_unstable();
         levels.dedup();

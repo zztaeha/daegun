@@ -14,7 +14,21 @@ pub fn is_variable_font(table_map: &BTreeMap<String, TableBytes>) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FvarAxis { pub tag: String, pub min: f64, pub default: f64, pub max: f64 }
+pub struct FvarAxis {
+    pub tag: String,
+    pub min: f64,
+    pub default: f64,
+    pub max: f64,
+    pub flags: u16,
+    pub name_id: u16,
+}
+
+impl FvarAxis {
+    // HIDDEN_AXIS: the font asks for the axis to be kept out of user interfaces.
+    pub fn is_hidden(&self) -> bool {
+        self.flags & 0x0001 != 0
+    }
+}
 
 pub fn parse_fvar_axes(table_map: &BTreeMap<String, TableBytes>) -> Result<Vec<FvarAxis>, String> {
     let fvar = table_map.get("fvar").ok_or("missing fvar")?;
@@ -39,7 +53,9 @@ pub fn parse_fvar_axes(table_map: &BTreeMap<String, TableBytes>) -> Result<Vec<F
         let min     = read_u32_be(fvar, ao + 4).ok_or("fvar: axis record truncated")?  as i32 as f64 / 65536.0;
         let default = read_u32_be(fvar, ao + 8).ok_or("fvar: axis record truncated")?  as i32 as f64 / 65536.0;
         let max     = read_u32_be(fvar, ao + 12).ok_or("fvar: axis record truncated")? as i32 as f64 / 65536.0;
-        axes.push(FvarAxis { tag, min, default, max });
+        let flags   = read_u16_be(fvar, ao + 16).ok_or("fvar: axis record truncated")?;
+        let name_id = read_u16_be(fvar, ao + 18).ok_or("fvar: axis record truncated")?;
+        axes.push(FvarAxis { tag, min, default, max, flags, name_id });
     }
     Ok(axes)
 }
@@ -52,6 +68,14 @@ pub struct NamedInstance {
 }
 
 pub fn read_fvar_instances(table_map: &BTreeMap<String, TableBytes>) -> Result<Vec<NamedInstance>, String> {
+    read_fvar_instances_named(table_map, &parse_all_name_strings(table_map))
+}
+
+// The same, naming each instance from `names`, the name table a caller has already read.
+pub(crate) fn read_fvar_instances_named(
+    table_map: &BTreeMap<String, TableBytes>,
+    names: &BTreeMap<u16, String>,
+) -> Result<Vec<NamedInstance>, String> {
     let fvar = table_map.get("fvar").ok_or("missing fvar")?;
     if fvar.len() < 16 { return Err("fvar: header truncated".into()); }
 
@@ -62,9 +86,9 @@ pub fn read_fvar_instances(table_map: &BTreeMap<String, TableBytes>) -> Result<V
     let instance_size     = read_u16_be(fvar, 14).ok_or("fvar: header truncated")? as usize;
 
     let tags: Vec<String> = parse_fvar_axes(table_map)?.into_iter().map(|a| a.tag).collect();
-    if tags.len() != axis_count { return Err("fvar: axis tags truncated".into()); }
 
-    let has_postscript_name = instance_size == 4 + axis_count * 4 + 2;
+    // A later minor version may extend the record, so a longer one still carries the name.
+    let has_postscript_name = instance_size >= 4 + axis_count * 4 + 2;
     let instance_array_offset = axis_count
         .checked_mul(axis_size)
         .and_then(|n| axes_array_offset.checked_add(n))
@@ -79,8 +103,6 @@ pub fn read_fvar_instances(table_map: &BTreeMap<String, TableBytes>) -> Result<V
     if !records_fit(instance_array_offset, instance_count, instance_size, fvar.len()) {
         return Err("fvar: instance array does not fit the table".into());
     }
-
-    let names = parse_all_name_strings(table_map);
 
     let mut out = Vec::with_capacity(instance_count);
     for i in 0..instance_count {

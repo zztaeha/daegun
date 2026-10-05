@@ -65,7 +65,7 @@ pub struct MathConstants {
 
 pub fn parse_math_constants(table_map: &BTreeMap<String, TableBytes>) -> Option<MathConstants> {
     let math = table_map.get("MATH")?;
-    let constants_off = read_u16_be(math, 4)? as usize;
+    let constants_off = read_u16_be(math, 4).filter(|&o| o != 0)? as usize;
     let buf = math.get(constants_off..)?;
 
     let script_percent_scale_down = read_i16_be(buf, 0)?;

@@ -1,3 +1,6 @@
+/* clock_gettime and CLOCK_MONOTONIC are POSIX, which glibc hides under -std=c11 without this. */
+#define _POSIX_C_SOURCE 199309L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,18 +126,29 @@ int main(int argc, char **argv)
     BATCHED("outline_glyph", { daegun_font_outline_glyph(font, gid, &pen); });
     sink += pen_hits;
 
-    BATCHED("rasterize cached", {
-        daegun_bitmap *bm = NULL;
-        daegun_font_rasterize_glyph(font, gid, 16.0f, NULL, 0, &bm);
-        daegun_bitmap_free(bm);
+    BATCHED("glyph_quads", {
+        daegun_quads *q = NULL;
+        daegun_font_glyph_quads(font, gid, NULL, 0, &q);
+        daegun_quads_free(q);
     });
 
-    BATCHED("rasterize uncached", {
-        daegun_font_clear_glyph_cache(font);
-        daegun_bitmap *bm = NULL;
-        daegun_font_rasterize_glyph(font, gid, 16.0f, NULL, 0, &bm);
-        daegun_bitmap_free(bm);
+    BATCHED("prepared_outline", {
+        daegun_font_prepared_outline(font, gid, 16.0f, NULL, 0, NULL, &pen, NULL);
     });
+    sink += pen_hits;
+
+    daegun_path *glyph = daegun_path_new();
+    daegun_pen into;
+    daegun_path_as_pen(glyph, &into);
+    daegun_font_outline_glyph(font, gid, &into);
+    float max_area = 0.0f;
+    daegun_flatten_max_area_for(16.0f, (float)upm, &max_area);
+    BATCHED("flatten", {
+        daegun_contours *c = NULL;
+        daegun_path_flatten(glyph, max_area, &c);
+        daegun_contours_free(c);
+    });
+    daegun_path_free(glyph);
 
     printf("\n");
     daegun_font_free(font);

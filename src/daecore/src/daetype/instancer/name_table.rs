@@ -10,11 +10,21 @@ struct NameRecord {
     string: Vec<u8>,
 }
 
-fn encode_for(platform: u16, s: &str) -> Option<Vec<u8>> {
-    match platform {
-        3 => Some(s.encode_utf16().flat_map(u16::to_be_bytes).collect()),
-        1 => s.chars().map(|c| mac_roman_byte(c as u32)).collect(),
+fn encode_for(platform: u16, encoding: u16, s: &str) -> Option<Vec<u8>> {
+    match (platform, encoding) {
+        (0 | 3, _) => Some(s.encode_utf16().flat_map(u16::to_be_bytes).collect()),
+        (1, 0) => s.chars().map(|c| mac_roman_byte(c as u32)).collect(),
         _ => None,
+    }
+}
+
+// The records the new English strings belong in: Unicode, Windows English and Mac Roman English.
+fn english(platform: u16, encoding: u16, language: u16) -> bool {
+    match platform {
+        0 => true,
+        1 => encoding == 0 && language == 0,
+        3 => language & 0x3FF == 0x009,
+        _ => false,
     }
 }
 
@@ -63,15 +73,31 @@ pub(crate) fn rewrite_name_table(
     }
     let (records, lang_tags) = parse_records(name)?;
 
-    let mut out_records: Vec<NameRecord> = Vec::with_capacity(records.len() + updates.len() * 2);
+    // A record in another language holds that language's name, which an English one cannot replace,
+    // so an updated ID loses it. An ID with no English record goes to each English platform there is.
+    let mut keys: Vec<(u16, u16, u16)> = records
+        .iter()
+        .filter(|r| english(r.platform, r.encoding, r.language))
+        .map(|r| (r.platform, r.encoding, r.language))
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.is_empty() {
+        keys.push((3, 1, 0x0409));
+    }
+
+    let had: Vec<u16> = records.iter().filter(|r| english(r.platform, r.encoding, r.language)).map(|r| r.name_id).collect();
+    let records_had = |id: u16| had.contains(&id);
+    let mut out_records: Vec<NameRecord> = Vec::with_capacity(records.len() + updates.len() * keys.len());
     for record in records {
         if removals.contains(&record.name_id) {
             continue;
         }
         match updates.iter().find(|(id, _)| *id == record.name_id) {
             None => out_records.push(record),
+            Some(_) if !english(record.platform, record.encoding, record.language) => {}
             Some((_, replacement)) => {
-                if let Some(string) = encode_for(record.platform, replacement) {
+                if let Some(string) = encode_for(record.platform, record.encoding, replacement) {
                     out_records.push(NameRecord { string, ..record });
                 }
             }
@@ -79,14 +105,13 @@ pub(crate) fn rewrite_name_table(
     }
 
     for (name_id, string) in updates {
-        if out_records.iter().any(|r| r.name_id == *name_id) {
+        if records_had(*name_id) {
             continue;
         }
-        if let Some(bytes) = encode_for(3, string) {
-            out_records.push(NameRecord { platform: 3, encoding: 1, language: 0x0409, name_id: *name_id, string: bytes });
-        }
-        if let Some(bytes) = encode_for(1, string) {
-            out_records.push(NameRecord { platform: 1, encoding: 0, language: 0, name_id: *name_id, string: bytes });
+        for &(platform, encoding, language) in &keys {
+            if let Some(string) = encode_for(platform, encoding, string) {
+                out_records.push(NameRecord { platform, encoding, language, name_id: *name_id, string });
+            }
         }
     }
 

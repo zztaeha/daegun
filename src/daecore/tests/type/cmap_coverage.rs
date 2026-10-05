@@ -18,7 +18,7 @@ fn roundtrip(rel: &str, text: &str) -> (usize, usize) {
 
 #[test]
 fn supplementary_plane_codepoints_survive_subsetting() {
-    // U+1D400 MATHEMATICAL BOLD CAPITAL A and neighbours, all above the BMP
+    // U+1D400 MATHEMATICAL BOLD CAPITAL A and neighbors, all above the BMP
     let math: String = (0x1D400u32..0x1D40Bu32).filter_map(char::from_u32).collect();
     let text = format!("Az09 {math}");
     let (got, want) = roundtrip("stix-two-math/STIX2Math.otf", &text);

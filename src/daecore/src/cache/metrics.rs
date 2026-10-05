@@ -157,12 +157,14 @@ impl FontCache {
         LineMetrics { ascent: a * scale, descent: d * scale, line_gap: g * scale }
     }
 
-    pub fn math_top_accent_attachment(&self, gid: u16) -> i32 {
+    // Unrounded, as every other MATH value is: the font's, else half the glyph's advance.
+    pub fn math_top_accent_attachment(&self, gid: u16) -> f64 {
         let scale = self.scale_factor();
         if let Some(v) = crate::daecore::daetype::math_table::math_top_accent_attachment(&self.table_map, gid) {
-            return (v as f64 * scale).round() as i32;
+            return f64::from(v) * scale;
         }
-        (self.advance_width_rs(&[], gid) as f64 / 2.0).round() as i32
+        let advance = self.advance_font_units_rs(&super::canonical_axes::<&str>(&[]), gid, false);
+        f64::from(advance) * scale / 2.0
     }
 
     pub fn font_vertical_origin_rs(&self, axis_values: &[(String, f64)], gid: u16) -> Option<i32> {

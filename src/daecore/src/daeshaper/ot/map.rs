@@ -130,7 +130,6 @@ impl Map {
         let end = stages.get(stage).map_or(lookups.len(), |s| s.last_lookup);
         &lookups[start..end]
     }
-
 }
 
 pub(crate) struct MapBuilder<'a> {
@@ -345,7 +344,7 @@ impl<'a> MapBuilder<'a> {
         features: &[FeatureMap],
         required: [Option<u16>; 2],
         required_stage: [usize; 2],
-        variation: Option<u16>,
+        variations: [Option<u16>; 2],
     ) -> ([Vec<LookupMap>; 2], [Vec<StageMap>; 2]) {
         let mut lookups: [Vec<LookupMap>; 2] = [Vec::new(), Vec::new()];
         let mut stage_maps: [Vec<StageMap>; 2] = [Vec::new(), Vec::new()];
@@ -360,12 +359,12 @@ impl<'a> MapBuilder<'a> {
                 if let Some(table) = table {
                     if let Some(f) = required[i]
                         && required_stage[i] == stage {
-                            push_lookups(&mut lookups[i], table, f, GLOBAL_BIT_MASK, true, true, false, false, variation);
+                            push_lookups(&mut lookups[i], table, f, GLOBAL_BIT_MASK, true, true, false, false, variations[i]);
                         }
                     for f in features {
                         if let Some(fi) = f.index[i]
                             && f.stage[i] == stage {
-                                push_lookups(&mut lookups[i], table, fi, f.mask, f.auto_zwnj, f.auto_zwj, f.random, f.per_syllable, variation);
+                                push_lookups(&mut lookups[i], table, fi, f.mask, f.auto_zwnj, f.auto_zwj, f.random, f.per_syllable, variations[i]);
                             }
                     }
 
@@ -459,7 +458,7 @@ impl<'a> MapBuilder<'a> {
             }
     }
 
-    pub(crate) fn compile(mut self, variation: Option<u16>) -> Map {
+    pub(crate) fn compile(mut self, variations: [Option<u16>; 2]) -> Map {
         let (features, required_stage, global_mask) = self.compile_features();
 
         self.add_gsub_pause(None);
@@ -470,7 +469,7 @@ impl<'a> MapBuilder<'a> {
                 .zip(self.script_index[t.idx()])
                 .and_then(|(table, s)| table.required_feature(s, self.lang_index[t.idx()]))
         });
-        let (lookups, stages) = self.collect_lookups(&features, required, required_stage, variation);
+        let (lookups, stages) = self.collect_lookups(&features, required, required_stage, variations);
 
         Map {
             found_script: self.found_script,

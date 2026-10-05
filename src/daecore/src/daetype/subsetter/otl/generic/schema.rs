@@ -16,11 +16,9 @@ impl OffsetWidth {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code, reason = "Fixed is matched by parse.rs but only constructed by generic_engine_tests")]
 pub enum CountSource {
     Field(EnvRef),
     FieldMinusOne(EnvRef),
-    Fixed(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,10 +51,8 @@ pub struct StructField {
     pub(crate) bind: Option<&'static str>,
 }
 
-#[allow(dead_code, reason = "I16 is matched by parse.rs but only constructed by generic_engine_tests")]
 pub enum Schema {
     U16,
-    I16,
     GlyphId,
     Offset(OffsetWidth, Box<Schema>),
     Array(Box<Schema>, CountSource, DropPolicy),
@@ -71,7 +67,8 @@ pub enum Schema {
     Anchor,
     ZippedWithBoundCoverage(EnvRef, Box<Schema>, PayloadShape, DropPolicy),
     CaretValue,
-    ClassMatrix(Box<Schema>),
+    // A PairPos 2 class matrix, each cell a record in either value format.
+    ClassMatrix(EnvRef, EnvRef),
     DeltaCoverageSubst,
 }
 

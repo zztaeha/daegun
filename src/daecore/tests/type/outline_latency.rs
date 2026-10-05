@@ -160,7 +160,7 @@ fn bench_autohint(name: &str, rel: &str, ppem: u16, iters: usize, detail: &str) 
     let gid = gid_of('H').unwrap_or_else(|| panic!("{name}: no H"));
     let pts = collect(gid).unwrap_or_else(|| panic!("{name}: H has no outline"));
 
-    let warm = hinter.hint(&pts, ppem);
+    let warm = hinter.hint(&pts, ppem.into());
     assert_eq!(warm.y.len(), pts.len(), "{name}: hinting changed the point count");
 
     let mut samples = Vec::with_capacity(iters);
@@ -178,7 +178,7 @@ fn bench_autohint(name: &str, rel: &str, ppem: u16, iters: usize, detail: &str) 
             _ => unreachable!(),
         }
         let p = pen.finish();
-        let out = hinter.hint(&p, ppem);
+        let out = hinter.hint(&p, ppem.into());
         samples.push(t.elapsed());
         proof += out.y.len();
         core::hint::black_box(&out.y);
@@ -315,7 +315,7 @@ fn bench_autohint_sweep(name: &str, rel: &str, ppem: u16, iters: usize) {
     let mut warm = 0usize;
     for gid in 0..n {
         if let Some(pts) = collect(gid) {
-            warm += hinter.hint(&pts, ppem).y.len();
+            warm += hinter.hint(&pts, ppem.into()).y.len();
         }
     }
     assert!(warm > 0, "{name}: the sweep hinted nothing");
@@ -327,7 +327,7 @@ fn bench_autohint_sweep(name: &str, rel: &str, ppem: u16, iters: usize) {
         let mut fitted = 0usize;
         for gid in 0..n {
             if let Some(pts) = collect(gid) {
-                fitted += hinter.hint(&pts, ppem).y.len();
+                fitted += hinter.hint(&pts, ppem.into()).y.len();
             }
         }
         samples.push(t.elapsed());

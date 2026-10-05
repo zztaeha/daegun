@@ -72,12 +72,12 @@ fn hint_glyph_bytecode() {
     let gids = hinted_gids(&map, &loca, n);
     assert!(!gids.is_empty(), "font carries no per-glyph instructions to hint");
 
-    let mut ctx = HintContext::new(&map, PPEM, upm, HintMode::Subpixel).expect("font carries hinting");
+    let mut ctx = HintContext::new(&map, PPEM.into(), upm, HintMode::Subpixel).expect("font carries hinting");
 
     let mut expect = 0usize;
     for &gid in &gids {
         let mut pen = CountPen::default();
-        if let Some(out) = ctx.hint_glyph(&glyf, &loca, gid, PPEM, upm) {
+        if let Some(out) = ctx.hint_glyph(&glyf, &loca, gid) {
             daegun::daecore::daetype::hinting::draw_hinted(&out, &mut pen);
         }
         expect += pen.ops;
@@ -91,7 +91,7 @@ fn hint_glyph_bytecode() {
         let mut pen = CountPen::default();
         let t = Instant::now();
         for &gid in &gids {
-            if let Some(out) = ctx.hint_glyph(&glyf, &loca, gid, PPEM, upm) {
+            if let Some(out) = ctx.hint_glyph(&glyf, &loca, gid) {
                 daegun::daecore::daetype::hinting::draw_hinted(&out, &mut pen);
             }
         }
@@ -126,8 +126,8 @@ fn hint_glyph_context_per_glyph() {
         let mut pen = CountPen::default();
         let t = Instant::now();
         for &gid in &gids {
-            if let Some(mut ctx) = HintContext::new(&map, PPEM, upm, HintMode::Subpixel)
-                && let Some(o) = ctx.hint_glyph(&glyf, &loca, gid, PPEM, upm)
+            if let Some(mut ctx) = HintContext::new(&map, PPEM.into(), upm, HintMode::Subpixel)
+                && let Some(o) = ctx.hint_glyph(&glyf, &loca, gid)
             {
                 daegun::daecore::daetype::hinting::draw_hinted(&o, &mut pen);
             }
@@ -158,7 +158,7 @@ fn hint_glyph_context_cached() {
         let mut pen = CountPen::default();
         let t = Instant::now();
         for &gid in &gids {
-            if let Some(o) = cache.hint_glyph_cached(&glyf, &loca, gid, PPEM, upm, HintMode::Subpixel) {
+            if let Some(o) = cache.hint_glyph_cached(&glyf, &loca, gid, PPEM.into(), upm, HintMode::Subpixel) {
                 daegun::daecore::daetype::hinting::draw_hinted(&o, &mut pen);
             }
         }

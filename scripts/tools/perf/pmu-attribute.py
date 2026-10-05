@@ -90,7 +90,7 @@ def main():
                 by_function[name] += share
             attributed += delta
     if not total:
-        print("no counter deltas — was the recording made with backtraces enabled?"); sys.exit(1)
+        print("no counter deltas – was the recording made with backtraces enabled?"); sys.exit(1)
     what = f"callers of {CALLER_OF!r}" if CALLER_OF else "daegun frames"
     print(f"instructions retired: {total:,}   attributed to {what}: "
           f"{attributed:,} ({100 * attributed / total:.1f}%)\n")

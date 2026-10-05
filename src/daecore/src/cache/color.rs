@@ -35,4 +35,11 @@ impl FontCache {
         let scalars = self.colr_v1_scalars(&var_data, location);
         crate::daecore::daetype::colr_v1::colr_v1_paint_graph_with_scalars(&self.table_map, gid, palette_index, &var_data, &scalars)
     }
+
+    pub fn colr_clip_box(&self, gid: u16, location: &[f64]) -> Option<[i32; 4]> {
+        let colr = self.table_map.get("COLR")?;
+        let var_data = self.colr_v1_var_data()?;
+        let scalars = self.colr_v1_scalars(&var_data, location);
+        crate::daecore::daetype::colr_v1::clip_box(colr, gid, &var_data, &scalars)
+    }
 }

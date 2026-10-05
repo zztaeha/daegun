@@ -114,6 +114,105 @@ fn check_run(f: &daegun::Font, run: &daegun::ShapedRun, text: &str, what: &str) 
     }
 }
 
+fn finite(points: &[(f32, f32)]) -> bool {
+    points.iter().all(|&(x, y)| x.is_finite() && y.is_finite())
+}
+
+// The helpers a rasterizer of the caller's own is handed, under every option: finite, within their
+// documented bounds, and the same answer twice.
+fn check_helpers(f: &daegun::Font, g: u16, at: &[(&str, f64)]) {
+    use daegun::{Cap, HintMode, Join, OutlineOptions, Path, StrokeStyle};
+    let quads = f.glyph_quads(g, at);
+    must!(quads == f.glyph_quads(g, at), "glyph_quads {g} is not idempotent");
+    if let Ok(q) = &quads {
+        must!(!q.is_empty() && q.len() <= daegun::MAX_CURVES_PER_GLYPH, "glyph_quads {g}: {} curves", q.len());
+        must!(q.iter().flatten().all(|p| p[0].is_finite() && p[1].is_finite()), "glyph_quads {g}: a point is not finite");
+    }
+
+    let plain = OutlineOptions::default();
+    let options = [
+        plain,
+        plain.with_hinting(HintMode::Auto),
+        plain.with_transform([0.9, 0.1, -0.2, 1.1, 3.0, -2.0]),
+        plain.with_oblique(0.2),
+        plain.with_stroke(StrokeStyle { width: 30.0, join: Join::Round, cap: Cap::Round }),
+        plain.with_stroke(StrokeStyle { width: 30.0, join: Join::Miter { limit: 4.0 }, cap: Cap::Square }),
+        plain.with_embolden(40.0),
+        plain.with_hinting(HintMode::Auto).with_embolden(40.0),
+    ];
+    let mut plain_points = 0;
+    for (i, opts) in options.iter().enumerate() {
+        let (mut a, mut b) = (Path::default(), Path::default());
+        let (ga, gb) = (f.prepared_outline(g, 18.0, at, opts, &mut a), f.prepared_outline(g, 18.0, at, opts, &mut b));
+        must!(ga == gb && a == b, "prepared_outline {g}, options {i}: not idempotent");
+        let Some(prepared) = ga else { continue };
+        // A stroke or embolden past MAX_FLATTEN_POINTS points draws nothing; an embolden adds to the outline.
+        let drawn = a.parts().1.len();
+        if i == 0 {
+            plain_points = drawn;
+        }
+        must!(drawn <= plain_points + daegun::MAX_FLATTEN_POINTS, "prepared_outline {g}, options {i}: {drawn} points");
+        must!(prepared.advance_width.is_finite() && prepared.advance_height.is_finite(),
+              "prepared_outline {g}, options {i}: advance {:?}", prepared);
+        must!(finite(a.parts().1), "prepared_outline {g}, options {i}: a point is not finite");
+        let flat = daegun::flatten(&a, 0.05);
+        must!(daegun::flatten(&a, 0.05) == flat, "flatten {g}, options {i}: not idempotent");
+        let Some(contours) = flat else { continue };
+        let points: usize = contours.iter().map(Vec::len).sum();
+        must!(points <= daegun::MAX_FLATTEN_POINTS, "flatten {g}, options {i}: {points} points");
+        must!(contours.iter().all(|c| c.len() >= 3 && finite(c)), "flatten {g}, options {i}: a degenerate contour");
+        let resolved = daegun::resolve_overlaps(&contours);
+        must!(daegun::resolve_overlaps(&contours) == resolved, "resolve_overlaps {g}, options {i}: not idempotent");
+        if let Some(resolved) = resolved {
+            must!(points <= daegun::MAX_RESOLVE_EDGES, "resolve_overlaps {g}, options {i}: {points} edges resolved");
+            must!(!resolved.is_empty() && resolved.iter().all(|c| finite(c)), "resolve_overlaps {g}, options {i}");
+        }
+    }
+
+    check_scene(f, g, at);
+}
+
+// A caret resolves or not whichever axis it is read on.
+fn check_carets(f: &daegun::Font, g: u16, at: &[(&str, f64)]) {
+    let (across, upright) = (f.ligature_carets(g, at, false), f.ligature_carets(g, at, true));
+    must!(across.iter().chain(&upright).flatten().all(|v| v.is_finite()),
+          "ligature_carets {g} not finite: {across:?} {upright:?}");
+    must!(across.iter().map(Option::is_some).eq(upright.iter().map(Option::is_some)),
+          "ligature_carets {g} resolves different carets by direction: {across:?} {upright:?}");
+}
+
+fn check_scene(f: &daegun::Font, g: u16, at: &[(&str, f64)]) {
+    if let Some(scene) = f.colr_scene(g, at, 0) {
+        must!(f.colr_scene(g, at, 0).as_ref() == Some(&scene), "colr_scene {g} is not idempotent");
+        let (mut depth, mut deepest) = (0i64, 0i64);
+        let points: usize = (0..).map_while(|id| scene.path(id)).map(|p| p.parts().1.len()).sum();
+        must!(points <= daegun::MAX_FLATTEN_POINTS, "colr_scene {g}: {points} points");
+        for op in scene.ops() {
+            match op {
+                daegun::paint::Op::Fill { path, transform, .. } => {
+                    must!(scene.path(*path).is_some_and(|p| finite(p.parts().1)) && transform.iter().all(|v| v.is_finite()),
+                          "colr_scene {g}: a bad fill path");
+                }
+                daegun::paint::Op::PushClip { shapes } => {
+                    must!(shapes.iter().all(|s| scene.path(s.path).is_some_and(|p| finite(p.parts().1))
+                              && s.transform.iter().all(|v| v.is_finite())),
+                          "colr_scene {g}: a bad clip path");
+                    depth += 1;
+                }
+                daegun::paint::Op::PushLayer { opacity, .. } => {
+                    must!(opacity.is_finite(), "colr_scene {g}: a layer's opacity is {opacity}");
+                    depth += 1;
+                }
+                daegun::paint::Op::PopClip | daegun::paint::Op::PopLayer => depth -= 1,
+            }
+            must!(depth >= 0, "colr_scene {g}: a pop before its push");
+            deepest = deepest.max(depth);
+        }
+        must!(depth == 0, "colr_scene {g}: {depth} pushes never popped");
+        must!(deepest <= 128, "colr_scene {g}: nested {deepest} deep");
+    }
+}
+
 fn exercise(bytes: &[u8], texts: &[String]) {
     let Ok(f) = daegun::Font::from_bytes(bytes) else { return };
 
@@ -158,6 +257,12 @@ fn exercise(bytes: &[u8], texts: &[String]) {
 
     let probes: Vec<u16> = [0u16, 1, n / 2, n.saturating_sub(1), n, n.wrapping_add(1), u16::MAX]
         .into_iter().collect();
+    // The probes rarely land on a color glyph or a ligature, so a spread of the font's glyphs is drawn
+    // as scenes and has its carets read too.
+    for g in (0..n).step_by(usize::from(n / 64).max(1)) {
+        check_scene(&f, g, &at);
+        check_carets(&f, g, &at);
+    }
     for &g in &probes {
         let _ = (f.glyph_name(g), f.vertical_advance(g, &at));
         must!(
@@ -170,34 +275,15 @@ fn exercise(bytes: &[u8], texts: &[String]) {
                   "glyph_bounds {g}: not finite");
         }
         let _ = (f.vertical_origin(g, &[]), f.cff_hints(g));
-        let carets = f.ligature_carets(g, &at);
-        must!(carets.iter().all(|v| v.is_finite()), "ligature_carets {g} not finite: {carets:?}");
-        must!(carets.windows(2).all(|w| w[0] <= w[1]), "ligature_carets {g} not ascending: {carets:?}");
+        check_carets(&f, g, &at);
         let _ = f.advance_widths(&[g], &at);
-        if let Some(bm) = f.rasterize_glyph(g, 16.0, &at) {
-            let m = &bm.metrics;
-            must!(
-                bm.bitmap.len() == m.width as usize * m.height as usize,
-                "raster {g}: {} bytes for {}x{}", bm.bitmap.len(), m.width, m.height,
-            );
-            must!(m.bounds.width >= 0.0 && m.bounds.height >= 0.0,
-                  "raster {g}: negative bounds {:?}", m.bounds);
-            must!(m.bounds.xmin.is_finite() && m.bounds.ymin.is_finite(),
-                  "raster {g}: non-finite bounds {:?}", m.bounds);
-            let again = f.rasterize_glyph(g, 16.0, &at).expect("rasterized once, so again");
-            must!(again.bitmap == bm.bitmap, "raster {g}: cache hit changed the pixels");
-            must!(
-                (again.metrics.width, again.metrics.height, again.metrics.bounds)
-                    == (m.width, m.height, m.bounds),
-                "raster {g}: cache hit changed the metrics",
-            );
-        }
         let _ = f.glyph_bitmap(g, 16);
         let _ = (f.colr_layers(g), f.colr_layers_for_palette(g, 0), f.colr_v1_paint(g, &at, 0));
         let _ = (f.math_glyph_variants(g, true), f.math_italics_correction(g));
         let _ = (f.math_top_accent_attachment(g), f.math_is_extended_shape(g));
         let _ = f.math_kern(g, daegun::MathKernCorner::TopRight, 100.0);
         let _ = f.hinted_glyph(g, 16.0, &at, daegun::HintMode::Auto);
+        check_helpers(&f, g, &at);
     }
 
     if let Ok(closed) = f.glyph_closure(&probes, &at) {
@@ -216,16 +302,16 @@ fn exercise(bytes: &[u8], texts: &[String]) {
         }
     }
 
-    if let Some(g) = (0..n.min(8)).find(|&g| f.rasterize_glyph(g, 18.0, &at).is_some()) {
-        let first = f.rasterize_glyph(g, 18.0, &at).expect("just rasterized");
-        f.clear_glyph_cache();
-        let cold = f.rasterize_glyph(g, 18.0, &at).expect("rasterizes again after a clear");
-        must!(cold.bitmap == first.bitmap, "clear_glyph_cache changed the pixels for {g}");
-        must!(
-            (cold.metrics.width, cold.metrics.height, cold.metrics.bounds)
-                == (first.metrics.width, first.metrics.height, first.metrics.bounds),
-            "clear_glyph_cache changed the metrics for {g}",
-        );
+    let drawn = |f: &daegun::Font, g: u16| {
+        let mut p = daegun::Path::default();
+        f.outline_glyph_instanced(g, &at, &mut p).map(|()| p)
+    };
+    if let Some(g) = (0..n.min(8)).find(|&g| drawn(&f, g).is_some_and(|p| !p.is_empty())) {
+        let cold = drawn(&f, g);
+        f.prewarm([g], &at);
+        must!(drawn(&f, g) == cold, "a prewarmed replay of {g} differs from its decode");
+        f.clear_prewarm();
+        must!(drawn(&f, g) == cold, "clear_prewarm changed the outline of {g}");
     }
 
     if !at.is_empty()

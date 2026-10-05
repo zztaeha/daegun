@@ -1,17 +1,9 @@
 #include "daegun.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(__APPLE__)
-#include <objc/message.h>
-#include <objc/runtime.h>
-
-/* Metal.framework's own C entry point, so adopting a device needs no Objective-C of our own. It
-   comes back retained, hence the release once daegun has taken its own reference. */
-extern void *MTLCreateSystemDefaultDevice(void);
-#endif
 
 static int failures = 0;
 
@@ -90,7 +82,7 @@ static void bad_font_data_is_reported(void)
     daegun_str err = daegun_last_error();
     CHECK(err.len > 0, "a failed parse left no message");
     CHECK(err.data != NULL && strlen(err.data) == err.len,
-          "the message length disagrees with strlen, so rule 4's NUL promise is broken");
+          "the message length disagrees with strlen, so daegun_str's NUL promise is broken");
 }
 
 static daegun_font *open_font(const char *path)
@@ -148,32 +140,20 @@ static void a_real_font_answers(const char *path)
         CHECK(none == 0xffff, "an ABSENT answer still wrote the out-parameter");
     }
 
+    /* The four cache budgets. */
     size_t count = 0, cbytes = 0;
-    CHECK(daegun_font_glyph_cache_stats(font, &count, &cbytes) == DAEGUN_OK, "cache stats failed");
-    CHECK(daegun_font_set_glyph_cache_bytes(font, 0) == DAEGUN_OK, "disabling the cache failed");
-    CHECK(daegun_font_clear_glyph_cache(font) == DAEGUN_OK, "clearing the cache failed");
-    CHECK(daegun_font_glyph_cache_stats(font, &count, NULL) == DAEGUN_OK,
-          "cache stats with one NULL out-parameter failed");
-    CHECK(count == 0, "the cache holds %zu glyphs after being cleared and bounded to zero", count);
-
-    /* The other five budgets, through the same door. */
-    CHECK(daegun_font_set_curve_cache_bytes(font, 64 * 1024) == DAEGUN_OK, "curve budget failed");
-    CHECK(daegun_font_clear_curve_cache(font) == DAEGUN_OK, "clearing curves failed");
-    CHECK(daegun_font_curve_cache_stats(font, &count, &cbytes) == DAEGUN_OK, "curve stats failed");
-    CHECK(count == 0 && cbytes == 0, "curve cache held %zu entries after clearing", count);
-
     CHECK(daegun_font_set_outline_cache_bytes(font, 64 * 1024) == DAEGUN_OK, "outline budget failed");
     CHECK(daegun_font_outline_cache_stats(font, &count, NULL) == DAEGUN_OK, "outline stats failed");
-    CHECK(count == 0, "outline cache held %zu entries after clearing", count);
+    CHECK(count == 0, "a fresh font's outline cache held %zu entries", count);
 
     CHECK(daegun_font_set_shape_cache_bytes(font, 32 * 1024) == DAEGUN_OK, "shape budget failed");
     CHECK(daegun_font_clear_shape_cache(font) == DAEGUN_OK, "clearing shapes failed");
     CHECK(daegun_font_shape_cache_stats(font, &count, &cbytes) == DAEGUN_OK, "shape stats failed");
     CHECK(count == 0 && cbytes == 0, "shape cache held %zu entries after clearing", count);
 
-    size_t locations = 1, tables = 1;
+    size_t fonts = 1, tables = 1;
     CHECK(daegun_font_set_instance_cache_bytes(font, 1024 * 1024) == DAEGUN_OK, "instance budget failed");
-    CHECK(daegun_font_instance_cache_stats(font, &locations, &tables) == DAEGUN_OK, "instance stats failed");
+    CHECK(daegun_font_instance_cache_stats(font, &fonts, &tables) == DAEGUN_OK, "instance stats failed");
 
     size_t allowance = 0;
     CHECK(daegun_font_set_cmap_index_allowance(font, 4321) == DAEGUN_OK, "index allowance failed");
@@ -181,7 +161,6 @@ static void a_real_font_answers(const char *path)
     CHECK(allowance == 4321, "allowance read back as %zu", allowance);
 
     /* Every one of them has to refuse a null font rather than dereference it. */
-    CHECK(daegun_font_set_curve_cache_bytes(NULL, 0) == DAEGUN_NULL, "null curve budget accepted");
     CHECK(daegun_font_set_outline_cache_bytes(NULL, 0) == DAEGUN_NULL, "null outline budget accepted");
     CHECK(daegun_font_set_shape_cache_bytes(NULL, 0) == DAEGUN_NULL, "null shape budget accepted");
     CHECK(daegun_font_set_instance_cache_bytes(NULL, 0) == DAEGUN_NULL, "null instance budget accepted");
@@ -193,16 +172,16 @@ static void a_real_font_answers(const char *path)
 
 static void zeroed_options_are_the_defaults(void)
 {
-    daegun_raster_options zeroed;
+    daegun_outline_options zeroed;
     memset(&zeroed, 0, sizeof zeroed);
 
-    daegun_raster_options given;
+    daegun_outline_options given;
     memset(&given, 0xcd, sizeof given);
-    CHECK(daegun_raster_options_default(&given) == DAEGUN_OK, "defaults failed");
+    CHECK(daegun_outline_options_default(&given) == DAEGUN_OK, "defaults failed");
 
     CHECK(memcmp(&zeroed, &given, sizeof zeroed) == 0,
-          "memset(0) and daegun_raster_options_default disagree, so the header's promise is broken");
-    CHECK(daegun_raster_options_default(NULL) == DAEGUN_NULL, "null options was not refused");
+          "memset(0) and daegun_outline_options_default disagree, so the header's promise is broken");
+    CHECK(daegun_outline_options_default(NULL) == DAEGUN_NULL, "null options was not refused");
 }
 
 static void ttc_count_answers_for_a_plain_font(const char *path)
@@ -283,6 +262,19 @@ static void metrics_answer_and_free_cleanly(const char *path)
     daegun_f64_list_data(ranges, &range_count);
     CHECK(range_count == tag_count * 3, "%zu axes but %zu range numbers", tag_count, range_count);
     CHECK(!variable || tag_count > 0, "a variable face declared no axes");
+    daegun_u16_list *flags = NULL, *axis_names = NULL;
+    CHECK(daegun_font_axis_flags(font, &flags, &axis_names) == DAEGUN_OK, "axis flags failed");
+    size_t flag_count = 0, name_count = 0;
+    const uint16_t *flag_data = daegun_u16_list_data(flags, &flag_count);
+    const uint16_t *name_data = daegun_u16_list_data(axis_names, &name_count);
+    CHECK(flag_count == tag_count && name_count == tag_count, "%zu axes but %zu flags, %zu names",
+          tag_count, flag_count, name_count);
+    for (size_t i = 0; i < flag_count; i++) {
+        CHECK((flag_data[i] & ~1u) == 0, "axis %zu has reserved flag bits 0x%04x", i, flag_data[i]);
+        CHECK(name_data[i] > 255, "axis %zu names its display name with ID %u", i, name_data[i]);
+    }
+    daegun_u16_list_free(flags);
+    daegun_u16_list_free(axis_names);
     daegun_str_list_free(tags);
     daegun_f64_list_free(ranges);
 
@@ -346,6 +338,7 @@ static void math_constants_are_indexed(const char *path)
 struct pen_state {
     int moves, lines, quads, curves, closes;
     const daegun_font *font;
+    uint16_t gid;
     int reentered_ok;
 };
 
@@ -356,13 +349,19 @@ static void on_quad(void *u, float a, float b, float x, float y)
 static void on_curve(void *u, float a, float b, float c, float d, float x, float y)
 { (void)a; (void)b; (void)c; (void)d; (void)x; (void)y; ((struct pen_state *)u)->curves++; }
 
+/* Calls that lock what the drawing call might still hold: the outline cache, read and then written,
+ * and the decoder's scratch space through a glyph drawn from inside the callback. */
 static void on_close(void *u)
 {
     struct pen_state *st = u;
     st->closes++;
-    uint16_t n = 0;
-    if (daegun_font_num_glyphs(st->font, &n) == DAEGUN_OK && n > 0) {
-        st->reentered_ok = 1;
+    size_t count = 0, bytes = 0;
+    daegun_pen inner;
+    memset(&inner, 0, sizeof inner);
+    if (daegun_font_outline_cache_stats(st->font, &count, &bytes) == DAEGUN_OK
+        && daegun_font_set_outline_cache_bytes(st->font, 4u << 20) == DAEGUN_OK
+        && daegun_font_outline_glyph(st->font, st->gid, &inner) == DAEGUN_OK) {
+        st->reentered_ok++;
     }
 }
 
@@ -381,6 +380,7 @@ static void the_pen_draws_and_reentry_is_safe(const char *path)
     struct pen_state st;
     memset(&st, 0, sizeof st);
     st.font = font;
+    st.gid = gid;
 
     daegun_pen pen;
     pen.move_to = on_move;
@@ -394,60 +394,21 @@ static void the_pen_draws_and_reentry_is_safe(const char *path)
     CHECK(st.moves > 0, "'B' produced no move_to");
     CHECK(st.closes >= st.moves, "%d contours opened but %d closed", st.moves, st.closes);
     CHECK(st.lines + st.quads + st.curves > 0, "'B' produced no segments at all");
-    CHECK(st.reentered_ok, "calling back into daegun from a pen callback did not work");
+    CHECK(st.reentered_ok == st.closes, "calling back into daegun from a pen callback did not work");
+
+    /* The same from a prewarmed outline, which replays from the cache instead of decoding. */
+    size_t added = 0;
+    CHECK(daegun_font_prewarm(font, &gid, 1, NULL, 0, &added) == DAEGUN_OK && added == 1, "prewarm took nothing");
+    memset(&st, 0, sizeof st);
+    st.font = font;
+    st.gid = gid;
+    CHECK(daegun_font_outline_glyph(font, gid, &pen) == DAEGUN_OK && st.closes > 0, "the prewarmed outline failed");
+    CHECK(st.reentered_ok == st.closes, "calling back into daegun while replaying a prewarmed outline failed");
 
     daegun_pen empty;
     memset(&empty, 0, sizeof empty);
     CHECK(daegun_font_outline_glyph(font, gid, &empty) == DAEGUN_OK,
           "a pen with no callbacks was not accepted");
-
-    daegun_font_free(font);
-}
-
-static void rasterizing_produces_ink(const char *path)
-{
-    size_t len = 0;
-    uint8_t *bytes = slurp(path, &len);
-    if (!bytes) { CHECK(0, "could not read %s", path); return; }
-    daegun_font *font = NULL;
-    if (daegun_font_open(bytes, len, &font) != DAEGUN_OK) { free(bytes); CHECK(0, "open failed"); return; }
-    free(bytes);
-
-    uint16_t gid = 0;
-    if (daegun_font_glyph_id(font, 'B', &gid) != DAEGUN_OK) { daegun_font_free(font); return; }
-
-    daegun_bitmap *bmp = NULL;
-    daegun_status st = daegun_font_rasterize_glyph(font, gid, 32.0f, NULL, 0, &bmp);
-    CHECK(st == DAEGUN_OK, "rasterize returned %d", st);
-    if (st == DAEGUN_OK) {
-        daegun_metrics m;
-        CHECK(daegun_bitmap_metrics(bmp, &m) == DAEGUN_OK, "metrics failed");
-        CHECK(m.width > 0 && m.height > 0, "a %zux%zu bitmap", m.width, m.height);
-
-        size_t n = 0;
-        const uint8_t *px = daegun_bitmap_pixels(bmp, &n);
-        CHECK(n == m.width * m.height, "grayscale gave %zu bytes for %zux%zu",
-              n, m.width, m.height);
-
-        int inked = 0;
-        for (size_t i = 0; i < n; i++) { if (px[i] > 0) inked++; }
-        CHECK(inked > 0, "'B' rasterized to %zu blank pixels", n);
-        daegun_bitmap_free(bmp);
-    }
-
-    daegun_raster_options opts;
-    daegun_raster_options_default(&opts);
-    opts.layout = DAEGUN_LAYOUT_RGB_H;
-    daegun_bitmap *sub = NULL;
-    if (daegun_font_rasterize_glyph_with(font, gid, 32.0f, NULL, 0, &opts, &sub) == DAEGUN_OK) {
-        daegun_metrics m;
-        daegun_bitmap_metrics(sub, &m);
-        size_t n = 0;
-        daegun_bitmap_pixels(sub, &n);
-        CHECK(n == m.width * m.height * 3, "a subpixel layout gave %zu bytes for %zux%zu",
-              n, m.width, m.height);
-        daegun_bitmap_free(sub);
-    }
 
     daegun_font_free(font);
 }
@@ -664,63 +625,6 @@ static void the_paint_graph_is_walkable(const char *path)
     daegun_font_free(font);
 }
 
-static void drawing_picks_a_route(const char *path)
-{
-    size_t len = 0;
-    uint8_t *bytes = slurp(path, &len);
-    if (!bytes) { CHECK(0, "could not read %s", path); return; }
-    daegun_font *font = NULL;
-    if (daegun_font_open(bytes, len, &font) != DAEGUN_OK) { free(bytes); CHECK(0, "open failed"); return; }
-    free(bytes);
-
-    daegun_batch *batch = NULL;
-    CHECK(daegun_batch_new(&batch) == DAEGUN_OK, "batch failed");
-
-    uint16_t gid = 0;
-    if (daegun_font_glyph_id(font, 'B', &gid) == DAEGUN_OK) {
-        uint64_t before = 0, after = 0;
-        daegun_batch_revision(batch, &before);
-        daegun_glyph_slot slot;
-        memset(&slot, 0, sizeof slot);
-        daegun_status st = daegun_font_gpu_glyph(font, batch, gid, NULL, 0, &slot);
-        CHECK(st == DAEGUN_OK, "gpu_glyph returned %d: %s", st, daegun_last_error().data);
-        if (st == DAEGUN_OK) {
-            daegun_batch_revision(batch, &after);
-            CHECK(after != before, "uploading a glyph did not move the batch revision");
-            CHECK(slot.box_min[0] < slot.box_max[0], "the slot's box is inside out");
-            size_t curves = 0;
-            daegun_batch_curves(batch, &curves);
-            CHECK(curves > 0, "the batch holds no curves after a glyph went in");
-        }
-
-        daegun_drawn *drawn = NULL;
-        st = daegun_font_draw_glyph(font, batch, NULL, NULL, gid, 24.0f, NULL, 0, NULL, -1, &drawn);
-        CHECK(st == DAEGUN_OK, "draw_glyph returned %d", st);
-        if (st == DAEGUN_OK) {
-            int32_t kind = -1;
-            bool ok = false;
-            daegun_drawn_kind(drawn, &kind);
-            daegun_drawn_is_ok(drawn, &ok);
-            CHECK(ok, "a CPU-only draw was not ok, kind %d", kind);
-            CHECK(kind == DAEGUN_DRAWN_CPU || kind == DAEGUN_DRAWN_REFERENCE
-                      || kind == DAEGUN_DRAWN_SCENE,
-                  "a NULL device routed to %d rather than the CPU", kind);
-
-            const daegun_bitmap *bmp = NULL;
-            if (daegun_drawn_bitmap(drawn, &bmp) == DAEGUN_OK) {
-                daegun_metrics m;
-                CHECK(daegun_bitmap_metrics(bmp, &m) == DAEGUN_OK, "borrowed metrics failed");
-                CHECK(m.width > 0, "the drawn bitmap is empty");
-                /* Deliberately NOT daegun_bitmap_free(bmp) – it belongs to the draw result. */
-            }
-            daegun_drawn_free(drawn);
-        }
-    }
-
-    daegun_batch_free(batch);
-    daegun_font_free(font);
-}
-
 static int32_t key_from_array(size_t index, void *user, uint32_t *out_key)
 {
     const uint32_t *keys = (const uint32_t *)user;
@@ -862,6 +766,12 @@ static void raw_tables_round_trip(const char *path)
     CHECK(daegun_table_map_bytes_at(map, 0, &first_bytes) == DAEGUN_OK, "bytes_at 0 failed");
     CHECK(daegun_table_map_tag_at(map, count, &first) == DAEGUN_RANGE,
           "an index past the end was allowed");
+    CHECK(strstr(daegun_last_error().data, "no tag at") != NULL, "tag_at left the reason \"%s\"",
+          daegun_last_error().data);
+    CHECK(daegun_table_map_bytes_at(map, count, &first_bytes) == DAEGUN_RANGE,
+          "bytes past the end were allowed");
+    CHECK(strstr(daegun_last_error().data, "no table at") != NULL, "bytes_at left the reason \"%s\"",
+          daegun_last_error().data);
 
     daegun_blob *built = NULL;
     CHECK(daegun_table_map_build(map, &built) == DAEGUN_OK, "building from the map failed");
@@ -1008,8 +918,1097 @@ static void paths_build_stroke_and_replay(void)
     CHECK(daegun_path_stroke(NULL, &style, 0.25f, &spen) == DAEGUN_NULL, "a null path was stroked");
     CHECK(daegun_path_stroke(path, NULL, 0.25f, &spen) == DAEGUN_NULL, "a null style was accepted");
 
+    /* Each turn of this zigzag, stroked wide and round, takes 256 points: 20,000 take five million. */
+    daegun_path *zigzag = daegun_path_new();
+    daegun_path_move_to(zigzag, 0.0f, 0.0f);
+    for (int i = 1; i <= 20000; i++) daegun_path_line_to(zigzag, (float)i * 0.5f, i % 2 ? 1000.0f : 0.0f);
+    daegun_stroke_style wide = { 200.0f, DAEGUN_CAP_BUTT, DAEGUN_JOIN_ROUND, 4.0f };
+    pen_tally none = { 0, 0, 0, 0, 0 };
+    daegun_pen npen = { tally_move, tally_line, tally_quad, tally_curve, tally_close, &none };
+    CHECK(daegun_path_stroke(zigzag, &wide, 0.001f, &npen) == DAEGUN_RANGE, "a stroke past the cap was drawn");
+    CHECK(daegun_path_stroke_simplified(zigzag, &wide, 0.001f, &npen) == DAEGUN_RANGE,
+          "a simplified stroke past the cap was drawn");
+    CHECK(none.moves == 0 && none.lines == 0, "a refused stroke drew %d lines", none.lines);
+    daegun_path_free(zigzag);
+
     daegun_path_free(path);
     daegun_path_free(NULL);
+}
+
+static void glyph_quads_come_back_as_floats(const char *path)
+{
+    daegun_font *font = open_font(path);
+    if (!font) return;
+
+    uint16_t gid = 0, space = 0;
+    CHECK(daegun_font_glyph_id(font, 'B', &gid) == DAEGUN_OK, "no glyph for 'B'");
+    daegun_quads *quads = NULL;
+    daegun_status st = daegun_font_glyph_quads(font, gid, NULL, 0, &quads);
+    CHECK(st == DAEGUN_OK, "glyph_quads returned %d: %s", st, daegun_last_error().data);
+    if (quads) {
+        size_t n = 0;
+        const float *f = daegun_quads_data(quads, &n);
+        CHECK(f != NULL && n > 0, "'B' came back as %zu curves", n);
+        size_t bad = 0;
+        for (size_t i = 0; f && i < n * 6; i++) {
+            if (!isfinite(f[i]) || f[i] < -4.0f || f[i] > 4.0f) bad++;
+        }
+        CHECK(bad == 0, "%zu of the %zu floats are not finite em coordinates", bad, n * 6);
+        daegun_quads_free(quads);
+        quads = NULL;
+    }
+
+    CHECK(daegun_font_glyph_id(font, ' ', &space) == DAEGUN_OK, "no glyph for the space");
+    CHECK(daegun_font_glyph_quads(font, space, NULL, 0, &quads) == DAEGUN_ABSENT,
+          "the space glyph came back with curves");
+    CHECK(quads == NULL, "an ABSENT answer still wrote the out-parameter");
+
+    /* A square drawn counterclockwise in y-up, so rewinding has to reverse every curve. */
+    daegun_path *square = daegun_path_new();
+    daegun_path_move_to(square, 0.0f, 0.0f);
+    daegun_path_line_to(square, 100.0f, 0.0f);
+    daegun_path_line_to(square, 100.0f, 100.0f);
+    daegun_path_line_to(square, 0.0f, 100.0f);
+    daegun_path_close(square);
+    CHECK(daegun_path_quads(square, 1000.0f, &quads) == DAEGUN_OK, "path_quads failed");
+    if (quads) {
+        size_t n = 0;
+        const float *f = daegun_quads_data(quads, &n);
+        CHECK(n == 4, "a closed square came back as %zu curves", n);
+        CHECK(f && f[0] == 0.0f && f[2] == 0.05f && f[4] == 0.1f,
+              "the first edge is not (0,0)-(0.1,0) in em");
+        CHECK(daegun_quads_normalize_winding(quads) == DAEGUN_OK, "normalize_winding failed");
+        f = daegun_quads_data(quads, &n);
+        CHECK(f && f[0] == 0.1f && f[4] == 0.0f, "a counterclockwise square was not rewound");
+        daegun_quads_free(quads);
+        quads = NULL;
+    }
+    daegun_path *empty = daegun_path_new();
+    CHECK(daegun_path_quads(empty, 1000.0f, &quads) == DAEGUN_ABSENT, "an empty path came back with curves");
+    daegun_path_free(empty);
+
+    size_t n = 0;
+    CHECK(daegun_font_glyph_quads(NULL, gid, NULL, 0, &quads) == DAEGUN_NULL, "a NULL font was accepted");
+    CHECK(daegun_font_glyph_quads(font, gid, NULL, 0, NULL) == DAEGUN_NULL, "a NULL out was accepted");
+    CHECK(daegun_path_quads(NULL, 1000.0f, &quads) == DAEGUN_NULL, "a NULL path was accepted");
+    CHECK(daegun_path_quads(square, 1000.0f, NULL) == DAEGUN_NULL, "a NULL out was accepted");
+    CHECK(daegun_path_quads(square, 0.0f, &quads) == DAEGUN_RANGE, "zero units per em was accepted");
+    CHECK(daegun_quads_normalize_winding(NULL) == DAEGUN_NULL, "rewinding NULL was accepted");
+    CHECK(daegun_quads_data(NULL, &n) == NULL, "data from NULL quads");
+    daegun_quads_free(NULL);
+
+    daegun_path_free(square);
+    daegun_font_free(font);
+}
+
+static void a_color_scene_is_walkable(const char *path)
+{
+    daegun_font *font = open_font(path);
+    if (!font) return;
+
+    daegun_color_scene *scene = NULL;
+    CHECK(daegun_font_colr_scene(font, 0, NULL, 0, 0, &scene) == DAEGUN_ABSENT, ".notdef has a color scene");
+    CHECK(scene == NULL, "an ABSENT answer still wrote the out-parameter");
+
+    /* The first glyph whose scene fills with a gradient, so every part of the struct gets read. */
+    uint16_t glyphs = 0;
+    daegun_font_num_glyphs(font, &glyphs);
+    int found = 0;
+    for (uint16_t gid = 1; gid < glyphs && !found; gid++) {
+        if (daegun_font_colr_scene(font, gid, NULL, 0, 0, &scene) != DAEGUN_OK) continue;
+        size_t nops = 0, nclips = 0, ngrads = 0, nstops = 0;
+        const daegun_scene_op *ops = daegun_color_scene_ops(scene, &nops);
+        const daegun_scene_clip *clips = daegun_color_scene_clips(scene, &nclips);
+        const daegun_scene_gradient *grads = daegun_color_scene_gradients(scene, &ngrads);
+        const double *offsets = NULL;
+        const uint8_t *colors = NULL;
+        CHECK(daegun_color_scene_stops(scene, &nstops, &offsets, &colors) == DAEGUN_OK, "stops failed");
+        CHECK(ops != NULL && nops > 0, "gid %u has a scene with no ops", gid);
+
+        int depth = 0, gradient_fill = -1;
+        for (size_t i = 0; ops && i < nops; i++) {
+            const daegun_scene_op *op = &ops[i];
+            if (op->kind == DAEGUN_SCENE_FILL) {
+                daegun_path *p = NULL;
+                CHECK(daegun_color_scene_path(scene, op->path, &p) == DAEGUN_OK,
+                      "fill %zu names no path", i);
+                daegun_path_free(p);
+                CHECK(op->rule == DAEGUN_FILL_NONZERO || op->rule == DAEGUN_FILL_EVENODD,
+                      "rule %d", op->rule);
+                if (op->paint == DAEGUN_SCENE_PAINT_GRADIENT) {
+                    CHECK(op->gradient < ngrads, "gradient %u of %zu", op->gradient, ngrads);
+                    if (gradient_fill < 0) gradient_fill = (int)i;
+                }
+            } else if (op->kind == DAEGUN_SCENE_PUSH_CLIP) {
+                CHECK((size_t)op->clip_start + op->clip_count <= nclips, "clip run past the end");
+                depth++;
+            } else if (op->kind == DAEGUN_SCENE_PUSH_LAYER) {
+                CHECK(op->blend >= 0 && op->blend <= 27, "composite mode %d", op->blend);
+                depth++;
+            } else {
+                depth--;
+            }
+            CHECK(depth >= 0, "a pop came before its push");
+        }
+        CHECK(depth == 0, "gid %u: pushes and pops do not balance", gid);
+        for (size_t i = 0; clips && i < nclips; i++) {
+            daegun_path *p = NULL;
+            CHECK(daegun_color_scene_path(scene, clips[i].path, &p) == DAEGUN_OK,
+                  "clip %zu names no path", i);
+            daegun_path_free(p);
+        }
+
+        if (gradient_fill >= 0) {
+            found = 1;
+            const daegun_scene_gradient *g = &grads[ops[gradient_fill].gradient];
+            CHECK(g->kind >= DAEGUN_GRADIENT_LINEAR && g->kind <= DAEGUN_GRADIENT_SWEEP, "kind %d", g->kind);
+            CHECK(g->extend >= DAEGUN_EXTEND_PAD && g->extend <= DAEGUN_EXTEND_REFLECT,
+                  "extend %d", g->extend);
+            CHECK((size_t)g->stops_start + g->stops_count <= nstops, "stop run past the end");
+            for (uint32_t s = 1; s < g->stops_count; s++) {
+                double a = offsets[g->stops_start + s - 1], b = offsets[g->stops_start + s];
+                CHECK(a <= b && a >= 0.0 && b <= 1.0, "stops %f, %f are not sorted into 0..1", a, b);
+            }
+
+            /* A 64 px em, y flipped into device rows. */
+            double to_device[6] = { 64.0 / 1000.0, 0.0, 0.0, -64.0 / 1000.0, 32.0, 64.0 };
+            daegun_ramp *ramp = NULL;
+            CHECK(daegun_color_scene_ramp(scene, ops[gradient_fill].gradient, to_device, &ramp) == DAEGUN_OK,
+                  "ramp failed");
+            int painted = 0;
+            for (int y = 0; y < 64 && ramp; y += 4) {
+                for (int x = 0; x < 64; x += 4) {
+                    uint8_t c[4];
+                    daegun_status st = daegun_ramp_sample(ramp, x, y, c);
+                    CHECK(st == DAEGUN_OK || st == DAEGUN_ABSENT, "sample returned %d", st);
+                    painted += st == DAEGUN_OK;
+                }
+            }
+            CHECK(painted > 0, "the gradient painted nothing across a 64 px square");
+            uint8_t c[4];
+            CHECK(daegun_ramp_sample(NULL, 0, 0, c) == DAEGUN_NULL, "sampling NULL was accepted");
+            CHECK(daegun_ramp_sample(ramp, 0, 0, NULL) == DAEGUN_NULL, "a NULL color was accepted");
+
+            /* The default blends as the spec says, and the sRGB blend Chrome draws parts from it. */
+            daegun_ramp *spec = NULL, *srgb = NULL, *bad = NULL;
+            uint32_t grad = ops[gradient_fill].gradient;
+            CHECK(daegun_color_scene_ramp_with(scene, grad, to_device, DAEGUN_INTERPOLATE_LINEAR_LIGHT, &spec)
+                      == DAEGUN_OK
+                      && daegun_color_scene_ramp_with(scene, grad, to_device, DAEGUN_INTERPOLATE_SRGB, &srgb)
+                      == DAEGUN_OK,
+                  "ramp_with failed");
+            int same = 1, parted = 0;
+            for (int y = 0; y < 64 && ramp && spec && srgb; y += 4) {
+                for (int x = 0; x < 64; x += 4) {
+                    uint8_t d[4] = { 0 }, l[4] = { 0 }, r[4] = { 0 };
+                    daegun_status sd = daegun_ramp_sample(ramp, x, y, d);
+                    same &= sd == daegun_ramp_sample(spec, x, y, l) && memcmp(d, l, 4) == 0;
+                    parted += daegun_ramp_sample(srgb, x, y, r) == DAEGUN_OK && sd == DAEGUN_OK && memcmp(l, r, 4) != 0;
+                }
+            }
+            CHECK(same, "the default ramp is not the spec's blend");
+            CHECK(parted > 0, "the sRGB blend matched the spec's at every sample");
+            CHECK(daegun_color_scene_ramp_with(scene, grad, to_device, 2, &bad) == DAEGUN_RANGE && bad == NULL,
+                  "interpolation 2 was accepted");
+            CHECK(strstr(daegun_last_error().data, "interpolation") != NULL, "interpolation 2 left the reason \"%s\"",
+                  daegun_last_error().data);
+            CHECK(daegun_color_scene_ramp_with(scene, grad, to_device, DAEGUN_INTERPOLATE_SRGB, NULL) == DAEGUN_NULL,
+                  "a NULL out was accepted");
+            daegun_ramp_free(spec);
+            daegun_ramp_free(srgb);
+            daegun_ramp_free(ramp);
+
+            daegun_ramp *none = NULL;
+            CHECK(daegun_color_scene_ramp(scene, (uint32_t)ngrads, to_device, &none) == DAEGUN_RANGE,
+                  "a gradient past the end was accepted");
+            daegun_path *p = NULL;
+            CHECK(daegun_color_scene_path(scene, 0xffffffffu, &p) == DAEGUN_RANGE,
+                  "an unknown path id was accepted");
+        }
+        daegun_color_scene_free(scene);
+        scene = NULL;
+    }
+    CHECK(found, "no glyph in %s fills with a gradient", path);
+
+    /* gid 154 has a layer that defers to the text color, so naming one has to reach a fill. */
+    const uint8_t red[4] = { 255, 0, 0, 255 };
+    int took = 0;
+    if (daegun_font_colr_scene_with(font, 154, NULL, 0, 0, red, &scene) == DAEGUN_OK) {
+        size_t n = 0;
+        const daegun_scene_op *ops = daegun_color_scene_ops(scene, &n);
+        for (size_t i = 0; ops && i < n; i++) {
+            if (ops[i].kind == DAEGUN_SCENE_FILL && ops[i].paint == DAEGUN_SCENE_PAINT_SOLID
+                && ops[i].rgba[0] == 255 && ops[i].rgba[1] == 0 && ops[i].rgba[2] == 0) took = 1;
+        }
+        daegun_color_scene_free(scene);
+        scene = NULL;
+    }
+    CHECK(took, "the text color named in colr_scene_with reached no fill");
+
+    size_t n = 0;
+    CHECK(daegun_font_colr_scene(NULL, 1, NULL, 0, 0, &scene) == DAEGUN_NULL, "a NULL font was accepted");
+    CHECK(daegun_font_colr_scene(font, 1, NULL, 0, 0, NULL) == DAEGUN_NULL, "a NULL out was accepted");
+    CHECK(daegun_color_scene_ops(NULL, &n) == NULL, "ops from a NULL scene");
+    daegun_color_scene_free(NULL);
+    daegun_ramp_free(NULL);
+    daegun_font_free(font);
+}
+
+/* Past either end of its color line a PAD gradient holds that end's stop, which a sample inside the
+ * gradient never shows. Three lengths out, so pixel centers do not matter. */
+static void a_padded_gradient_holds_its_end_colors(const char *path)
+{
+    daegun_font *font = open_font(path);
+    if (!font) return;
+    uint16_t glyphs = 0;
+    daegun_font_num_glyphs(font, &glyphs);
+    const double identity[6] = { 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 };
+    int found = 0;
+    for (uint16_t gid = 1; gid < glyphs && !found; gid++) {
+        daegun_color_scene *scene = NULL;
+        if (daegun_font_colr_scene(font, gid, NULL, 0, 0, &scene) != DAEGUN_OK) continue;
+        size_t ngrads = 0, nstops = 0;
+        const daegun_scene_gradient *grads = daegun_color_scene_gradients(scene, &ngrads);
+        const double *offsets = NULL;
+        const uint8_t *colors = NULL;
+        daegun_color_scene_stops(scene, &nstops, &offsets, &colors);
+        for (size_t i = 0; i < ngrads && !found; i++) {
+            const daegun_scene_gradient *g = &grads[i];
+            if (g->kind != DAEGUN_GRADIENT_LINEAR || g->extend != DAEGUN_EXTEND_PAD || g->stops_count < 2) continue;
+            found = 1;
+            daegun_ramp *ramp = NULL;
+            CHECK(daegun_color_scene_ramp(scene, (uint32_t)i, identity, &ramp) == DAEGUN_OK, "ramp failed");
+            const double ts[2] = { -3.0, 4.0 };
+            const uint32_t ends[2] = { g->stops_start, g->stops_start + g->stops_count - 1 };
+            for (int e = 0; e < 2 && ramp; e++) {
+                const double *n = g->numbers, *m = g->transform;
+                double gx = n[0] + ts[e] * (n[2] - n[0]), gy = n[1] + ts[e] * (n[3] - n[1]);
+                double x = m[0] * gx + m[2] * gy + m[4], y = m[1] * gx + m[3] * gy + m[5];
+                uint8_t c[4] = { 0 };
+                CHECK(daegun_ramp_sample(ramp, x - 0.5, y - 0.5, c) == DAEGUN_OK, "glyph %u: nothing past the end", gid);
+                const uint8_t *want = &colors[4 * ends[e]];
+                for (int k = 0; k < 4; k++) {
+                    CHECK(abs((int)c[k] - (int)want[k]) <= 1, "glyph %u, t = %g: channel %d is %u, the end stop %u",
+                          gid, ts[e], k, c[k], want[k]);
+                }
+            }
+            daegun_ramp_free(ramp);
+        }
+        daegun_color_scene_free(scene);
+    }
+    CHECK(found, "no glyph in %s fills with a padded linear gradient", path);
+    daegun_font_free(font);
+}
+
+static int rgba_is(const float got[4], float r, float g, float b, float a)
+{
+    return fabsf(got[0] - r) < 1e-6f && fabsf(got[1] - g) < 1e-6f && fabsf(got[2] - b) < 1e-6f
+           && fabsf(got[3] - a) < 1e-6f;
+}
+
+/* Expected values worked from the Porter-Duff and blend formulas by hand, not read off the library. */
+static void compositing_follows_colr(void)
+{
+    const float half_red[4] = { 1.0f, 0.0f, 0.0f, 0.5f }, blue[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, gray[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+    const float orange[4] = { 1.0f, 0.5f, 0.0f, 1.0f };
+    float out[4];
+
+    CHECK(daegun_composite(3, half_red, blue, out) == DAEGUN_OK && rgba_is(out, 0.5f, 0.0f, 0.5f, 1.0f),
+          "SRC_OVER of half red on blue gave (%g, %g, %g, %g)", out[0], out[1], out[2], out[3]);
+    CHECK(daegun_composite(3, half_red, clear, out) == DAEGUN_OK && rgba_is(out, 0.5f, 0.0f, 0.0f, 0.5f),
+          "SRC_OVER onto nothing is not premultiplied: (%g, %g, %g, %g)", out[0], out[1], out[2], out[3]);
+    CHECK(daegun_composite(23, orange, gray, out) == DAEGUN_OK && rgba_is(out, 0.5f, 0.25f, 0.0f, 1.0f),
+          "MULTIPLY gave (%g, %g, %g, %g)", out[0], out[1], out[2], out[3]);
+    CHECK(daegun_composite(0, orange, gray, out) == DAEGUN_OK && rgba_is(out, 0.0f, 0.0f, 0.0f, 0.0f),
+          "CLEAR left (%g, %g, %g, %g)", out[0], out[1], out[2], out[3]);
+    CHECK(daegun_composite(11, orange, gray, out) == DAEGUN_OK && rgba_is(out, 0.0f, 0.0f, 0.0f, 0.0f),
+          "XOR of two opaque pixels left (%g, %g, %g, %g)", out[0], out[1], out[2], out[3]);
+    /* The last mode, LUMINOSITY: gray takes orange's luminosity, 0.3 + 0.59 * 0.5. */
+    CHECK(daegun_composite(27, orange, gray, out) == DAEGUN_OK && rgba_is(out, 0.595f, 0.595f, 0.595f, 1.0f),
+          "LUMINOSITY gave (%g, %g, %g, %g)", out[0], out[1], out[2], out[3]);
+
+    const float bad[4] = { NAN, 0.0f, 0.0f, 1.0f };
+    CHECK(daegun_composite(28, orange, gray, out) == DAEGUN_RANGE, "mode 28 was accepted");
+    CHECK(strstr(daegun_last_error().data, "0 to 27") != NULL, "mode 28 left the reason \"%s\"",
+          daegun_last_error().data);
+    CHECK(daegun_composite(-1, orange, gray, out) == DAEGUN_RANGE, "mode -1 was accepted");
+    CHECK(daegun_composite(3, bad, gray, out) == DAEGUN_RANGE, "a NaN source was accepted");
+    /* Past 0..1 the HSL modes can answer NaN, as HUE does for this one. */
+    const float huge[4] = { 1e30f, 0.5f, 1e30f, 0.5f }, over[4] = { 1e30f, 1e30f, 0.25f, 1.0f };
+    const float bright[4] = { 1.5f, 0.0f, 0.0f, 1.0f };
+    CHECK(daegun_composite(24, huge, over, out) == DAEGUN_RANGE, "a source of 1e30 was accepted");
+    CHECK(daegun_composite(3, orange, bright, out) == DAEGUN_RANGE, "a backdrop of 1.5 was accepted");
+    CHECK(daegun_composite(3, orange, gray, NULL) == DAEGUN_NULL, "a NULL out was accepted");
+}
+
+static void square_into(daegun_path *p, float x, float y, float side)
+{
+    daegun_path_move_to(p, x, y);
+    daegun_path_line_to(p, x + side, y);
+    daegun_path_line_to(p, x + side, y + side);
+    daegun_path_line_to(p, x, y + side);
+    daegun_path_close(p);
+}
+
+/* A pen of the caller's own that adds to a path it holds a pointer to, shifted right by 100. */
+struct forward { daegun_path *path; };
+static void fwd_move(void *u, float x, float y) { daegun_path_move_to(((struct forward *)u)->path, x + 100.0f, y); }
+static void fwd_line(void *u, float x, float y) { daegun_path_line_to(((struct forward *)u)->path, x + 100.0f, y); }
+static void fwd_quad(void *u, float a, float b, float x, float y)
+{ daegun_path_quad_to(((struct forward *)u)->path, a + 100.0f, b, x + 100.0f, y); }
+static void fwd_curve(void *u, float a, float b, float c, float d, float x, float y)
+{ daegun_path_curve_to(((struct forward *)u)->path, a + 100.0f, b, c + 100.0f, d, x + 100.0f, y); }
+static void fwd_close(void *u) { daegun_path_close(((struct forward *)u)->path); }
+
+/* A pen from daegun_path_as_pen appends to its own path, so drawing a path into its own pen grows it
+ * while it is read. Ten verbs is past the first allocation, so the growth moves the storage. */
+static void a_path_can_draw_into_itself(void)
+{
+    daegun_path *p = daegun_path_new();
+    square_into(p, 0.0f, 0.0f, 10.0f);
+    square_into(p, 20.0f, 0.0f, 10.0f);
+    size_t before = 0, after = 0;
+    CHECK(daegun_path_verbs(p, NULL, 0, &before) == DAEGUN_OK && before == 10, "two squares are %zu verbs", before);
+
+    daegun_pen self;
+    CHECK(daegun_path_as_pen(p, &self) == DAEGUN_OK, "as_pen failed");
+    const double shift[6] = { 1.0, 0.0, 0.0, 1.0, 100.0, 0.0 };
+    CHECK(daegun_path_replay(p, shift, &self) == DAEGUN_OK, "replaying a path into itself failed");
+    CHECK(daegun_path_verbs(p, NULL, 0, &after) == DAEGUN_OK && after == 2 * before,
+          "replaying %zu verbs into their own path gave %zu", before, after);
+    double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    CHECK(daegun_path_bounds(p, &x0, &y0, &x1, &y1) == DAEGUN_OK && x1 == 130.0,
+          "the shifted copy ends at %g, not 130", x1);
+
+    daegun_stroke_style style = { 2.0f, DAEGUN_CAP_BUTT, DAEGUN_JOIN_MITER, 4.0f };
+    CHECK(daegun_path_stroke(p, &style, 0.25f, &self) == DAEGUN_OK, "stroking a path into itself failed");
+    CHECK(daegun_path_stroke_simplified(p, &style, 0.25f, &self) == DAEGUN_OK,
+          "simplified stroking of a path into itself failed");
+    CHECK(daegun_path_verbs(p, NULL, 0, &after) == DAEGUN_OK && after > 4 * before,
+          "two strokes added only %zu verbs", after - 2 * before);
+
+    /* The same path reached through a pen that is not daegun_path_as_pen's, which no pointer check sees. */
+    daegun_path *q = daegun_path_new();
+    for (int i = 0; i < 64; i++) square_into(q, (float)i * 20.0f, 0.0f, 10.0f);
+    size_t q_before = 0, q_after = 0;
+    daegun_path_verbs(q, NULL, 0, &q_before);
+    struct forward to_q = { q };
+    daegun_pen fwd = { fwd_move, fwd_line, fwd_quad, fwd_curve, fwd_close, &to_q };
+    CHECK(daegun_path_replay(q, NULL, &fwd) == DAEGUN_OK, "replaying a path into a pen that grows it failed");
+    CHECK(daegun_path_verbs(q, NULL, 0, &q_after) == DAEGUN_OK && q_after == 2 * q_before,
+          "replaying %zu verbs into a pen that adds to the same path gave %zu", q_before, q_after);
+    daegun_path_free(q);
+    daegun_path_free(p);
+}
+
+static void paths_flatten_and_resolve(void)
+{
+    float area = 0.0f;
+    CHECK(daegun_flatten_max_area_for(16.0f, 1000.0f, &area) == DAEGUN_OK, "max_area_for failed");
+    CHECK(area == 375.0f, "6 * 1000 / 16 came back as %f", area);
+    CHECK(daegun_flatten_max_area_for(0.0f, 1000.0f, &area) == DAEGUN_RANGE, "zero px was accepted");
+
+    /* Two squares overlapping in a 49 by 40 corner, where no edge's midpoint lies: their union is one
+     * boundary of 8 points. */
+    daegun_path *two = daegun_path_new();
+    square_into(two, 0.0f, 0.0f, 100.0f);
+    square_into(two, 51.0f, 60.0f, 100.0f);
+    daegun_contours *flat = NULL, *resolved = NULL;
+    CHECK(daegun_path_flatten(two, 1.0f, &flat) == DAEGUN_OK, "flatten failed");
+    size_t n = 0, points = 0;
+    if (flat) {
+        CHECK(daegun_contours_count(flat, &n) == DAEGUN_OK && n == 2,
+              "two squares flattened to %zu contours", n);
+        const float *p = daegun_contours_points(flat, 1, &points);
+        CHECK(p && points == 4 && p[0] == 51.0f && p[1] == 60.0f, "the second square came back wrong");
+        CHECK(daegun_contours_points(flat, 2, &points) == NULL, "a contour past the end");
+        CHECK(daegun_contours_resolve_overlaps(flat, &resolved) == DAEGUN_OK, "the overlap was left alone");
+        if (resolved) {
+            CHECK(daegun_contours_count(resolved, &n) == DAEGUN_OK && n == 1,
+                  "the union is %zu contours", n);
+            daegun_contours_points(resolved, 0, &points);
+            CHECK(points == 8, "the union's outline has %zu points, not 8", points);
+            daegun_contours_free(resolved);
+            resolved = NULL;
+        }
+        daegun_contours_free(flat);
+        flat = NULL;
+    }
+
+    daegun_path *one = daegun_path_new();
+    square_into(one, 0.0f, 0.0f, 100.0f);
+    CHECK(daegun_path_flatten(one, 1.0f, &flat) == DAEGUN_OK, "flatten of one square failed");
+    CHECK(daegun_contours_resolve_overlaps(flat, &resolved) == DAEGUN_ABSENT, "a lone square was resolved");
+    daegun_contours_free(flat);
+    flat = NULL;
+
+    /* A quarter circle as one quadratic: a finer tolerance has to give more points. */
+    daegun_path *curve = daegun_path_new();
+    daegun_path_move_to(curve, 0.0f, 0.0f);
+    daegun_path_quad_to(curve, 100.0f, 0.0f, 100.0f, 100.0f);
+    daegun_path_close(curve);
+    size_t coarse = 0, fine = 0;
+    if (daegun_path_flatten(curve, 100.0f, &flat) == DAEGUN_OK) {
+        daegun_contours_points(flat, 0, &coarse);
+        daegun_contours_free(flat);
+    }
+    if (daegun_path_flatten(curve, 1.0f, &flat) == DAEGUN_OK) {
+        daegun_contours_points(flat, 0, &fine);
+        daegun_contours_free(flat);
+    }
+    flat = NULL;
+    CHECK(coarse >= 3 && fine > coarse, "a finer tolerance gave %zu points against %zu", fine, coarse);
+
+    daegun_path *empty = daegun_path_new();
+    CHECK(daegun_path_flatten(empty, 1.0f, &flat) == DAEGUN_ABSENT, "an empty path flattened to something");
+    CHECK(daegun_path_flatten(NULL, 1.0f, &flat) == DAEGUN_NULL, "a NULL path was accepted");
+    CHECK(daegun_path_flatten(one, 1.0f, NULL) == DAEGUN_NULL, "a NULL out was accepted");
+    CHECK(daegun_contours_count(NULL, &n) == DAEGUN_NULL, "counting NULL contours");
+    CHECK(daegun_contours_points(NULL, 0, &points) == NULL, "points from NULL contours");
+    CHECK(daegun_contours_resolve_overlaps(NULL, &resolved) == DAEGUN_NULL, "resolving NULL contours");
+    CHECK(daegun_flatten_max_area_for(16.0f, 1000.0f, NULL) == DAEGUN_NULL, "a NULL out was accepted");
+    daegun_contours_free(NULL);
+
+    /* A point that is not finite has no place in a polygon. At max_area 0 each curve is 4,097 points,
+     * so 300 of them pass DAEGUN_MAX_FLATTEN_POINTS. */
+    daegun_path *bad = daegun_path_new(), *wave = daegun_path_new();
+    daegun_path_move_to(bad, 0.0f, 0.0f);
+    daegun_path_line_to(bad, NAN, 10.0f);
+    daegun_path_line_to(bad, 10.0f, 10.0f);
+    daegun_path_close(bad);
+    CHECK(daegun_path_flatten(bad, 1.0f, &flat) == DAEGUN_RANGE && !flat, "a NaN point was flattened");
+    daegun_path_move_to(wave, 0.0f, 0.0f);
+    for (int i = 0; i < 300; i++) {
+        float x = (float)i * 10.0f;
+        daegun_path_curve_to(wave, x + 3.0f, 50.0f, x + 6.0f, -50.0f, x + 10.0f, 0.0f);
+    }
+    daegun_path_close(wave);
+    CHECK(daegun_path_flatten(wave, 0.0f, &flat) == DAEGUN_RANGE && !flat,
+          "a path past DAEGUN_MAX_FLATTEN_POINTS was flattened");
+    daegun_path_free(bad);
+    daegun_path_free(wave);
+    daegun_path_free(empty);
+    daegun_path_free(curve);
+    daegun_path_free(one);
+    daegun_path_free(two);
+}
+
+/* The contours drawn and how far they reach in x, every point a callback is handed counted. */
+struct reach { int contours; float min_x, max_x; };
+static void reach_x(struct reach *r, float x)
+{
+    r->min_x = x < r->min_x ? x : r->min_x;
+    r->max_x = x > r->max_x ? x : r->max_x;
+}
+static void reach_move(void *u, float x, float y) { (void)y; ((struct reach *)u)->contours++; reach_x(u, x); }
+static void reach_line(void *u, float x, float y) { (void)y; reach_x(u, x); }
+static void reach_quad(void *u, float cx, float cy, float x, float y) { (void)cy; (void)y; reach_x(u, cx); reach_x(u, x); }
+
+/* The fixture's A rounds a stem horizontally, which Classic does and Subpixel declines, so x tells the
+ * two modes apart. A contour's end is the index of its last point. */
+static void a_hinted_glyph_is_readable_from_c(void)
+{
+    daegun_font *font = open_font("assets/test-fonts/test-fixtures/hinted.ttf");
+    if (!font) return;
+    uint16_t gid = 0;
+    CHECK(daegun_font_glyph_id(font, 'A', &gid) == DAEGUN_OK, "the fixture has no A");
+    daegun_hinted_outline *sub = NULL, *classic = NULL;
+    CHECK(daegun_font_hinted_glyph(font, gid, 16.0f, NULL, 0, DAEGUN_HINT_SUBPIXEL, &sub) == DAEGUN_OK, "subpixel failed");
+    CHECK(daegun_font_hinted_glyph(font, gid, 16.0f, NULL, 0, DAEGUN_HINT_CLASSIC, &classic) == DAEGUN_OK, "classic failed");
+    size_t n = 0, m = 0, ends_n = 0;
+    const int32_t *xs = NULL, *xc = NULL;
+    daegun_hinted_outline_points(sub, &n, &xs, NULL, NULL);
+    daegun_hinted_outline_points(classic, &m, &xc, NULL, NULL);
+    CHECK(n > 0 && n == m, "the modes hinted %zu and %zu points", n, m);
+    int differ = 0;
+    for (size_t i = 0; i < n && i < m; i++) differ |= xs[i] != xc[i];
+    CHECK(differ, "Subpixel and Classic hinted A's x the same, so the mode did not reach the hinter");
+    const size_t *ends = daegun_hinted_outline_contours(sub, &ends_n);
+    CHECK(ends && ends_n > 0 && ends[ends_n - 1] == n - 1, "the last contour ends at %zu of %zu points",
+          ends && ends_n ? ends[ends_n - 1] : 0, n);
+
+    int32_t lo = INT32_MAX, hi = INT32_MIN;
+    for (size_t i = 0; i < n; i++) {
+        lo = xs[i] < lo ? xs[i] : lo;
+        hi = xs[i] > hi ? xs[i] : hi;
+    }
+    struct reach r = { 0, INFINITY, -INFINITY };
+    daegun_pen pen = { reach_move, reach_line, reach_quad, NULL, NULL, &r };
+    CHECK(daegun_hinted_outline_draw(sub, &pen) == DAEGUN_OK, "hinted_outline_draw failed");
+    CHECK((size_t)r.contours == ends_n && r.min_x == lo / 64.0f && r.max_x == hi / 64.0f,
+          "the drawn A spans %g to %g px in %d contours, its points %g to %g in %zu",
+          r.min_x, r.max_x, r.contours, lo / 64.0f, hi / 64.0f, ends_n);
+    daegun_hinted_outline_free(sub);
+    daegun_hinted_outline_free(classic);
+    daegun_font_free(font);
+}
+
+/* Readers no other check reaches, each against a fixture whose answer fontTools gives too. */
+static void the_remaining_readers_answer(void)
+{
+    daegun_font *inter = open_font("assets/test-fonts/inter/InterVariable.ttf");
+    if (inter) {
+        uint16_t h = 0;
+        daegun_font_glyph_id(inter, 'H', &h);
+        daegun_path *plain = daegun_path_new(), *heavy = daegun_path_new();
+        daegun_pen to_plain, to_heavy;
+        daegun_path_as_pen(plain, &to_plain);
+        daegun_path_as_pen(heavy, &to_heavy);
+        const daegun_axis wght = {"wght", 900.0};
+        CHECK(daegun_font_outline_glyph_instanced(inter, h, NULL, 0, &to_plain) == DAEGUN_OK, "H at no axes");
+        CHECK(daegun_font_outline_glyph_instanced(inter, h, &wght, 1, &to_heavy) == DAEGUN_OK, "H at wght 900");
+        double x0, y0, x1, y1, hx0, hy0, hx1, hy1;
+        daegun_path_bounds(plain, &x0, &y0, &x1, &y1);
+        daegun_path_bounds(heavy, &hx0, &hy0, &hx1, &hy1);
+        CHECK(hx1 - hx0 > x1 - x0, "H at wght 900 is no wider than the default");
+        daegun_path_free(plain);
+        daegun_path_free(heavy);
+
+        size_t added = 0, count = 9, bytes = 9;
+        CHECK(daegun_font_prewarm(inter, &h, 1, NULL, 0, &added) == DAEGUN_OK && added == 1, "prewarm took %zu", added);
+        daegun_font_outline_cache_stats(inter, &count, &bytes);
+        CHECK(count == 1 && bytes > 0, "the warmed cache holds %zu outlines", count);
+        CHECK(daegun_font_clear_prewarm(inter) == DAEGUN_OK, "clear_prewarm failed");
+        daegun_font_outline_cache_stats(inter, &count, &bytes);
+        CHECK(count == 0 && bytes == 0, "the cleared cache holds %zu outlines in %zu bytes", count, bytes);
+        daegun_font_free(inter);
+    }
+
+    daegun_font *stix = open_font("assets/test-fonts/stix-two-math/STIX2Math.otf");
+    if (stix) {
+        uint16_t h = 0;
+        daegun_font_glyph_id(stix, 'H', &h);
+        daegun_cff_hints *hints = NULL;
+        CHECK(daegun_font_cff_hints(stix, h, &hints) == DAEGUN_OK, "STIX's H has no CFF hints");
+        size_t n = 0;
+        const double *stems = daegun_cff_hints_stems(hints, &n);
+        CHECK(stems && n > 0, "STIX's H declares %zu stems", n);
+        for (size_t i = 0; stems && i < n; i++) {
+            CHECK((stems[3 * i] == 0.0 || stems[3 * i] == 1.0) && isfinite(stems[3 * i + 1]) && isfinite(stems[3 * i + 2]),
+                  "stem %zu is not a direction and two edges", i);
+        }
+        daegun_cff_hints_free(hints);
+
+        /* E's nine stems take two bytes a mask, and its second mask switches them at point 20. */
+        uint16_t e = 0;
+        daegun_font_glyph_id(stix, 'E', &e);
+        CHECK(daegun_font_cff_hints(stix, e, &hints) == DAEGUN_OK, "STIX's E has no CFF hints");
+        daegun_cff_hints_stems(hints, &n);
+        size_t masks = 0, last = 0;
+        CHECK(daegun_cff_hints_mask_count(hints, &masks) == DAEGUN_OK && masks == 5, "STIX's E sets %zu masks", masks);
+        for (size_t i = 0; i < masks; i++) {
+            size_t point = 0, bytes = 0;
+            const uint8_t *bits = NULL;
+            CHECK(daegun_cff_hints_mask_at(hints, i, &point, &bits, &bytes) == DAEGUN_OK && bits
+                      && n == 9 && bytes == 2 && point >= last,
+                  "mask %zu holds %zu bytes for %zu stems from point %zu", i, bytes, n, point);
+            CHECK(i != 1 || (point == 20 && bits[0] == 115 && bits[1] == 128), "E's second mask is not 115 128 at 20");
+            last = point;
+        }
+        CHECK(daegun_cff_hints_mask_at(hints, masks, NULL, NULL, NULL) == DAEGUN_RANGE, "a mask past the last");
+        daegun_cff_hints_free(hints);
+        daegun_font_free(stix);
+    }
+
+    daegun_font *bungee = open_font("assets/test-fonts/bungee-tint/BungeeTint-Regular.ttf");
+    if (bungee) {
+        uint16_t a = 0;
+        daegun_font_glyph_id(bungee, 'A', &a);
+        daegun_colr_layers *first = NULL, *second = NULL;
+        CHECK(daegun_font_colr_layers_for_palette(bungee, a, 0, &first) == DAEGUN_OK, "A in palette 0");
+        CHECK(daegun_font_colr_layers_for_palette(bungee, a, 1, &second) == DAEGUN_OK, "A in palette 1");
+        size_t n0 = 0, n1 = 0;
+        const daegun_colr_layer *l0 = daegun_colr_layers_data(first, &n0), *l1 = daegun_colr_layers_data(second, &n1);
+        CHECK(n0 == 2 && n1 == 2, "A has %zu and %zu layers, not 2", n0, n1);
+        if (n0 == 2 && n1 == 2) {
+            CHECK(l0[0].r == 201 && l0[0].g == 9 && l0[0].b == 0, "palette 0 colors A's first layer %u %u %u", l0[0].r, l0[0].g, l0[0].b);
+            CHECK(l1[0].r == 255 && l1[0].g == 255 && l1[0].b == 255, "palette 1 does not color it white");
+        }
+        daegun_colr_layers_free(first);
+        daegun_colr_layers_free(second);
+        daegun_font_free(bungee);
+    }
+
+    daegun_font *glyphs = open_font("assets/test-fonts/colr-v1-test-glyphs/test_glyphs.ttf");
+    if (glyphs) {
+        daegun_palettes *palettes = NULL;
+        CHECK(daegun_font_palette_info(glyphs, &palettes) == DAEGUN_OK, "palette_info failed");
+        size_t n = 0;
+        const daegun_palette_info *p = daegun_palettes_data(palettes, &n);
+        CHECK(n == 3, "%zu palettes, not 3", n);
+        if (n == 3) {
+            CHECK(!p[0].light_safe && !p[0].dark_safe && p[1].dark_safe && !p[1].light_safe && p[2].light_safe
+                      && !p[2].dark_safe && !p[0].has_name_id, "the palette flags are not CPAL's");
+        }
+        daegun_palettes_free(palettes);
+        /* Glyph 148's gradient takes the text color at its middle stop. */
+        daegun_paint *paint = NULL;
+        size_t stops = 0, nf = 0;
+        CHECK(daegun_font_colr_v1_paint(glyphs, 148, NULL, 0, 0, &paint) == DAEGUN_OK
+                  && daegun_paint_stops(paint, &stops, NULL, NULL) == DAEGUN_OK,
+              "glyph 148 has no paint");
+        const uint8_t *fg = daegun_paint_stops_foreground(paint, &nf);
+        CHECK(stops == 3 && nf == 3 && !fg[0] && fg[1] && !fg[2], "glyph 148's stops are not plain, text, plain");
+        daegun_paint_free(paint);
+        daegun_font_free(glyphs);
+    }
+
+    daegun_font *emoji = open_font("assets/test-fonts/noto-color-emoji/NotoColorEmoji.ttf");
+    if (emoji) {
+        uint16_t smile = 0;
+        daegun_font_glyph_id(emoji, 0x1F600, &smile);
+        daegun_glyph_bitmap *b = NULL;
+        CHECK(daegun_font_glyph_bitmap(emoji, smile, 64, &b) == DAEGUN_OK, "no bitmap for U+1F600");
+        size_t len = 0;
+        uint16_t ppem = 0, w = 0, h = 0;
+        int16_t left = 0, top = 0;
+        CHECK(daegun_glyph_bitmap_placement(b, &ppem, &left, &top, NULL) == DAEGUN_OK, "no placement");
+        const uint8_t *png = daegun_glyph_bitmap_png(b, &len);
+        CHECK(png && len > 8 && memcmp(png, "\x89PNG", 4) == 0 && ppem == 109, "not a PNG at 109 ppem");
+        CHECK(top == 101 && !daegun_glyph_bitmap_coverage(b, &w, &h), "a CBDT PNG placed wrong, or given coverage");
+        daegun_glyph_bitmap_free(b);
+        daegun_font_free(emoji);
+    }
+
+    size_t len = 0;
+    uint8_t *ttc = slurp("assets/test-fonts/test-fixtures/EBGaramond-InterVariable.ttc", &len);
+    if (ttc) {
+        daegun_font *second = NULL;
+        uint16_t n = 0;
+        CHECK(daegun_font_open_collection(ttc, len, 1, &second) == DAEGUN_OK, "the collection's second face");
+        daegun_font_num_glyphs(second, &n);
+        CHECK(n == 2937, "the collection's second face has %u glyphs, not Inter's 2,937", n);
+        daegun_font_free(second);
+        free(ttc);
+    }
+}
+
+/* A miter's tip overflows f32 long before the width does; both, like a NaN width, are refused. */
+static void a_stroke_that_overflows_is_refused(void)
+{
+    daegun_path *p = daegun_path_new();
+    daegun_path_move_to(p, 0.0f, 0.0f);
+    daegun_path_line_to(p, 1000.0f, 0.0f);
+    daegun_path_line_to(p, 0.0f, 1.0f);
+    daegun_path *sink = daegun_path_new();
+    daegun_pen pen;
+    daegun_path_as_pen(sink, &pen);
+    const float widths[2] = {1e33f, NAN};
+    for (int i = 0; i < 2; i++) {
+        daegun_stroke_style style = {widths[i], DAEGUN_CAP_BUTT, DAEGUN_JOIN_MITER, 1e30f};
+        CHECK(daegun_path_stroke(p, &style, 0.0f, &pen) == DAEGUN_RANGE, "stroke width %g was not RANGE", widths[i]);
+        CHECK(daegun_path_stroke_simplified(p, &style, 0.0f, &pen) == DAEGUN_RANGE,
+              "simplified stroke width %g was not RANGE", widths[i]);
+    }
+    size_t n = 1;
+    daegun_path_verbs(sink, NULL, 0, &n);
+    CHECK(n == 0, "a refused stroke drew %zu verbs", n);
+    daegun_path_free(sink);
+    daegun_path_free(p);
+}
+
+/* Rule 2: a count above 0 says the pointer beside it is required, so NULL with one is DAEGUN_NULL
+ * rather than nothing. With a count of 0 these calls take NULL as empty. */
+static void null_with_a_count_is_null(const char *path)
+{
+    daegun_font *font = open_font(path);
+    if (!font) return;
+    uint16_t u16 = 0, gid = 0;
+    CHECK(daegun_read_u16_be(NULL, 4, 0, &u16) == DAEGUN_NULL, "a NULL buffer of 4 bytes was read");
+    CHECK(daegun_read_u16_be(NULL, 0, 0, &u16) == DAEGUN_RANGE, "a read past an empty buffer was not RANGE");
+    CHECK(daegun_bytes_window(NULL, 4, 0, 2) == NULL, "a NULL buffer of 4 bytes gave a window");
+    CHECK(daegun_coverage_index(NULL, 10, 3, &gid) == DAEGUN_NULL, "a NULL coverage table was searched");
+
+    daegun_table_map *map = daegun_table_map_new();
+    CHECK(daegun_table_map_set(map, "abcd", NULL, 5) == DAEGUN_NULL, "a NULL table of 5 bytes was stored");
+    CHECK(daegun_table_map_set(map, "abcd", NULL, 0) == DAEGUN_OK, "an empty table was refused");
+    daegun_table_map_free(map);
+
+    daegun_path *p = daegun_path_new();
+    daegun_path_move_to(p, 0.0f, 0.0f);
+    size_t n = 99;
+    CHECK(daegun_path_verbs(p, NULL, 10, &n) == DAEGUN_NULL, "NULL verbs with a capacity of 10 were filled");
+    CHECK(n == 99, "a refused call wrote its count: %zu", n);
+    CHECK(daegun_path_verbs(p, NULL, 0, &n) == DAEGUN_OK && n == 1, "the verb count was not given");
+    CHECK(daegun_path_points(p, NULL, NULL, 10, &n) == DAEGUN_OK && n == 1, "skipping both coordinates failed");
+    daegun_path_free(p);
+
+    daegun_run *run = NULL;
+    CHECK(daegun_font_shape(font, "ab", NULL, 1, false, &run) == DAEGUN_NULL, "NULL axes with a count shaped");
+    CHECK(daegun_font_shape_with_features(font, "ab", NULL, 0, false, NULL, NULL, 2, &run) == DAEGUN_NULL,
+          "NULL features with a count shaped");
+    CHECK(run == NULL, "a refused shape delivered a run");
+    CHECK(daegun_font_shape(font, "ab", NULL, 0, false, &run) == DAEGUN_OK, "no axes at all was refused");
+    daegun_run_free(run);
+
+    /* A NULL result is DAEGUN_NULL whatever the input, not ABSENT or RANGE when there was nothing to give. */
+    uint16_t glyphs = 0;
+    daegun_font_num_glyphs(font, &glyphs);
+    daegun_path *empty = daegun_path_new();
+    CHECK(daegun_font_hinted_glyph(font, glyphs, 16.0f, NULL, 0, DAEGUN_HINT_SUBPIXEL, NULL) == DAEGUN_NULL,
+          "a glyph past the end with a NULL out was not DAEGUN_NULL");
+    CHECK(daegun_font_colr_layers(font, 5, NULL) == DAEGUN_NULL, "colr layers with a NULL out");
+    CHECK(daegun_font_instance_table(font, NULL, 0, "ZZZZ", NULL) == DAEGUN_NULL, "a missing table with a NULL out");
+    CHECK(daegun_char_general_category(0xD800, NULL) == DAEGUN_NULL, "a surrogate with a NULL out");
+    CHECK(daegun_path_bounds(empty, NULL, NULL, NULL, NULL) == DAEGUN_NULL, "bounds of nothing into NULL");
+    daegun_path_free(empty);
+
+    static const uint8_t junk[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    daegun_usize_list *glyph_offsets = NULL;
+    CHECK(daegun_font_glyph_bitmap(font, 5, 16, NULL) == DAEGUN_NULL, "a missing bitmap with a NULL out");
+    CHECK(daegun_font_colr_v1_paint(font, 5, NULL, 0, 0, NULL) == DAEGUN_NULL, "a missing paint with a NULL out");
+    CHECK(daegun_font_cff_hints(font, 5, NULL) == DAEGUN_NULL, "missing CFF hints with a NULL out");
+    CHECK(daegun_font_name_string(font, 999, NULL) == DAEGUN_NULL, "a missing name with a NULL out");
+    CHECK(daegun_font_cmap_index_allowance(font, NULL) == DAEGUN_NULL, "the cmap allowance into NULL");
+    CHECK(daegun_parse_loca(junk, 4, 0, SIZE_MAX, NULL) == DAEGUN_NULL, "too many glyphs with a NULL out");
+    CHECK(daegun_parse_loca(NULL, 4, 0, SIZE_MAX, &glyph_offsets) == DAEGUN_NULL, "a NULL loca of 4 bytes was RANGE");
+    daegun_path *drawn = daegun_path_new();
+    daegun_pen into_drawn;
+    daegun_path_as_pen(drawn, &into_drawn);
+    CHECK(daegun_font_prepared_outline(font, 5, NAN, NULL, 2, NULL, &into_drawn, NULL) == DAEGUN_NULL,
+          "NULL axes with a count were RANGE");
+    daegun_path_free(drawn);
+    CHECK(daegun_read_u16_be(junk, 4, 100, NULL) == DAEGUN_NULL, "a read past the end into NULL");
+    CHECK(daegun_coverage_index(junk, 4, 3, NULL) == DAEGUN_NULL, "a junk coverage table with a NULL out");
+    CHECK(daegun_coverage_glyphs(junk, 4, 0, NULL) == DAEGUN_NULL, "junk coverage glyphs with a NULL out");
+    CHECK(daegun_aat_state_table_open(junk, 4, 0, 10, NULL) == DAEGUN_NULL, "a junk state table with a NULL out");
+    CHECK(daegun_ankr_version(junk, 1, NULL) == DAEGUN_NULL, "a short ankr version with a NULL out");
+    CHECK(daegun_ankr_control_point(junk, 4, 100, NULL, NULL) == DAEGUN_NULL, "a point past the end into NULL");
+    CHECK(daegun_feature_variations_open(junk, 4, NULL) == DAEGUN_NULL, "junk feature variations with a NULL out");
+    CHECK(daegun_ivs_parse(junk, 4, 0, NULL) == DAEGUN_NULL, "a junk variation store with a NULL out");
+    CHECK(daegun_delta_set_index_map_parse(junk, 4, 0, NULL) == DAEGUN_NULL, "a junk index map with a NULL out");
+    daegun_table_map *tables = daegun_table_map_new();
+    CHECK(daegun_table_map_get(tables, "ZZZZ", NULL) == DAEGUN_NULL, "a missing mapped table with a NULL out");
+    daegun_table_map_free(tables);
+    daegun_font_free(font);
+}
+
+/* A scene holds each glyph's outline once, and past DAEGUN_MAX_FLATTEN_POINTS points in all it is
+ * DAEGUN_RANGE: P layers 17 composites of 64,000 points, R one composite eight times. */
+static void a_scene_holds_each_outline_once_within_a_bound(void)
+{
+    daegun_font *font = open_font("assets/test-fonts/test-fixtures/colr-clip.ttf");
+    if (!font) return;
+    uint16_t past = 0, repeated = 0;
+    CHECK(daegun_font_glyph_id(font, 'P', &past) == DAEGUN_OK, "the fixture has no P");
+    CHECK(daegun_font_glyph_id(font, 'R', &repeated) == DAEGUN_OK, "the fixture has no R");
+    daegun_color_scene *scene = NULL;
+    CHECK(daegun_font_colr_scene(font, past, NULL, 0, 0, &scene) == DAEGUN_RANGE && !scene,
+          "a scene past DAEGUN_MAX_FLATTEN_POINTS points was built");
+    CHECK(daegun_font_colr_scene(font, repeated, NULL, 0, 0, &scene) == DAEGUN_OK, "eight layers failed");
+    daegun_path *p = NULL;
+    CHECK(daegun_color_scene_path(scene, 0, &p) == DAEGUN_OK, "the one outline is missing");
+    daegun_path_free(p);
+    p = NULL;
+    CHECK(daegun_color_scene_path(scene, 1, &p) == DAEGUN_RANGE, "eight layers of one glyph held two outlines");
+    daegun_color_scene_free(scene);
+    daegun_font_free(font);
+}
+
+static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+static void put_u32(uint8_t *p, uint32_t v) { put_u16(p, (uint16_t)(v >> 16)); put_u16(p + 2, (uint16_t)v); }
+
+/* The fixture with D replaced by one contour of 10,000 on-curve points, climbing 1000 units and
+ * falling back every 2 across. loca is rewritten long so the glyph can be any size. */
+static daegun_font *fixture_with_zigzag(uint16_t *out_gid)
+{
+    daegun_font *base = open_font("assets/test-fonts/test-fixtures/hinted.ttf");
+    if (!base) return NULL;
+    daegun_table_map *map = NULL;
+    uint16_t gid = 0, glyphs = 0;
+    daegun_bytes glyf = { 0 }, loca = { 0 }, head = { 0 };
+    CHECK(daegun_font_glyph_id(base, 'D', &gid) == DAEGUN_OK, "the fixture has no D");
+    CHECK(daegun_font_num_glyphs(base, &glyphs) == DAEGUN_OK, "no glyph count");
+    CHECK(daegun_font_instance_tables(base, NULL, 0, &map) == DAEGUN_OK, "no tables");
+    daegun_table_map_get(map, "glyf", &glyf);
+    daegun_table_map_get(map, "loca", &loca);
+    daegun_table_map_get(map, "head", &head);
+
+    enum { POINTS = 10000, ZIG = 10 + 2 + 2 + POINTS * 5 };
+    uint8_t *zig = calloc(1, ZIG), *new_glyf = malloc(glyf.len + ZIG), *new_loca = malloc(4u * (glyphs + 1u));
+    uint8_t *new_head = malloc(head.len);
+    int16_t box[] = { 1, 0, 0, 2 * POINTS, 1000, POINTS - 1, 0 };
+    for (int i = 0; i < 7; i++) put_u16(zig + 2 * i, (uint16_t)box[i]);
+    for (int i = 0; i < POINTS; i++) {
+        zig[14 + i] = 1;
+        put_u16(zig + 14 + POINTS + 2 * i, i ? 2 : 0);
+        put_u16(zig + 14 + 3 * POINTS + 2 * i, (uint16_t)(i == 0 ? 0 : i % 2 ? 1000 : -1000));
+    }
+    size_t used = 0;
+    for (uint16_t g = 0; g < glyphs; g++) {
+        size_t from = 2u * ((size_t)loca.data[2 * g] << 8 | loca.data[2 * g + 1]);
+        size_t to = 2u * ((size_t)loca.data[2 * g + 2] << 8 | loca.data[2 * g + 3]);
+        put_u32(new_loca + 4 * g, (uint32_t)used);
+        if (g == gid) { memcpy(new_glyf + used, zig, ZIG); used += ZIG; }
+        else { memcpy(new_glyf + used, glyf.data + from, to - from); used += to - from; }
+    }
+    put_u32(new_loca + 4 * glyphs, (uint32_t)used);
+    memcpy(new_head, head.data, head.len);
+    put_u16(new_head + 50, 1);
+    daegun_table_map_set(map, "glyf", new_glyf, used);
+    daegun_table_map_set(map, "loca", new_loca, 4u * (glyphs + 1u));
+    daegun_table_map_set(map, "head", new_head, head.len);
+
+    daegun_blob *blob = NULL;
+    daegun_font *font = NULL;
+    size_t len = 0;
+    CHECK(daegun_table_map_build(map, &blob) == DAEGUN_OK, "the patched tables did not build");
+    const uint8_t *bytes = daegun_blob_data(blob, &len);
+    CHECK(daegun_font_open(bytes, len, &font) == DAEGUN_OK, "the patched font did not open");
+    daegun_blob_free(blob);
+    free(zig); free(new_glyf); free(new_loca); free(new_head);
+    daegun_table_map_free(map);
+    daegun_font_free(base);
+    *out_gid = gid;
+    return font;
+}
+
+/* A stroke or embolden that would take more than DAEGUN_MAX_FLATTEN_POINTS points is DAEGUN_RANGE,
+ * with nothing drawn, where a narrow one draws. */
+static void a_prepared_stroke_past_the_cap_is_range(void)
+{
+    uint16_t gid = 0;
+    daegun_font *font = fixture_with_zigzag(&gid);
+    if (!font) return;
+    daegun_outline_options narrow, wide, bold;
+    daegun_outline_options_default(&narrow);
+    narrow.has_stroke = 1;
+    narrow.stroke_width = 10.0f;
+    narrow.stroke_join = DAEGUN_JOIN_ROUND;
+    narrow.stroke_cap = DAEGUN_CAP_ROUND;
+    wide = narrow;
+    wide.stroke_width = 40000.0f;
+    daegun_outline_options_default(&bold);
+    bold.has_embolden = 1;
+    bold.embolden = 40000.0f;
+
+    pen_tally drawn = { 0, 0, 0, 0, 0 }, none = { 0, 0, 0, 0, 0 };
+    daegun_pen dpen = { tally_move, tally_line, tally_quad, tally_curve, tally_close, &drawn };
+    daegun_pen npen = { tally_move, tally_line, tally_quad, tally_curve, tally_close, &none };
+    CHECK(daegun_font_prepared_outline(font, gid, 1024.0f, NULL, 0, &narrow, &dpen, NULL) == DAEGUN_OK,
+          "a narrow stroke of the zigzag failed");
+    CHECK(drawn.lines > 20000, "the zigzag drew %d lines", drawn.lines);
+    CHECK(daegun_font_prepared_outline(font, gid, 1024.0f, NULL, 0, &wide, &npen, NULL) == DAEGUN_RANGE,
+          "a stroke past the cap was not DAEGUN_RANGE");
+    CHECK(daegun_font_prepared_outline(font, gid, 1024.0f, NULL, 0, &bold, &npen, NULL) == DAEGUN_RANGE,
+          "an embolden past the cap was not DAEGUN_RANGE");
+    CHECK(none.moves == 0 && none.lines == 0, "a refused outline drew %d lines", none.lines);
+    daegun_font_free(font);
+}
+
+static void a_prepared_outline_reaches_the_pen(const char *path)
+{
+    daegun_font *font = open_font(path);
+    if (!font) return;
+    uint16_t gid = 0;
+    CHECK(daegun_font_glyph_id(font, 'H', &gid) == DAEGUN_OK, "no glyph for 'H'");
+
+    daegun_outline_options given;
+    CHECK(daegun_outline_options_default(&given) == DAEGUN_OK, "outline defaults failed");
+
+    pen_tally plain_calls = {0}, bold_calls = {0};
+    daegun_pen plain_pen = { tally_move, tally_line, tally_quad, tally_curve, tally_close, &plain_calls };
+    daegun_pen bold_pen = { tally_move, tally_line, tally_quad, tally_curve, tally_close, &bold_calls };
+    daegun_prepared_glyph plain, bold;
+    CHECK(daegun_font_prepared_outline(font, gid, 32.0f, NULL, 0, NULL, &plain_pen, &plain) == DAEGUN_OK,
+          "prepared_outline failed: %s", daegun_last_error().data);
+    daegun_outline_options opts = given;
+    opts.has_embolden = 1;
+    opts.embolden = 80.0f;
+    CHECK(daegun_font_prepared_outline(font, gid, 32.0f, NULL, 0, &opts, &bold_pen, &bold) == DAEGUN_OK,
+          "a bold prepared_outline failed");
+    CHECK(plain_calls.moves > 0 && plain_calls.closes > 0, "the plain H drew nothing");
+    CHECK(bold_calls.moves > plain_calls.moves, "the bold H added no stroke contours");
+    CHECK(bold.advance_width > plain.advance_width, "bold advance %f is not wider than %f",
+          bold.advance_width, plain.advance_width);
+    /* advance_widths answers per 1000 em, a different route to the same number. */
+    daegun_f64_list *widths = NULL;
+    if (daegun_font_advance_widths(font, &gid, 1, NULL, 0, &widths) == DAEGUN_OK) {
+        size_t n = 0;
+        const double *w = daegun_f64_list_data(widths, &n);
+        double want = n == 1 ? w[0] / 1000.0 * 32.0 : -1.0;
+        CHECK(fabs(plain.advance_width - want) < 0.05,
+              "a 32 px H advances %f px, not %f", plain.advance_width, want);
+        daegun_f64_list_free(widths);
+    }
+    CHECK(plain.hinted == 0, "hinted with no hinting asked for");
+
+    opts = given;
+    opts.hinting = DAEGUN_HINT_AUTO_FORCE;
+    daegun_prepared_glyph hinted;
+    CHECK(daegun_font_prepared_outline(font, gid, 16.0f, NULL, 0, &opts, &plain_pen, &hinted) == DAEGUN_OK
+              && hinted.hinted == 1, "AutoForce did not hint the H");
+
+    uint16_t glyphs = 0;
+    daegun_font_num_glyphs(font, &glyphs);
+    CHECK(daegun_font_prepared_outline(font, glyphs, 16.0f, NULL, 0, NULL, &plain_pen, NULL)
+              == DAEGUN_ABSENT,
+          "a gid past the end was drawn");
+    CHECK(daegun_font_prepared_outline(font, gid, 0.0f, NULL, 0, NULL, &plain_pen, NULL) == DAEGUN_RANGE,
+          "zero px was accepted");
+    opts = given;
+    opts.has_oblique = 1;
+    opts.oblique = 1.0f / 0.0f;
+    CHECK(daegun_font_prepared_outline(font, gid, 16.0f, NULL, 0, &opts, &plain_pen, NULL) == DAEGUN_RANGE,
+          "an infinite oblique was accepted");
+    opts = given;
+    opts.has_embolden = 1;
+    opts.embolden = 1e38f;
+    CHECK(daegun_font_prepared_outline(font, gid, 65535.0f, NULL, 0, &opts, &plain_pen, NULL) == DAEGUN_RANGE,
+          "an embolden that overflows once scaled was not RANGE");
+
+    /* A half-scale transform halves the width; a stroke widens it; a NaN in either is refused. */
+    daegun_path *full = daegun_path_new(), *half = daegun_path_new(), *stroked = daegun_path_new();
+    daegun_pen into_full, into_half, into_stroked;
+    daegun_path_as_pen(full, &into_full);
+    daegun_path_as_pen(half, &into_half);
+    daegun_path_as_pen(stroked, &into_stroked);
+    CHECK(daegun_font_prepared_outline(font, gid, 32.0f, NULL, 0, NULL, &into_full, NULL) == DAEGUN_OK, "plain H failed");
+    opts = given;
+    opts.has_transform = 1;
+    const float halving[6] = { 0.5f, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f };
+    memcpy(opts.transform, halving, sizeof halving);
+    CHECK(daegun_font_prepared_outline(font, gid, 32.0f, NULL, 0, &opts, &into_half, NULL) == DAEGUN_OK, "half H failed");
+    opts.transform[3] = NAN;
+    CHECK(daegun_font_prepared_outline(font, gid, 32.0f, NULL, 0, &opts, &plain_pen, NULL) == DAEGUN_RANGE,
+          "a NaN transform was accepted");
+    opts = given;
+    opts.has_stroke = 1;
+    opts.stroke_width = 40.0f;
+    opts.stroke_join = DAEGUN_JOIN_ROUND;
+    opts.stroke_cap = DAEGUN_CAP_ROUND;
+    CHECK(daegun_font_prepared_outline(font, gid, 32.0f, NULL, 0, &opts, &into_stroked, NULL) == DAEGUN_OK,
+          "stroked H failed");
+    opts.stroke_width = NAN;
+    CHECK(daegun_font_prepared_outline(font, gid, 32.0f, NULL, 0, &opts, &plain_pen, NULL) == DAEGUN_RANGE,
+          "a NaN stroke width was accepted");
+    double f0, g0, f1, g1, h0, k0, h1, k1, s0, t0, s1, t1;
+    daegun_path_bounds(full, &f0, &g0, &f1, &g1);
+    daegun_path_bounds(half, &h0, &k0, &h1, &k1);
+    daegun_path_bounds(stroked, &s0, &t0, &s1, &t1);
+    CHECK(fabs((h1 - h0) - (f1 - f0) / 2.0) < 0.01, "a half-scale H is %g wide against %g", h1 - h0, f1 - f0);
+    CHECK((s1 - s0) > (f1 - f0) + 0.5, "a 40-unit stroke widened the H from %g to %g", f1 - f0, s1 - s0);
+    daegun_path_free(full);
+    daegun_path_free(half);
+    daegun_path_free(stroked);
+    CHECK(daegun_font_prepared_outline(NULL, gid, 16.0f, NULL, 0, NULL, &plain_pen, NULL) == DAEGUN_NULL,
+          "a NULL font was accepted");
+    CHECK(daegun_font_prepared_outline(font, gid, 16.0f, NULL, 0, NULL, NULL, NULL) == DAEGUN_NULL,
+          "a NULL pen was accepted");
+    daegun_font_free(font);
+}
+
+static void the_subpixel_filter_is_readable(void)
+{
+    daegun_subpixel_layout *gray = NULL, *rgb = NULL, *vbgr = NULL, *odd = NULL;
+    CHECK(daegun_subpixel_layout_new(DAEGUN_LAYOUT_GRAYSCALE, &gray) == DAEGUN_OK, "grayscale failed");
+    CHECK(daegun_subpixel_layout_new(DAEGUN_LAYOUT_RGB_H, &rgb) == DAEGUN_OK, "RGB_H failed");
+    CHECK(daegun_subpixel_layout_new(DAEGUN_LAYOUT_BGR_V, &vbgr) == DAEGUN_OK, "BGR_V failed");
+    CHECK(daegun_subpixel_layout_new(99, &odd) == DAEGUN_OK, "an unknown id failed");
+    if (!gray || !rgb || !vbgr || !odd) return;
+
+    uint8_t x = 0, y = 0, ch = 0;
+    int8_t ox = 0, oy = 0;
+    size_t px = 9, py = 9, n = 0;
+    int32_t is_gray = -1;
+    daegun_subpixel_layout_channels(gray, &ch);
+    daegun_subpixel_layout_is_grayscale(gray, &is_gray);
+    const float *w = daegun_subpixel_layout_weights(gray, 0, &n);
+    CHECK(ch == 1 && is_gray == 1 && w && n == 1 && w[0] == 1.0f,
+          "grayscale is not one channel of weight 1");
+    CHECK(daegun_subpixel_layout_weights(gray, 1, &n) == NULL, "grayscale has a second channel");
+    daegun_subpixel_layout_pad(gray, &px, &py);
+    CHECK(px == 0 && py == 0, "grayscale asks for padding %zu, %zu", px, py);
+
+    /* FIR5 over three stripes: 7 taps, 3x1 samples, starting 2 samples left, so one pixel of pad. */
+    daegun_subpixel_layout_oversample(rgb, &x, &y);
+    CHECK(x == 3 && y == 1, "RGB_H oversamples %ux%u", x, y);
+    daegun_subpixel_layout_taps(rgb, &x, &y);
+    CHECK(x == 7 && y == 1, "RGB_H has %ux%u taps", x, y);
+    daegun_subpixel_layout_origin(rgb, &ox, &oy);
+    CHECK(ox == -2 && oy == 0, "RGB_H starts at %d, %d", ox, oy);
+    daegun_subpixel_layout_pad(rgb, &px, &py);
+    CHECK(px == 1 && py == 0, "RGB_H pads %zu, %zu", px, py);
+    for (size_t c = 0; c < 3; c++) {
+        w = daegun_subpixel_layout_weights(rgb, c, &n);
+        float sum = 0.0f;
+        for (size_t i = 0; w && i < n; i++) sum += w[i];
+        CHECK(w && n == 7 && fabsf(sum - 1.0f) < 1e-6f,
+              "RGB_H channel %zu: %zu weights summing to %f", c, n, sum);
+        CHECK(w && w[c] == 8.0f / 256.0f && w[c + 2] == 86.0f / 256.0f,
+              "RGB_H channel %zu is not FIR5 at %zu", c, c);
+    }
+    daegun_subpixel_layout_pad(vbgr, &px, &py);
+    w = daegun_subpixel_layout_weights(vbgr, 0, &n);
+    CHECK(px == 0 && py == 1 && w && w[2] == 8.0f / 256.0f,
+          "BGR_V is not FIR5 in reverse order down the column");
+
+    uint64_t k1 = 0, k2 = 0, k3 = 0;
+    CHECK(daegun_subpixel_layout_cache_key(rgb, &k1) == DAEGUN_OK, "cache_key failed");
+    daegun_subpixel_layout_key(DAEGUN_LAYOUT_RGB_H, &k2);
+    daegun_subpixel_layout_cache_key(odd, &k3);
+    CHECK(k1 == k2, "the handle and the id disagree about RGB_H's identity");
+    CHECK(k1 != k3, "RGB_H and grayscale share a cache key");
+    daegun_subpixel_layout_key(DAEGUN_LAYOUT_GRAYSCALE, &k2);
+    CHECK(k3 == k2, "an unknown id is not grayscale");
+
+    const float weights[9] = { 0.25f, 0.5f, 0.25f, 0.5f, 0.5f, 0.0f, 0.0f, 0.5f, 0.5f };
+    daegun_subpixel_layout *custom = NULL, *none = NULL;
+    CHECK(daegun_subpixel_layout_from_weights(1, 1, 3, 1, -1, 0, weights, &custom) == DAEGUN_OK,
+          "a three-tap filter was refused");
+    for (size_t c = 0; c < 3; c++) {
+        w = daegun_subpixel_layout_weights(custom, c, &n);
+        CHECK(w && n == 3 && w[0] == weights[c * 3] && w[2] == weights[c * 3 + 2],
+              "channel %zu did not keep its own weights", c);
+    }
+    daegun_subpixel_layout_pad(custom, &px, &py);
+    CHECK(px == 1 && py == 0, "a filter reaching one sample left does not pad one pixel");
+    CHECK(daegun_subpixel_layout_from_weights(0, 1, 3, 1, -1, 0, weights, &none) == DAEGUN_RANGE,
+          "a zero oversample was accepted");
+    CHECK(daegun_subpixel_layout_from_weights(1, 1, 99, 1, 0, 0, weights, &none) == DAEGUN_RANGE,
+          "a tap count past the table was accepted");
+    CHECK(daegun_subpixel_layout_from_weights(1, 1, 0, 1, 0, 0, weights, &none) == DAEGUN_RANGE,
+          "zero taps were accepted");
+
+    /* The header's limits are literal copies of the library's, so the library has to agree. */
+    static float wide[3 * DAEGUN_MAX_SUBPIXEL_WEIGHTS];
+    for (size_t i = 0; i < 3 * DAEGUN_MAX_SUBPIXEL_WEIGHTS; i++) {
+        wide[i] = 1.0f / DAEGUN_MAX_SUBPIXEL_WEIGHTS;
+    }
+    daegun_subpixel_layout *widest = NULL;
+    CHECK(daegun_subpixel_layout_from_weights(DAEGUN_MAX_OVERSAMPLE, DAEGUN_MAX_OVERSAMPLE,
+                                              DAEGUN_MAX_SUBPIXEL_TAPS, DAEGUN_MAX_SUBPIXEL_TAPS, 0, 0,
+                                              wide, &widest) == DAEGUN_OK,
+          "the widest filter the header allows was refused");
+    w = daegun_subpixel_layout_weights(widest, 2, &n);
+    CHECK(w && n == DAEGUN_MAX_SUBPIXEL_WEIGHTS, "the widest filter holds %zu weights a channel", n);
+    daegun_subpixel_layout_free(widest);
+    CHECK(daegun_subpixel_layout_from_weights(DAEGUN_MAX_OVERSAMPLE + 1, 1, 1, 1, 0, 0, wide,
+                                              &none) == DAEGUN_RANGE,
+          "an oversample past DAEGUN_MAX_OVERSAMPLE was accepted");
+    CHECK(daegun_subpixel_layout_from_weights(1, 1, DAEGUN_MAX_SUBPIXEL_TAPS + 1, 1, 0, 0, wide,
+                                              &none) == DAEGUN_RANGE,
+          "a tap count past DAEGUN_MAX_SUBPIXEL_TAPS was accepted");
+    CHECK(daegun_subpixel_layout_from_weights(1, DAEGUN_MAX_OVERSAMPLE + 1, 1, 1, 0, 0, wide,
+                                              &none) == DAEGUN_RANGE,
+          "a y oversample past DAEGUN_MAX_OVERSAMPLE was accepted");
+    CHECK(daegun_subpixel_layout_from_weights(1, 1, 1, DAEGUN_MAX_SUBPIXEL_TAPS + 1, 0, 0, wide,
+                                              &none) == DAEGUN_RANGE,
+          "a y tap count past DAEGUN_MAX_SUBPIXEL_TAPS was accepted");
+    const float unfinite[3] = {NAN, 1.0f, 1.0f};
+    CHECK(daegun_subpixel_layout_from_weights(1, 1, 1, 1, 0, 0, unfinite, &none) == DAEGUN_RANGE,
+          "a NaN weight was accepted");
+    CHECK(none == NULL, "a refused layout was written");
+    CHECK(daegun_subpixel_layout_new(DAEGUN_LAYOUT_RGB_H, NULL) == DAEGUN_NULL, "a NULL out was accepted");
+    CHECK(daegun_subpixel_layout_taps(NULL, &x, &y) == DAEGUN_NULL, "taps of NULL");
+    CHECK(daegun_subpixel_layout_weights(NULL, 0, &n) == NULL, "weights of NULL");
+    daegun_subpixel_layout_free(NULL);
+    daegun_subpixel_layout_free(custom);
+    daegun_subpixel_layout_free(odd);
+    daegun_subpixel_layout_free(vbgr);
+    daegun_subpixel_layout_free(rgb);
+    daegun_subpixel_layout_free(gray);
 }
 
 static void character_properties_need_no_font(void)
@@ -1024,7 +2023,7 @@ static void character_properties_need_no_font(void)
     CHECK(daegun_char_general_category('5', &gc) == DAEGUN_OK, "general_category failed");
     CHECK(gc == DAEGUN_GC_DECIMAL_NUMBER, "'5' is category %d", gc);
 
-    CHECK(daegun_char_general_category(0xD800, &gc) == DAEGUN_RANGE, "a surrogate was categorised");
+    CHECK(daegun_char_general_category(0xD800, &gc) == DAEGUN_RANGE, "a surrogate was categorized");
     CHECK(daegun_char_general_category(0x110000, &gc) == DAEGUN_RANGE, "past U+10FFFF was allowed");
 
     uint32_t form = 0;
@@ -1038,7 +2037,7 @@ static void character_properties_need_no_font(void)
     CHECK(daegun_char_is_upright(0x4E00, 0, &upright) == DAEGUN_OK, "is_upright failed");
     CHECK(upright, "a CJK ideograph does not stand upright in vertical text");
     CHECK(daegun_char_is_upright('A', 0, &upright) == DAEGUN_OK, "is_upright failed");
-    CHECK(!upright, "a latin capital stands upright in vertical text");
+    CHECK(!upright, "a Latin capital stands upright in vertical text");
 }
 
 static void the_format_walkers_read_a_real_table(const char *path)
@@ -1162,6 +2161,9 @@ static void loca_and_glyf_are_walkable(const char *path)
     const size_t *offs = daegun_usize_list_data(offsets, &n);
     CHECK(n == (size_t)num_glyphs + 1, "loca gave %zu offsets for %u glyphs", n, num_glyphs);
     CHECK(offs[0] <= offs[n - 1], "loca runs backwards");
+    daegun_usize_list *huge = NULL;
+    CHECK(daegun_parse_loca(loca.data, loca.len, loca_format, SIZE_MAX, &huge) == DAEGUN_RANGE,
+          "a glyph count of SIZE_MAX was accepted");
 
     uint16_t gid = 0;
     daegun_font_glyph_id(font, 'A', &gid);
@@ -1183,396 +2185,6 @@ static void loca_and_glyf_are_walkable(const char *path)
 
     daegun_usize_list_free(offsets);
     daegun_font_free(font);
-}
-
-static void the_shader_source_is_available(void)
-{
-    const int32_t langs[3] = { DAEGUN_SHADER_GLSL, DAEGUN_SHADER_HLSL, DAEGUN_SHADER_MSL };
-    const int32_t stages[3] = { DAEGUN_STAGE_VERTEX, DAEGUN_STAGE_FRAGMENT,
-                                DAEGUN_STAGE_SUBPIXEL_FRAGMENT };
-    for (int l = 0; l < 3; l++) {
-        for (int st = 0; st < 3; st++) {
-            daegun_text *src = NULL;
-            CHECK(daegun_shader_source(langs[l], stages[st], &src) == DAEGUN_OK,
-                  "shader source %d/%d failed", langs[l], stages[st]);
-            daegun_str v = { NULL, 0 };
-            CHECK(daegun_text_str(src, &v) == DAEGUN_OK, "shader str failed");
-            CHECK(v.len > 200, "shader %d/%d is %zu bytes, too short to be a shader",
-                  langs[l], stages[st], v.len);
-            CHECK(strlen(v.data) == v.len, "the shader's NUL disagrees with its length");
-            daegun_text_free(src);
-        }
-    }
-    daegun_text *none = NULL;
-    CHECK(daegun_shader_source(99, DAEGUN_STAGE_VERTEX, &none) == DAEGUN_RANGE,
-          "an unknown language was accepted");
-    CHECK(daegun_shader_source(DAEGUN_SHADER_GLSL, 99, &none) == DAEGUN_RANGE,
-          "an unknown stage was accepted");
-}
-
-static void routing_decides_without_drawing(void)
-{
-    daegun_policy pol;
-    CHECK(daegun_policy_default(&pol) == DAEGUN_OK, "policy default failed");
-    daegun_request req = { 24.0f, 0, 0, 0, 0, 0 };
-    int32_t routed = -1;
-
-    CHECK(daegun_route(DAEGUN_GPU_OK, &req, NULL, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_CPU, "no device routed to %d rather than the CPU", routed);
-
-    daegun_device_profile *gpu = NULL;
-    CHECK(daegun_device_profile_new(DAEGUN_DEVICE_DISCRETE, "a made-up card", &gpu) == DAEGUN_OK,
-          "building a profile failed");
-    int32_t kind = -1;
-    CHECK(daegun_device_profile_kind(gpu, &kind) == DAEGUN_OK, "profile kind failed");
-    CHECK(kind == DAEGUN_DEVICE_DISCRETE, "a discrete profile reads back as %d", kind);
-    daegun_text *pname = NULL;
-    CHECK(daegun_device_profile_name(gpu, &pname) == DAEGUN_OK, "profile name failed");
-    daegun_str nv = { NULL, 0 };
-    daegun_text_str(pname, &nv);
-    CHECK(nv.len == strlen("a made-up card") && memcmp(nv.data, "a made-up card", nv.len) == 0,
-          "the profile renamed itself to %s", nv.data);
-    daegun_text_free(pname);
-
-    CHECK(daegun_route(DAEGUN_GPU_OK, &req, gpu, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_GPU, "a discrete card at 24ppem routed to %d", routed);
-
-    CHECK(daegun_route(DAEGUN_GPU_NO_OUTLINE, &req, gpu, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_NOTHING, "a glyph with no outline routed to %d", routed);
-    CHECK(daegun_route(DAEGUN_GPU_TOO_COMPLEX, &req, gpu, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_CPU, "a too-complex glyph routed to %d rather than the CPU", routed);
-    CHECK(daegun_route(DAEGUN_GPU_NON_FINITE, &req, gpu, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_REFUSED_NON_FINITE, "a non-finite glyph routed to %d", routed);
-    CHECK(daegun_route(DAEGUN_GPU_BATCH_FULL, &req, gpu, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_FLUSH_AND_RETRY, "a full batch routed to %d", routed);
-    CHECK(daegun_route(DAEGUN_GPU_NOT_FLAT_COLOR, &req, gpu, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_SCENE, "a color glyph routed to %d", routed);
-
-    daegun_policy cpu_only = pol;
-    cpu_only.prefer = DAEGUN_PREFER_CPU;
-    CHECK(daegun_route(DAEGUN_GPU_OK, &req, gpu, &cpu_only, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed == DAEGUN_ROUTED_CPU, "PREFER_CPU with a card routed to %d", routed);
-
-    CHECK(daegun_route(99, &req, gpu, &pol, &routed) == DAEGUN_RANGE, "an unknown attempt was taken");
-    CHECK(daegun_route(DAEGUN_GPU_OK, NULL, gpu, &pol, &routed) == DAEGUN_NULL,
-          "a null request was accepted");
-    daegun_device_profile_free(gpu);
-    daegun_device_profile_free(NULL);
-}
-
-static void subpixel_params_come_from_a_layout(void)
-{
-    daegun_subpixel_params sp;
-    memset(&sp, 0xff, sizeof sp);
-    CHECK(daegun_subpixel_params_from_layout(DAEGUN_LAYOUT_GRAYSCALE, &sp) == DAEGUN_OK,
-          "grayscale params failed");
-    CHECK(sp.channels == 1, "grayscale has %u channels", sp.channels);
-    CHECK(sp.taps[0] <= DAEGUN_MAX_SUBPIXEL_TAPS && sp.taps[1] <= DAEGUN_MAX_SUBPIXEL_TAPS,
-          "taps %u/%u exceed the shader's table", sp.taps[0], sp.taps[1]);
-    CHECK(sp.supersample <= DAEGUN_MAX_SUPERSAMPLE, "supersample %u is past the cap", sp.supersample);
-
-    daegun_subpixel_params rgb;
-    CHECK(daegun_subpixel_params_from_layout(DAEGUN_LAYOUT_RGB_H, &rgb) == DAEGUN_OK,
-          "rgb params failed");
-    CHECK(rgb.channels == 3, "horizontal RGB has %u channels", rgb.channels);
-    CHECK(memcmp(&sp, &rgb, sizeof sp) != 0, "grayscale and RGB produced identical filters");
-    CHECK(daegun_subpixel_params_from_layout(DAEGUN_LAYOUT_GRAYSCALE, NULL) == DAEGUN_NULL,
-          "a null out-parameter was accepted");
-}
-
-#define GPU_BACKEND_TEST(b)                                                                        \
-static int b##_draws_a_glyph(const char *path)                                                     \
-{                                                                                                  \
-    daegun_##b##_renderer *r = NULL;                                                               \
-    daegun_status st = daegun_##b##_renderer_new(&r);                                              \
-    if (st == DAEGUN_UNSUPPORTED) {                                                                \
-        return 0; /* No such device here. An answer, not a failure. */                             \
-    }                                                                                              \
-    CHECK(st == DAEGUN_OK, #b " renderer_new returned %d: %s", st, daegun_last_error().data);      \
-    if (st != DAEGUN_OK) {                                                                         \
-        return 0;                                                                                  \
-    }                                                                                              \
-                                                                                                   \
-    daegun_text *name = NULL;                                                                      \
-    CHECK(daegun_##b##_renderer_device_name(r, &name) == DAEGUN_OK, #b " device_name failed");     \
-    daegun_str nv = { NULL, 0 };                                                                   \
-    daegun_text_str(name, &nv);                                                                    \
-    CHECK(nv.len > 0, #b " reports an empty device name");                                         \
-    daegun_text_free(name);                                                                        \
-                                                                                                   \
-    daegun_device_profile *prof = NULL;                                                            \
-    CHECK(daegun_##b##_renderer_profile(r, &prof) == DAEGUN_OK, #b " profile failed");             \
-    int32_t kind = -1;                                                                             \
-    daegun_device_profile_kind(prof, &kind);                                                       \
-    CHECK(kind >= DAEGUN_DEVICE_UNKNOWN && kind <= DAEGUN_DEVICE_SOFTWARE,                         \
-          #b " reports device kind %d", kind);                                                     \
-    daegun_device_profile_free(prof);                                                              \
-                                                                                                   \
-    int32_t sub = -1;                                                                              \
-    CHECK(daegun_##b##_renderer_supports_subpixel(r, &sub) == DAEGUN_OK, #b " subpixel failed");   \
-    CHECK(sub == 0 || sub == 1, #b " answered %d to a yes-or-no question", sub);                   \
-                                                                                                   \
-    float proj[16] = { 0 };                                                                        \
-    CHECK(daegun_##b##_ortho(64, 64, proj) == DAEGUN_OK, #b " ortho failed");                      \
-    CHECK(proj[0] != 0.0f && proj[15] != 0.0f, #b " ortho is degenerate");                         \
-                                                                                                   \
-    daegun_font *font = open_font(path);                                                           \
-    if (!font) { daegun_##b##_renderer_free(r); return 0; }                                        \
-    daegun_batch *batch = NULL;                                                                    \
-    CHECK(daegun_batch_new(&batch) == DAEGUN_OK, "batch_new failed");                              \
-    uint16_t gid = 0;                                                                              \
-    daegun_font_glyph_id(font, 'B', &gid);                                                         \
-    daegun_glyph_slot slot;                                                                        \
-    memset(&slot, 0, sizeof slot);                                                                 \
-    st = daegun_font_gpu_glyph(font, batch, gid, NULL, 0, &slot);                                  \
-    CHECK(st == DAEGUN_OK, "gpu_glyph returned %d", st);                                           \
-                                                                                                   \
-    daegun_##b##_target *target = NULL;                                                            \
-    st = daegun_##b##_target_new(r, 64, 64, &target);                                              \
-    CHECK(st == DAEGUN_OK, #b " target_new returned %d: %s", st, daegun_last_error().data);        \
-    daegun_##b##_geometry *geom = NULL;                                                            \
-    st = daegun_##b##_geometry_new(r, batch, &geom);                                               \
-    CHECK(st == DAEGUN_OK, #b " geometry_new returned %d: %s", st, daegun_last_error().data);      \
-                                                                                                   \
-    if (target && geom) {                                                                          \
-        uint32_t w = 0, h = 0;                                                                     \
-        CHECK(daegun_##b##_target_width(target, &w) == DAEGUN_OK, #b " target width failed");      \
-        CHECK(daegun_##b##_target_height(target, &h) == DAEGUN_OK, #b " target height failed");    \
-        CHECK(w == 64 && h == 64, #b " made a %ux%u target from a 64x64 request", w, h);           \
-                                                                                                   \
-        uint64_t brev = 0, grev = 0;                                                               \
-        daegun_batch_revision(batch, &brev);                                                       \
-        CHECK(daegun_##b##_geometry_revision(geom, &grev) == DAEGUN_OK, #b " revision failed");    \
-        CHECK(grev == brev, #b " uploaded revision %llu of a batch at %llu",                       \
-              (unsigned long long)grev, (unsigned long long)brev);                                 \
-                                                                                                   \
-        daegun_subpixel_params sp;                                                                 \
-        daegun_subpixel_params_from_layout(DAEGUN_LAYOUT_GRAYSCALE, &sp);                          \
-                                                                                                   \
-        const float off[2] = { 8.0f, 8.0f };                                                       \
-        const float em[2] = { 48.0f, 48.0f };                                                      \
-        const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };                                         \
-        daegun_glyph_instance inst;                                                                \
-        memset(&inst, 0, sizeof inst);                                                             \
-        CHECK(daegun_glyph_slot_instance(&slot, off, 48.0f, em, white, &inst) == DAEGUN_OK,        \
-              "slot_instance failed");                                                             \
-        CHECK(inst.inv_scale == 1.0f / 48.0f, "inv_scale is %g", (double)inst.inv_scale);          \
-                                                                                                   \
-        st = daegun_##b##_draw(r, target, geom, &inst, 1, &sp, DAEGUN_MODE_GRAYSCALE);             \
-        CHECK(st == DAEGUN_OK, #b " draw returned %d: %s", st, daegun_last_error().data);          \
-        CHECK(daegun_##b##_wait(r, target) == DAEGUN_OK, #b " wait failed");                       \
-                                                                                                   \
-        size_t n = 0;                                                                              \
-        const uint8_t *px = daegun_##b##_read_pixels(r, target, &n);                               \
-        CHECK(px != NULL, #b " read_pixels gave nothing: %s", daegun_last_error().data);           \
-        if (px) {                                                                                  \
-            CHECK(n == 64u * 64u * 4u, #b " read %zu bytes for a 64x64 BGRA target", n);           \
-            size_t ink = 0;                                                                        \
-            for (size_t i = 3; i < n; i += 4) { if (px[i] != 0) ink++; }                           \
-            CHECK(ink > 0, #b " drew a glyph and every pixel came back empty");                    \
-            size_t cn = 0;                                                                         \
-            const uint8_t *cached = daegun_##b##_target_pixels(target, &cn);                       \
-            CHECK(cached != NULL && cn == n, #b " the cached view is %zu of %zu bytes", cn, n);    \
-            if (cached && cn == n) {                                                               \
-                CHECK(memcmp(cached, px, n) == 0, #b " the cached pixels differ from the read");   \
-            }                                                                                      \
-            uint8_t one[4] = { 0, 0, 0, 0 };                                                       \
-            CHECK(daegun_##b##_target_pixel(target, 0, 0, one) == DAEGUN_OK, #b " pixel failed");  \
-            CHECK(daegun_##b##_target_pixel(target, 64, 0, one) == DAEGUN_RANGE,                   \
-                  #b " read a pixel outside the target");                                          \
-        }                                                                                          \
-                                                                                                   \
-        st = daegun_##b##_draw_with(r, target, geom, &inst, 1, &sp, DAEGUN_MODE_GRAYSCALE, proj);  \
-        CHECK(st == DAEGUN_OK, #b " draw_with returned %d: %s", st, daegun_last_error().data);     \
-                                                                                                   \
-        daegun_##b##_target *bad = NULL;                                                           \
-        CHECK(daegun_##b##_target_new(r, 0, 64, &bad) != DAEGUN_OK, #b " made a zero-wide target");\
-    }                                                                                              \
-                                                                                                   \
-    daegun_##b##_renderer_free(r);                                                                 \
-    if (target) {                                                                                  \
-        uint32_t w = 0;                                                                            \
-        CHECK(daegun_##b##_target_width(target, &w) == DAEGUN_OK,                                  \
-              #b " target stopped answering after its renderer was freed");                        \
-        CHECK(w == 64, #b " target width is %u after the renderer went", w);                       \
-        size_t cn = 0;                                                                             \
-        const uint8_t *cached = daegun_##b##_target_pixels(target, &cn);                           \
-        CHECK(cached != NULL && cn > 0, #b " the pixels went with the renderer");                  \
-    }                                                                                              \
-    if (geom) {                                                                                    \
-        uint64_t rev = 0;                                                                          \
-        CHECK(daegun_##b##_geometry_revision(geom, &rev) == DAEGUN_OK,                             \
-              #b " geometry stopped answering after its renderer was freed");                      \
-    }                                                                                              \
-    daegun_##b##_geometry_free(geom);                                                              \
-    daegun_##b##_target_free(target);                                                              \
-    daegun_batch_free(batch);                                                                      \
-    daegun_font_free(font);                                                                        \
-    return 1;                                                                                      \
-}
-
-#if defined(__APPLE__)
-GPU_BACKEND_TEST(metal)
-#endif
-GPU_BACKEND_TEST(vulkan)
-#if defined(_WIN32)
-GPU_BACKEND_TEST(d3d11)
-GPU_BACKEND_TEST(d3d12)
-#endif
-
-#if defined(__APPLE__)
-static void metal_adopts_a_device_and_refuses_bad_surfaces(const char *path)
-{
-    void *device = MTLCreateSystemDefaultDevice();
-    if (!device) {
-        return;
-    }
-
-    daegun_metal_renderer *adopted = NULL;
-    daegun_status st = daegun_metal_renderer_from_device(device, &adopted);
-    CHECK(st == DAEGUN_OK, "metal renderer_from_device returned %d: %s", st,
-          daegun_last_error().data);
-
-    if (st == DAEGUN_OK) {
-        daegun_metal_renderer *own = NULL;
-        if (daegun_metal_renderer_new(&own) == DAEGUN_OK) {
-            daegun_text *a = NULL;
-            daegun_text *b = NULL;
-            daegun_metal_renderer_device_name(adopted, &a);
-            daegun_metal_renderer_device_name(own, &b);
-            daegun_str av = { NULL, 0 };
-            daegun_str bv = { NULL, 0 };
-            daegun_text_str(a, &av);
-            daegun_text_str(b, &bv);
-            CHECK(av.len > 0 && av.len == bv.len && memcmp(av.data, bv.data, av.len) == 0,
-                  "adopted \"%s\" but the default device is \"%s\"",
-                  av.data ? av.data : "?", bv.data ? bv.data : "?");
-            daegun_text_free(a);
-            daegun_text_free(b);
-            daegun_metal_renderer_free(own);
-        }
-
-        daegun_font *font = open_font(path);
-        daegun_batch *batch = NULL;
-        if (font && daegun_batch_new(&batch) == DAEGUN_OK) {
-            uint16_t gid = 0;
-            daegun_glyph_slot slot;
-            memset(&slot, 0, sizeof slot);
-            daegun_font_glyph_id(font, 'B', &gid);
-            CHECK(daegun_font_gpu_glyph(font, batch, gid, NULL, 0, &slot) == DAEGUN_OK,
-                  "gpu_glyph failed for the adopted device");
-
-            daegun_metal_geometry *geom = NULL;
-            CHECK(daegun_metal_geometry_new(adopted, batch, &geom) == DAEGUN_OK,
-                  "geometry_new on an adopted device failed: %s", daegun_last_error().data);
-
-            /* Both byte orders, since a caller's surface picks the format rather than daegun. */
-            const int32_t formats[2] = { DAEGUN_SURFACE_RGBA8, DAEGUN_SURFACE_BGRA8 };
-            for (int f = 0; f < 2 && geom; f++) {
-                daegun_metal_target *target = NULL;
-                st = daegun_metal_target_with_format(adopted, 64, 64, formats[f], &target);
-                CHECK(st == DAEGUN_OK, "target_with_format(%d) returned %d: %s", formats[f], st,
-                      daegun_last_error().data);
-                if (st != DAEGUN_OK) {
-                    continue;
-                }
-
-                daegun_subpixel_params sp;
-                daegun_subpixel_params_from_layout(DAEGUN_LAYOUT_GRAYSCALE, &sp);
-                const float off[2] = { 8.0f, 8.0f };
-                const float em[2] = { 48.0f, 48.0f };
-                const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-                daegun_glyph_instance inst;
-                memset(&inst, 0, sizeof inst);
-                daegun_glyph_slot_instance(&slot, off, 48.0f, em, white, &inst);
-
-                st = daegun_metal_draw(adopted, target, geom, &inst, 1, &sp,
-                                       DAEGUN_MODE_GRAYSCALE);
-                CHECK(st == DAEGUN_OK, "the adopted device refused to draw: %d", st);
-                CHECK(daegun_metal_wait(adopted, target) == DAEGUN_OK, "wait failed");
-
-                size_t n = 0;
-                const uint8_t *px = daegun_metal_read_pixels(adopted, target, &n);
-                CHECK(px != NULL, "read_pixels on an adopted device gave nothing");
-                size_t ink = 0;
-                for (size_t i = 3; px && i < n; i += 4) {
-                    if (px[i] != 0) {
-                        ink++;
-                    }
-                }
-                CHECK(ink > 0, "format %d drew nothing on the adopted device", formats[f]);
-                daegun_metal_target_free(target);
-            }
-            daegun_metal_geometry_free(geom);
-        }
-        daegun_batch_free(batch);
-        daegun_font_free(font);
-    }
-
-    daegun_metal_target *bad = NULL;
-    CHECK(daegun_metal_target_from_texture(adopted, NULL, 64, 64, &bad) != DAEGUN_OK,
-          "a NULL texture was accepted as a surface");
-    CHECK(bad == NULL, "a refused borrow still wrote an out-parameter");
-    CHECK(daegun_metal_target_from_drawable(adopted, NULL, 64, 64, &bad) != DAEGUN_OK,
-          "a NULL drawable was accepted as a surface");
-    CHECK(daegun_metal_target_from_texture(NULL, NULL, 64, 64, &bad) == DAEGUN_NULL,
-          "a NULL renderer was not reported as such");
-
-    daegun_metal_renderer *nope = NULL;
-    CHECK(daegun_metal_renderer_from_device(NULL, &nope) != DAEGUN_OK,
-          "a NULL device was adopted");
-    CHECK(daegun_metal_renderer_from_device(device, NULL) == DAEGUN_NULL,
-          "a NULL out-parameter was accepted");
-
-    daegun_metal_renderer_free(adopted);
-    ((void (*)(void *, SEL))objc_msgSend)(device, sel_registerName("release"));
-    printf("  metal: adopted the caller's device, both byte orders drew\n");
-}
-#endif
-
-static void the_gpu_backends_draw(const char *path)
-{
-    int ran = 0;
-#if defined(__APPLE__)
-    ran += metal_draws_a_glyph(path);
-    metal_adopts_a_device_and_refuses_bad_surfaces(path);
-#endif
-    ran += vulkan_draws_a_glyph(path);
-#if defined(_WIN32)
-    ran += d3d11_draws_a_glyph(path);
-    ran += d3d12_draws_a_glyph(path);
-#endif
-#if defined(_WIN32)
-    for (int which = 0; which < 2; which++) {
-        daegun_text *level = NULL;
-        int32_t soft = -1;
-        daegun_status st;
-        if (which == 0) {
-            daegun_d3d11_renderer *r = NULL;
-            if (daegun_d3d11_renderer_new(&r) != DAEGUN_OK) { continue; }
-            st = daegun_d3d11_feature_level(r, &level);
-            CHECK(st == DAEGUN_OK, "d3d11 feature_level returned %d", st);
-            CHECK(daegun_d3d11_is_software(r, &soft) == DAEGUN_OK, "d3d11 is_software failed");
-            daegun_d3d11_renderer_free(r);
-        } else {
-            daegun_d3d12_renderer *r = NULL;
-            if (daegun_d3d12_renderer_new(&r) != DAEGUN_OK) { continue; }
-            st = daegun_d3d12_feature_level(r, &level);
-            CHECK(st == DAEGUN_OK, "d3d12 feature_level returned %d", st);
-            CHECK(daegun_d3d12_is_software(r, &soft) == DAEGUN_OK, "d3d12 is_software failed");
-            daegun_d3d12_renderer_free(r);
-        }
-        daegun_str lv = { NULL, 0 };
-        daegun_text_str(level, &lv);
-        CHECK(lv.len >= 4, "d3d%d feature level is \"%s\"", which ? 12 : 11, lv.data ? lv.data : "");
-        CHECK(soft == 0 || soft == 1, "d3d%d answered %d to a yes-or-no question",
-              which ? 12 : 11, soft);
-        printf("  d3d%d: feature level %s, software %d\n", which ? 12 : 11,
-               lv.data ? lv.data : "?", soft);
-        daegun_text_free(level);
-    }
-#endif
-    printf("  gpu backends exercised: %d\n", ran);
 }
 
 static void the_atlas_packer_packs(void)
@@ -1649,10 +2261,10 @@ static void scripts_answer_about_themselves(void)
 {
     uint16_t latin = 0xffff, arabic = 0xffff;
     daegun_u32_list *runs = NULL;
-    CHECK(daegun_text_script_runs("Ab", &runs) == DAEGUN_OK, "script_runs failed for latin");
+    CHECK(daegun_text_script_runs("Ab", &runs) == DAEGUN_OK, "script_runs failed for Latin");
     size_t rn = 0;
     const uint32_t *rd = daegun_u32_list_data(runs, &rn);
-    CHECK(rn >= 3, "a latin run came back as %zu numbers", rn);
+    CHECK(rn >= 3, "a Latin run came back as %zu numbers", rn);
     if (rn >= 3) {
         latin = (uint16_t)rd[2];
     }
@@ -1660,20 +2272,20 @@ static void scripts_answer_about_themselves(void)
 
     runs = NULL;
     CHECK(daegun_text_script_runs("\xD8\xA7\xD9\x84", &runs) == DAEGUN_OK,
-          "script_runs failed for arabic");
+          "script_runs failed for Arabic");
     rd = daegun_u32_list_data(runs, &rn);
-    CHECK(rn >= 3, "an arabic run came back as %zu numbers", rn);
+    CHECK(rn >= 3, "an Arabic run came back as %zu numbers", rn);
     if (rn >= 3) {
         arabic = (uint16_t)rd[2];
     }
     daegun_u32_list_free(runs);
-    CHECK(latin != arabic, "latin and arabic came back as the same script id %u", latin);
+    CHECK(latin != arabic, "Latin and Arabic came back as the same script id %u", latin);
 
     daegun_str_list *tags = NULL;
     CHECK(daegun_script_opentype_tags(latin, &tags) == DAEGUN_OK, "opentype_tags failed");
     size_t n = 0;
     CHECK(daegun_str_list_count(tags, &n) == DAEGUN_OK, "counting tags failed");
-    CHECK(n >= 1, "latin maps to %zu OpenType tags", n);
+    CHECK(n >= 1, "Latin maps to %zu OpenType tags", n);
     if (n >= 1) {
         daegun_str t = { NULL, 0 };
         CHECK(daegun_str_list_at(tags, 0, &t) == DAEGUN_OK, "tag 0 failed");
@@ -1681,11 +2293,15 @@ static void scripts_answer_about_themselves(void)
     }
     daegun_str_list_free(tags);
 
+    bool rtl = true;
+    CHECK(daegun_script_is_rtl(latin, &rtl) == DAEGUN_OK && !rtl, "Latin runs right to left");
+    CHECK(daegun_script_is_rtl(arabic, &rtl) == DAEGUN_OK && rtl, "Arabic runs left to right");
+
     int32_t ctx = -1;
     CHECK(daegun_script_is_context_dependent(latin, &ctx) == DAEGUN_OK, "failed");
-    CHECK(!ctx, "latin takes its identity from its neighbors");
+    CHECK(!ctx, "Latin takes its identity from its neighbors");
     CHECK(daegun_script_is_context_dependent(arabic, &ctx) == DAEGUN_OK, "failed");
-    CHECK(!ctx, "arabic takes its identity from its neighbors");
+    CHECK(!ctx, "Arabic takes its identity from its neighbors");
 
     runs = NULL;
     CHECK(daegun_text_script_runs(",", &runs) == DAEGUN_OK, "script_runs failed for a comma");
@@ -1694,6 +2310,13 @@ static void scripts_answer_about_themselves(void)
         CHECK(daegun_script_is_context_dependent((uint16_t)rd[2], &ctx) == DAEGUN_OK, "failed");
         CHECK(ctx, "a lone comma is not context dependent, so nothing is");
     }
+    daegun_u32_list_free(runs);
+
+    runs = NULL;
+    CHECK(daegun_text_script_runs("\xF0\x90\x8C\x80", &runs) == DAEGUN_OK, "script_runs failed for Old Italic");
+    rd = daegun_u32_list_data(runs, &rn);
+    CHECK(rn >= 3 && daegun_script_is_rtl((uint16_t)rd[2], &rtl) == DAEGUN_ABSENT,
+          "Old Italic, written either way, has a direction");
     daegun_u32_list_free(runs);
 }
 
@@ -1766,6 +2389,7 @@ static void stat_values_are_readable(const char *path)
         CHECK(v.kind >= DAEGUN_STAT_SINGLE && v.kind <= DAEGUN_STAT_COMBO,
               "value %zu has kind %d", i, v.kind);
         CHECK(v.elidable == 0 || v.elidable == 1, "elidable is %u", v.elidable);
+        CHECK(v.older_sibling == 0 || v.older_sibling == 1, "older_sibling is %u", v.older_sibling);
         if (v.kind == DAEGUN_STAT_RANGE) {
             CHECK(v.min <= v.value && v.value <= v.max,
                   "range %zu is %g in [%g, %g]", i, v.value, v.min, v.max);
@@ -1793,196 +2417,9 @@ static void stat_values_are_readable(const char *path)
     daegun_font_free(font);
 }
 
-static void the_subpixel_filter_answers_about_itself(void)
-{
-    daegun_subpixel_params sp;
-    CHECK(daegun_subpixel_params_from_layout(DAEGUN_LAYOUT_RGB_H, &sp) == DAEGUN_OK, "failed");
-
-    float dil[2] = { -1.0f, -1.0f };
-    CHECK(daegun_subpixel_params_dilation(&sp, dil) == DAEGUN_OK, "dilation failed");
-    CHECK(dil[0] >= 0.0f && dil[1] >= 0.0f, "dilation is (%g, %g)", (double)dil[0], (double)dil[1]);
-
-    size_t pad[2] = { 999, 999 };
-    CHECK(daegun_subpixel_params_pad(&sp, pad) == DAEGUN_OK, "pad failed");
-    CHECK(pad[0] < 64 && pad[1] < 64, "pad is (%zu, %zu)", pad[0], pad[1]);
-
-    daegun_subpixel_params ss;
-    CHECK(daegun_subpixel_params_with_supersampling(&sp, 2, &ss) == DAEGUN_OK, "supersample failed");
-    CHECK(ss.supersample == 2, "supersample is %u after asking for 2", ss.supersample);
-    CHECK(ss.channels == sp.channels, "supersampling changed the channel count");
-
-    uint64_t k1 = 0, k2 = 0, k3 = 0;
-    CHECK(daegun_subpixel_layout_key(DAEGUN_LAYOUT_RGB_H, &k1) == DAEGUN_OK, "key failed");
-    CHECK(daegun_subpixel_layout_key(DAEGUN_LAYOUT_RGB_H, &k2) == DAEGUN_OK, "key failed");
-    CHECK(daegun_subpixel_layout_key(DAEGUN_LAYOUT_GRAYSCALE, &k3) == DAEGUN_OK, "key failed");
-    CHECK(k1 == k2, "the same layout gave two keys");
-    CHECK(k1 != k3, "RGB and grayscale share a cache key");
-
-    float w[3 * 3] = { 0.25f, 0.5f, 0.25f, 0.25f, 0.5f, 0.25f, 0.25f, 0.5f, 0.25f };
-    daegun_subpixel_params custom;
-    CHECK(daegun_subpixel_params_from_weights(1, 1, 3, 1, -1, 0, w, &custom) == DAEGUN_OK,
-          "a custom filter was refused");
-    CHECK(custom.taps[0] == 3, "the custom filter has %u taps", custom.taps[0]);
-    CHECK(daegun_subpixel_params_from_weights(0, 1, 3, 1, -1, 0, w, &custom) == DAEGUN_RANGE,
-          "a zero oversample was accepted");
-    CHECK(daegun_subpixel_params_from_weights(1, 1, 99, 1, -1, 0, w, &custom) == DAEGUN_RANGE,
-          "a tap count past the shader's table was accepted");
-}
-
-static void device_profiles_come_from_every_api(void)
-{
-    daegun_device_profile *d3d = NULL, *mtl = NULL, *warp = NULL;
-    CHECK(daegun_device_profile_from_d3d(0, 1, "a d3d adapter", &d3d) == DAEGUN_OK, "from_d3d failed");
-    CHECK(daegun_device_profile_from_metal(1, "a metal device", &mtl) == DAEGUN_OK, "from_metal failed");
-    CHECK(daegun_device_profile_from_d3d(1, -1, "WARP", &warp) == DAEGUN_OK, "from_d3d failed");
-
-    int32_t soft = -1;
-    CHECK(daegun_device_profile_is_software(warp, &soft) == DAEGUN_OK, "is_software failed");
-    CHECK(soft, "an adapter declared software does not read as software");
-    CHECK(daegun_device_profile_is_software(d3d, &soft) == DAEGUN_OK, "is_software failed");
-    CHECK(!soft, "a hardware adapter reads as software");
-
-    int32_t kind = -1;
-    CHECK(daegun_device_profile_kind(mtl, &kind) == DAEGUN_OK, "kind failed");
-    CHECK(kind == DAEGUN_DEVICE_INTEGRATED, "a UMA metal device is kind %d, not integrated", kind);
-
-    daegun_policy pol;
-    daegun_policy_default(&pol);
-    pol.avoid_software_gpu = true;
-    daegun_request req = { 24.0f, 0, 0, 0, 0, 0 };
-    int32_t routed = -1;
-    CHECK(daegun_route(DAEGUN_GPU_OK, &req, warp, &pol, &routed) == DAEGUN_OK, "route failed");
-    CHECK(routed != DAEGUN_ROUTED_GPU, "avoid_software_gpu still routed to a WARP adapter");
-
-    daegun_device_profile_free(d3d);
-    daegun_device_profile_free(mtl);
-    daegun_device_profile_free(warp);
-}
-
-static void arbitrary_geometry_goes_into_a_batch(void)
-{
-    daegun_batch *batch = NULL;
-    CHECK(daegun_batch_new(&batch) == DAEGUN_OK, "batch_new failed");
-
-    const float square[24] = {
-        0.0f, 0.0f,  0.5f, 0.0f,  1.0f, 0.0f,
-        1.0f, 0.0f,  1.0f, 0.5f,  1.0f, 1.0f,
-        1.0f, 1.0f,  0.5f, 1.0f,  0.0f, 1.0f,
-        0.0f, 1.0f,  0.0f, 0.5f,  0.0f, 0.0f,
-    };
-    float given[24];
-    memcpy(given, square, sizeof square);
-
-    daegun_glyph_slot slot;
-    memset(&slot, 0, sizeof slot);
-    CHECK(daegun_batch_append(batch, given, 4, &slot) == DAEGUN_OK, "append of four quads failed");
-    CHECK(memcmp(given, square, sizeof square) == 0, "append wrote back through the caller's array");
-
-    size_t nc = 0, nb = 0, nh = 0;
-    const daegun_curve_point *curves = daegun_batch_curves(batch, &nc);
-    const daegun_band *bands = daegun_batch_bands(batch, &nb);
-    const daegun_hull_vertex *hulls = daegun_batch_hulls(batch, &nh);
-    CHECK(curves != NULL && nc == 12, "four quads uploaded %zu curve points, wanted 12", nc);
-    CHECK(bands != NULL && nb > 0, "it uploaded %zu bands", nb);
-    CHECK(hulls != NULL && nh > 0, "it uploaded %zu hull vertices", nh);
-
-    CHECK(slot.box_min[0] == 0.0f && slot.box_min[1] == 0.0f, "box_min is (%g,%g), wanted (0,0)",
-          (double)slot.box_min[0], (double)slot.box_min[1]);
-    CHECK(slot.box_max[0] == 1.0f && slot.box_max[1] == 1.0f, "box_max is (%g,%g), wanted (1,1)",
-          (double)slot.box_max[0], (double)slot.box_max[1]);
-    CHECK(slot.h_bands > 0 && slot.v_bands > 0, "the slot claims %ux%u bands",
-          slot.h_bands, slot.v_bands);
-    CHECK((size_t)slot.band_base + slot.h_bands + slot.v_bands <= nb,
-          "the slot's bands run to %u of %zu", slot.band_base + slot.h_bands + slot.v_bands, nb);
-
-    daegun_glyph_slot second;
-    memset(&second, 0, sizeof second);
-    CHECK(daegun_batch_append(batch, given, 4, &second) == DAEGUN_OK, "a second append failed");
-    CHECK(second.band_base >= slot.band_base + slot.h_bands + slot.v_bands,
-          "the second slot's bands start at %u, inside the first's", second.band_base);
-    daegun_batch_curves(batch, &nc);
-    CHECK(nc == 24, "two appends uploaded %zu curve points, wanted 24", nc);
-
-    CHECK(daegun_batch_append(NULL, given, 4, &slot) == DAEGUN_NULL, "a null batch was accepted");
-    CHECK(daegun_batch_append(batch, NULL, 4, &slot) == DAEGUN_NULL, "a null array was accepted");
-    CHECK(daegun_batch_append(batch, given, 4, NULL) == DAEGUN_NULL, "a null out was accepted");
-    CHECK(daegun_batch_append(batch, given, 0, &slot) != DAEGUN_OK, "an empty append reported success");
-
-    daegun_batch_free(batch);
-}
-
-static void the_gpu_buffers_are_readable(const char *path)
-{
-    daegun_font *font = open_font(path);
-    if (!font) {
-        return;
-    }
-    daegun_batch *batch = NULL;
-    CHECK(daegun_batch_new(&batch) == DAEGUN_OK, "batch_new failed");
-    uint16_t gid = 0;
-    daegun_font_glyph_id(font, 'g', &gid);
-    daegun_glyph_slot slot;
-    memset(&slot, 0, sizeof slot);
-    CHECK(daegun_font_gpu_glyph(font, batch, gid, NULL, 0, &slot) == DAEGUN_OK, "gpu_glyph failed");
-
-    size_t nc = 0, nb = 0, nh = 0, nbc = 0;
-    const daegun_curve_point *curves = daegun_batch_curves(batch, &nc);
-    const daegun_band *bands = daegun_batch_bands(batch, &nb);
-    const daegun_hull_vertex *hulls = daegun_batch_hulls(batch, &nh);
-    const uint32_t *band_curves = daegun_batch_band_curves(batch, &nbc);
-
-    CHECK(curves != NULL && nc > 0, "a glyph with an outline uploaded %zu curve points", nc);
-    CHECK(bands != NULL && nb > 0, "it uploaded %zu bands", nb);
-    CHECK(hulls != NULL && nh > 0, "it uploaded %zu hull vertices", nh);
-    CHECK(band_curves != NULL && nbc > 0, "it uploaded %zu band-curve indices", nbc);
-
-    CHECK(slot.h_bands > 0 && slot.v_bands > 0, "the slot claims %ux%u bands",
-          slot.h_bands, slot.v_bands);
-    CHECK((size_t)slot.band_base + slot.h_bands + slot.v_bands <= nb,
-          "the slot's bands run to %u of %zu", slot.band_base + slot.h_bands + slot.v_bands, nb);
-    CHECK((size_t)slot.hull_base + 5 <= nh, "the slot's hull runs past the %zu vertices", nh);
-    CHECK(slot.box_min[0] < slot.box_max[0] && slot.box_min[1] < slot.box_max[1],
-          "the slot's box is (%g,%g)..(%g,%g)", (double)slot.box_min[0], (double)slot.box_min[1],
-          (double)slot.box_max[0], (double)slot.box_max[1]);
-
-    size_t inside = 0;
-    for (size_t i = 0; i < nc; i++) {
-        CHECK(curves[i].x == curves[i].x && curves[i].y == curves[i].y,
-              "curve point %zu is NaN", i);
-        if (curves[i].x >= slot.box_min[0] && curves[i].x <= slot.box_max[0]) {
-            inside++;
-        }
-    }
-    CHECK(inside > 0, "not one of %zu curve points falls inside the slot's own box", nc);
-
-    for (size_t i = 0; i < nb; i++) {
-        CHECK((size_t)bands[i].first_curve + bands[i].curve_count <= nbc,
-              "band %zu indexes %u..%u of %zu", i, bands[i].first_curve,
-              bands[i].first_curve + bands[i].curve_count, nbc);
-    }
-    for (size_t i = 0; i < nh; i++) {
-        CHECK(hulls[i].pos[0] == hulls[i].pos[0], "hull vertex %zu is NaN", i);
-    }
-
-    daegun_color_slots *slots = NULL;
-    if (daegun_font_gpu_color_glyph(font, batch, gid, NULL, 0, 0, &slots) == DAEGUN_OK) {
-        size_t ns = 0;
-        const daegun_color_slot *cs = daegun_color_slots_data(slots, &ns);
-        CHECK(cs != NULL || ns == 0, "the color slot list is null with %zu entries", ns);
-        for (size_t i = 0; i < ns; i++) {
-            CHECK(cs[i].tint[3] >= 0.0f && cs[i].tint[3] <= 1.0f,
-                  "color slot %zu has alpha %g", i, (double)cs[i].tint[3]);
-            CHECK(cs[i].slot.h_bands > 0, "color slot %zu claims no bands", i);
-        }
-        daegun_color_slots_free(slots);
-    }
-
-    daegun_batch_free(batch);
-    daegun_font_free(font);
-}
-
 static void an_owned_buffer_opens_without_a_copy(const char *path)
 {
+    CHECK(daegun_font_buffer_new(SIZE_MAX) == NULL, "a SIZE_MAX buffer was handed out");
     size_t len = 0;
     uint8_t *file = slurp(path, &len);
     if (!file) { CHECK(0, "could not read %s", path); return; }
@@ -2028,8 +2465,823 @@ static void an_owned_buffer_opens_without_a_copy(const char *path)
     free(file);
 }
 
+static int str_is(daegun_str s, const char *want)
+{
+    return s.data != NULL && s.len == strlen(want) && memcmp(s.data, want, s.len) == 0;
+}
+
+static int text_is(const daegun_text *t, const char *want)
+{
+    daegun_str s = { NULL, 0 };
+    return t != NULL && daegun_text_str(t, &s) == DAEGUN_OK && str_is(s, want);
+}
+
+static int strings_are(const daegun_str_list *list, const char *const *want, size_t n)
+{
+    size_t count = 0;
+    if (daegun_str_list_count(list, &count) != DAEGUN_OK || count != n) {
+        return 0;
+    }
+    for (size_t i = 0; i < n; i++) {
+        daegun_str s = { NULL, 0 };
+        if (daegun_str_list_at(list, i, &s) != DAEGUN_OK || !str_is(s, want[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#define INTER "assets/test-fonts/inter/InterVariable.ttf"
+
+/* What Inter says about itself, each against the Rust API's answer for the same call. */
+static void a_face_describes_itself(void)
+{
+    daegun_font *font = open_font(INTER);
+    if (!font) {
+        return;
+    }
+    int32_t cap = 0;
+    uint32_t flags = 0;
+    double angle = -1.0, tracking = -1.0;
+    CHECK(daegun_font_cap_height(font, &cap) == DAEGUN_OK && cap == 728, "cap height %d, not 728", cap);
+    CHECK(daegun_font_flags(font, &flags) == DAEGUN_OK && flags == 32, "head flags %u, not 32", flags);
+    CHECK(daegun_font_italic_angle(font, &angle) == DAEGUN_OK && angle == 0.0, "italic angle %g", angle);
+    CHECK(daegun_font_tracking(font, 12.0, true, &tracking) == DAEGUN_OK && tracking == 0.0,
+          "tracking %g with no trak table", tracking);
+    daegun_text *style = NULL;
+    CHECK(daegun_font_style(font, &style) == DAEGUN_OK && text_is(style, "normal"), "the style is not normal");
+    daegun_text_free(style);
+
+    daegun_os2_info os2;
+    memset(&os2, 0xff, sizeof os2);
+    CHECK(daegun_font_os2_info(font, &os2) == DAEGUN_OK, "os2_info failed");
+    CHECK(os2.version == 4 && os2.has_selection && os2.selection == 192,
+          "OS/2 version %u, selection %u", os2.version, os2.selection);
+    CHECK(os2.has_family_class && os2.family_class == 0, "family class %u", os2.family_class);
+    CHECK(os2.has_win_metrics && os2.win_ascent == 969 && os2.win_descent == 241,
+          "win metrics %d and %d", os2.win_ascent, os2.win_descent);
+    CHECK(os2.has_typo_metrics && os2.typo_ascender == 969 && os2.typo_descender == -241
+              && os2.typo_line_gap == 0,
+          "typo metrics %d, %d and %d", os2.typo_ascender, os2.typo_descender, os2.typo_line_gap);
+    bool bold = true, regular = false, oblique = true, typo = false;
+    CHECK(daegun_font_is_bold(font, &bold) == DAEGUN_OK && !bold, "Inter's default is bold");
+    CHECK(daegun_font_is_regular(font, &regular) == DAEGUN_OK && regular, "Inter's default is not regular");
+    CHECK(daegun_font_is_oblique(font, &oblique) == DAEGUN_OK && !oblique, "Inter's default is oblique");
+    CHECK(daegun_font_uses_typo_metrics(font, &typo) == DAEGUN_OK && typo, "Inter ignores its typo metrics");
+
+    daegun_axis black[1] = { { "wght", 900.0 } };
+    daegun_typographic_metrics tm, heavy;
+    memset(&tm, 0, sizeof tm);
+    memset(&heavy, 0, sizeof heavy);
+    CHECK(daegun_font_typographic_metrics(font, NULL, 0, &tm) == DAEGUN_OK, "typographic_metrics failed");
+    CHECK(tm.x_height == 546 && tm.underline_position == -170 && tm.underline_thickness == 68
+              && tm.strikeout_size == 68 && tm.strikeout_position == 328,
+          "x-height %d, underline %d and %d, strikeout %d and %d", tm.x_height, tm.underline_position,
+          tm.underline_thickness, tm.strikeout_size, tm.strikeout_position);
+    CHECK(tm.subscript_x_size == 650 && tm.subscript_y_offset == 75 && tm.superscript_y_offset == 350,
+          "subscript %d and %d, superscript %d", tm.subscript_x_size, tm.subscript_y_offset,
+          tm.superscript_y_offset);
+    CHECK(daegun_font_typographic_metrics(font, black, 1, &heavy) == DAEGUN_OK
+              && heavy.underline_position == -147 && heavy.underline_thickness == 113,
+          "at 900 the underline is at %d, %d thick", heavy.underline_position, heavy.underline_thickness);
+
+    daegun_f64_list *norm = NULL;
+    CHECK(daegun_font_normalized_axes(font, black, 1, &norm) == DAEGUN_OK, "normalized_axes failed");
+    size_t nn = 0;
+    const double *nd = daegun_f64_list_data(norm, &nn);
+    CHECK(nn == 2 && nd[0] == 0.0 && nd[1] == 1.0, "wght 900 normalized to %zu coordinates", nn);
+    daegun_f64_list_free(norm);
+
+    daegun_axis bolder[1] = { { "wght", 700.0 } };
+    daegun_blob *inst = NULL;
+    CHECK(daegun_font_instance(font, bolder, 1, &inst) == DAEGUN_OK, "instance failed");
+    size_t inst_len = 0;
+    const uint8_t *inst_data = daegun_blob_data(inst, &inst_len);
+    daegun_font *pinned = NULL;
+    bool variable = true;
+    CHECK(inst_data && daegun_font_open(inst_data, inst_len, &pinned) == DAEGUN_OK
+              && daegun_font_is_variable(pinned, &variable) == DAEGUN_OK && !variable,
+          "the instance does not open as a static font");
+    daegun_font_free(pinned);
+    daegun_blob_free(inst);
+
+    size_t named = 0;
+    CHECK(daegun_font_named_instance_count(font, &named) == DAEGUN_OK && named == 9,
+          "%zu named instances, not 9", named);
+    daegun_text *name = NULL, *ps = NULL;
+    daegun_str_list *coord_tags = NULL;
+    daegun_f64_list *coord_values = NULL;
+    static const char *const opsz_wght[2] = { "opsz", "wght" };
+    CHECK(daegun_font_named_instance(font, 0, &name, &ps, &coord_tags, &coord_values) == DAEGUN_OK,
+          "named_instance 0 failed");
+    CHECK(text_is(name, "Thin") && text_is(ps, "InterVariable-Thin"), "instance 0 is not Thin");
+    size_t cn = 0;
+    const double *cv = daegun_f64_list_data(coord_values, &cn);
+    CHECK(strings_are(coord_tags, opsz_wght, 2) && cn == 2 && cv[0] == 14.0 && cv[1] == 100.0,
+          "Thin is not at opsz 14, wght 100");
+    daegun_text_free(name);
+    daegun_text_free(ps);
+    daegun_str_list_free(coord_tags);
+    daegun_f64_list_free(coord_values);
+    CHECK(daegun_font_named_instance(font, 9, NULL, NULL, NULL, NULL) == DAEGUN_RANGE, "a tenth instance");
+
+    uint16_t f = 0, i = 0, h = 0;
+    daegun_font_glyph_id(font, 'f', &f);
+    daegun_font_glyph_id(font, 'i', &i);
+    daegun_font_glyph_id(font, 'H', &h);
+    const uint16_t fi[2] = { f, i };
+    daegun_u16_list *closure = NULL;
+    CHECK(daegun_font_glyph_closure(font, fi, 2, NULL, 0, &closure) == DAEGUN_OK, "glyph_closure failed");
+    size_t cl = 0;
+    const uint16_t *cd = daegun_u16_list_data(closure, &cl);
+    int kept = 0;
+    for (size_t k = 0; k < cl; k++) {
+        kept += cd[k] == f || cd[k] == i;
+    }
+    CHECK(cl == 20 && kept == 2, "f and i close over %zu glyphs, keeping %d of them", cl, kept);
+    daegun_u16_list_free(closure);
+    daegun_subset *sub = NULL;
+    uint16_t nh = 0;
+    CHECK(daegun_font_subset_text(font, "Hi", NULL, 0, &sub) == DAEGUN_OK
+              && daegun_subset_new_gid(sub, h, &nh) == DAEGUN_OK && nh != 0,
+          "subset_text left H out");
+    daegun_subset_free(sub);
+
+    daegun_str_list *scripts = NULL, *langs = NULL, *features = NULL, *latn = NULL;
+    static const char *const want_scripts[4] = { "DFLT", "cyrl", "grek", "latn" };
+    static const char *const want_langs[3] = { "CAT ", "MOL ", "ROM " };
+    size_t nf = 0, nl = 0;
+    CHECK(daegun_font_script_tags(font, &scripts) == DAEGUN_OK && strings_are(scripts, want_scripts, 4),
+          "the scripts are not DFLT, cyrl, grek and latn");
+    CHECK(daegun_font_language_tags(font, "latn", &langs) == DAEGUN_OK && strings_are(langs, want_langs, 3),
+          "latn's languages are not CAT, MOL and ROM");
+    CHECK(daegun_font_feature_tags(font, NULL, NULL, &features) == DAEGUN_OK
+              && daegun_str_list_count(features, &nf) == DAEGUN_OK && nf == 42,
+          "%zu features, not 42", nf);
+    CHECK(daegun_font_feature_tags(font, "latn", "ROM ", &latn) == DAEGUN_OK
+              && daegun_str_list_count(latn, &nl) == DAEGUN_OK && nl == 43,
+          "ROM has %zu features, not DFLT's 42 and locl", nl);
+    int locl = 0;
+    for (size_t k = 0; k < nl; k++) {
+        daegun_str t = { NULL, 0 };
+        locl += daegun_str_list_at(latn, k, &t) == DAEGUN_OK && str_is(t, "locl");
+    }
+    CHECK(locl == 1, "ROM lists locl %d times", locl);
+    daegun_str_list_free(scripts);
+    daegun_str_list_free(langs);
+    daegun_str_list_free(features);
+    daegun_str_list_free(latn);
+
+    daegun_stat *stat = NULL;
+    CHECK(daegun_font_stat_info(font, &stat) == DAEGUN_OK, "stat_info failed");
+    size_t axes = 0;
+    daegun_str_list *axis_tags = NULL;
+    const uint16_t *orderings = NULL;
+    static const char *const stat_tags[3] = { "opsz", "wght", "ital" };
+    CHECK(daegun_stat_axes(stat, &axes, &axis_tags, &orderings) == DAEGUN_OK && axes == 3
+              && strings_are(axis_tags, stat_tags, 3) && orderings[0] == 0 && orderings[1] == 1
+              && orderings[2] == 2,
+          "STAT's %zu axes are not opsz, wght and ital in order", axes);
+    daegun_str_list_free(axis_tags);
+    CHECK(daegun_stat_axes(stat, NULL, NULL, NULL) == DAEGUN_OK, "stat_axes refused NULL outs");
+    static const char *const axis_names[3] = { "Optical Size", "Weight", "Italic" };
+    for (size_t i = 0; i < 3; i++) {
+        daegun_str name = { NULL, 0 };
+        CHECK(daegun_stat_axis_name(stat, i, &name) == DAEGUN_OK && name.len == strlen(axis_names[i])
+                  && memcmp(name.data, axis_names[i], name.len) == 0,
+              "STAT axis %zu is not named %s", i, axis_names[i]);
+    }
+    daegun_str past = { NULL, 0 };
+    CHECK(daegun_stat_axis_name(stat, 3, &past) == DAEGUN_RANGE, "a fourth axis has a name");
+    daegun_text *elided = NULL;
+    CHECK(daegun_stat_elided_fallback_name(stat, &elided) == DAEGUN_OK && text_is(elided, "Regular"),
+          "the elided fallback name is not Regular");
+    daegun_text_free(elided);
+    daegun_stat_free(stat);
+    daegun_font_free(font);
+}
+
+/* How Inter maps text to glyphs and what its runs report. */
+static void glyphs_and_runs_answer(void)
+{
+    daegun_font *font = open_font(INTER);
+    if (!font) {
+        return;
+    }
+    bool has = false;
+    CHECK(daegun_font_has_glyph(font, 'A', &has) == DAEGUN_OK && has, "Inter has no A");
+    CHECK(daegun_font_has_glyph(font, 0x10FFFF, &has) == DAEGUN_OK && !has, "Inter maps U+10FFFF");
+    daegun_u16_list *ids = NULL;
+    daegun_blob *present = NULL;
+    CHECK(daegun_font_glyph_ids(font, "A\xF4\x8F\xBF\xBF" "b", &ids, &present) == DAEGUN_OK, "glyph_ids failed");
+    size_t ni = 0, np = 0;
+    const uint16_t *id = daegun_u16_list_data(ids, &ni);
+    const uint8_t *pr = daegun_blob_data(present, &np);
+    CHECK(ni == 3 && np == 3 && id[0] == 2 && id[2] == 578 && pr[0] && !pr[1] && pr[2],
+          "glyph_ids gave %zu ids and %zu flags", ni, np);
+    daegun_u16_list_free(ids);
+    daegun_blob_free(present);
+
+    daegun_u32_list *cps = NULL, *all = NULL;
+    daegun_u16_list *cov = NULL;
+    CHECK(daegun_font_coverage(font, &cps, &cov) == DAEGUN_OK, "coverage failed");
+    CHECK(daegun_font_codepoints(font, &all) == DAEGUN_OK, "codepoints failed");
+    size_t ncp = 0, ncg = 0, nall = 0;
+    const uint32_t *cp = daegun_u32_list_data(cps, &ncp);
+    const uint16_t *cg = daegun_u16_list_data(cov, &ncg);
+    daegun_u32_list_data(all, &nall);
+    int a_maps = 0;
+    for (size_t k = 0; k < ncp && k < ncg; k++) {
+        a_maps |= cp[k] == 'A' && cg[k] == 2;
+    }
+    CHECK(ncp == 2852 && ncg == 2852 && nall == 2852 && a_maps,
+          "coverage gave %zu and %zu, codepoints %zu, not 2852 with A at 2", ncp, ncg, nall);
+    daegun_u32_list_free(cps);
+    daegun_u16_list_free(cov);
+    daegun_u32_list_free(all);
+
+    uint16_t space = 0, acute = 0, uvs = 0;
+    daegun_font_glyph_id(font, ' ', &space);
+    daegun_font_glyph_id(font, 0x301, &acute);
+    double box[4] = { 0.0, 0.0, 0.0, 0.0 };
+    CHECK(daegun_font_glyph_bounds(font, 2, NULL, 0, box) == DAEGUN_OK && box[0] == 25.390625
+              && box[1] == 0.0 && box[2] == 664.55078125 && box[3] == 727.5390625,
+          "A's box is %g, %g, %g, %g", box[0], box[1], box[2], box[3]);
+    CHECK(daegun_font_glyph_bounds(font, space, NULL, 0, box) == DAEGUN_ABSENT, "a space has ink");
+    CHECK(daegun_font_variation_glyph_id(font, 'A', 0xFE00, &uvs) == DAEGUN_ABSENT, "Inter maps A with VS1");
+    uint32_t vadv = 0;
+    int32_t vorig = 0, dvorig = 1;
+    CHECK(daegun_font_vertical_advance(font, 2, NULL, 0, &vadv) == DAEGUN_OK && vadv == 1210,
+          "A's vertical advance is %u, not 1210", vadv);
+    CHECK(daegun_font_vertical_origin(font, 2, NULL, 0, &vorig) == DAEGUN_ABSENT, "Inter has a VORG");
+    CHECK(daegun_font_default_vertical_origin(font, &dvorig) == DAEGUN_OK && dvorig == 0,
+          "the default vertical origin is %d", dvorig);
+    daegun_f64_list *positions = NULL;
+    CHECK(daegun_font_caret_positions(font, "ab", NULL, 0, false, &positions) == DAEGUN_OK, "caret_positions failed");
+    size_t npos = 0;
+    const double *pos = daegun_f64_list_data(positions, &npos);
+    CHECK(npos == 3 && pos[0] == 0.0 && pos[1] == 561.5234375 && pos[2] == 1173.828125,
+          "ab has %zu caret positions", npos);
+    daegun_f64_list_free(positions);
+
+    int32_t klass = -1;
+    uint16_t mark_class = 9;
+    CHECK(daegun_font_glyph_class(font, 2, &klass) == DAEGUN_OK && klass == DAEGUN_GLYPH_CLASS_BASE,
+          "A is class %d", klass);
+    CHECK(daegun_font_glyph_class(font, acute, &klass) == DAEGUN_OK && klass == DAEGUN_GLYPH_CLASS_MARK,
+          "the combining acute is class %d", klass);
+    CHECK(daegun_font_mark_attachment_class(font, acute, &mark_class) == DAEGUN_OK && mark_class == 0,
+          "the acute's mark attachment class is %u", mark_class);
+    daegun_text *gname = NULL;
+    CHECK(daegun_font_glyph_name(font, 2, &gname) == DAEGUN_OK && text_is(gname, "A"), "glyph 2 is not A");
+    daegun_text_free(gname);
+    daegun_str_list *names = NULL;
+    daegun_blob *named = NULL;
+    CHECK(daegun_font_glyph_names(font, &names, &named) == DAEGUN_OK, "glyph_names failed");
+    size_t nnames = 0, nnamed = 0;
+    daegun_str n2 = { NULL, 0 };
+    daegun_str_list_count(names, &nnames);
+    const uint8_t *has_name = daegun_blob_data(named, &nnamed);
+    CHECK(nnames == 2937 && nnamed == 2937 && has_name[2] && daegun_str_list_at(names, 2, &n2) == DAEGUN_OK
+              && str_is(n2, "A"),
+          "%zu names and %zu flags, without A at 2", nnames, nnamed);
+    daegun_str_list_free(names);
+    daegun_blob_free(named);
+
+    daegun_run *lang = NULL;
+    CHECK(daegun_font_shape_with_language(font, "Hi", NULL, 0, false, "TRK", &lang) == DAEGUN_OK,
+          "shape_with_language failed");
+    size_t ng = 0;
+    const uint16_t *g = daegun_run_glyphs(lang, &ng);
+    CHECK(ng == 2 && g[0] == 161 && g[1] == 689, "Hi in Turkish shaped to %zu glyphs", ng);
+    daegun_run_free(lang);
+
+    daegun_shape_options opts;
+    memset(&opts, 0xff, sizeof opts);
+    CHECK(daegun_shape_options_default(&opts) == DAEGUN_OK && opts.cluster_level == DAEGUN_CLUSTER_MONOTONE_GRAPHEMES
+              && opts.ignorables == DAEGUN_IGNORABLES_HIDE && opts.features == NULL && opts.script == NULL
+              && !opts.report_unsafe_to_concat && !opts.has_invisible_glyph && !opts.has_seed_script
+              && opts.seed_script == 0,
+          "the default options are not the defaults");
+    opts.report_unsafe_to_concat = true;
+    opts.report_tatweel_positions = true;
+    daegun_run *reported = NULL, *plain = NULL;
+    CHECK(daegun_font_shape_with_options(font, "Hi", NULL, 0, false, &opts, &reported) == DAEGUN_OK,
+          "shape_with_options failed");
+    size_t nb = 0, nc = 0, nt = 0;
+    const uint8_t *utb = daegun_run_unsafe_to_break(reported, &nb);
+    const uint8_t *utc = daegun_run_unsafe_to_concat(reported, &nc);
+    daegun_run_safe_to_insert_tatweel(reported, &nt);
+    CHECK(nb == 2 && !utb[0] && !utb[1], "Hi is unsafe to break: %zu flags", nb);
+    CHECK(nc == 2 && utc[0] && utc[1] && nt == 2, "%zu concat and %zu tatweel flags, asked for", nc, nt);
+    bool broken = true;
+    CHECK(daegun_run_has_broken_syllable(reported, &broken) == DAEGUN_OK && !broken, "Hi has a broken syllable");
+    daegun_run_free(reported);
+    CHECK(daegun_font_shape_with_options(font, "Hi", NULL, 0, false, NULL, &plain) == DAEGUN_OK,
+          "NULL options were refused");
+    daegun_run_unsafe_to_concat(plain, &nc);
+    CHECK(nc == 0, "unasked, unsafe_to_concat came back for %zu glyphs", nc);
+    daegun_run_free(plain);
+
+    daegun_justified *j = NULL;
+    bool has_level = true, shrink = true, best = true;
+    size_t level = 9;
+    double width = 0.0;
+    CHECK(daegun_font_justify(font, "Hi", NULL, 0, false, "latn", NULL, 985.3515625, 0.5, &j) == DAEGUN_OK
+              && daegun_justified_info(j, &has_level, &level, &shrink, &width, &best) == DAEGUN_OK,
+          "justify at the natural width failed");
+    CHECK(!has_level && !shrink && !best && width == 985.3515625, "Hi at its own width came back %g wide", width);
+    daegun_run_glyphs(daegun_justified_run(j), &ng);
+    CHECK(ng == 2, "the justified run has %zu glyphs", ng);
+    daegun_justified_free(j);
+    j = NULL;
+    CHECK(daegun_font_justify(font, "Hi", NULL, 0, false, "latn", NULL, 2000.0, 1.0, &j) == DAEGUN_OK
+              && daegun_justified_info(j, &has_level, NULL, &shrink, NULL, &best) == DAEGUN_OK,
+          "justify to 2000 failed");
+    CHECK(!has_level && !shrink && best, "with no JSTF, a stretch to 2000 was not a best effort");
+    daegun_justified_free(j);
+    daegun_font_free(font);
+
+    daegun_font *carets = open_font("assets/test-fonts/test-fixtures/carets.ttf");
+    if (carets) {
+        daegun_f64_list *list = NULL;
+        daegun_blob *present = NULL;
+        CHECK(daegun_font_ligature_carets(carets, 6, NULL, 0, false, &list, &present) == DAEGUN_OK,
+              "ligature_carets failed");
+        size_t n = 0, np = 0;
+        const double *c = daegun_f64_list_data(list, &n);
+        const uint8_t *p = daegun_blob_data(present, &np);
+        CHECK(n == 3 && np == 3 && c[0] == 250.0 && c[1] == 500.0 && c[2] == 750.0 && p[0] && p[1] && p[2],
+              "f_f_l has %zu carets", n);
+        daegun_f64_list_free(list);
+        daegun_blob_free(present);
+        list = NULL;
+        CHECK(daegun_font_ligature_carets(carets, 5, NULL, 0, true, &list, NULL) == DAEGUN_OK,
+              "ligature_carets failed");
+        c = daegun_f64_list_data(list, &n);
+        CHECK(n == 1 && c[0] == 0.0, "f_i's caret, point 1 at (420, 0), is not 0 down a vertical line");
+        daegun_f64_list_free(list);
+        list = NULL;
+        CHECK(daegun_font_ligature_carets(carets, 1, NULL, 0, false, &list, NULL) == DAEGUN_OK,
+              "ligature_carets failed");
+        daegun_f64_list_data(list, &n);
+        CHECK(n == 0, "f, no ligature, has %zu carets", n);
+        daegun_f64_list_free(list);
+        daegun_font_free(carets);
+    }
+
+    daegun_font *deva = open_font("assets/test-fonts/noto-devanagari/NotoSansDevanagari.ttf");
+    if (deva) {
+        daegun_run *run = NULL;
+        CHECK(daegun_font_shape(deva, "\xE0\xA4\xBF", NULL, 0, false, &run) == DAEGUN_OK
+                  && daegun_run_has_broken_syllable(run, &broken) == DAEGUN_OK && broken,
+              "a vowel sign with no consonant is not a broken syllable");
+        daegun_run_free(run);
+        daegun_font_free(deva);
+    }
+}
+
+static void math_glyph_info_answers(void)
+{
+    daegun_font *font = open_font("assets/test-fonts/stix-two-math/STIX2Math.otf");
+    if (!font) {
+        return;
+    }
+    uint16_t paren = 0, f = 0;
+    daegun_font_glyph_id(font, '(', &paren);
+    daegun_font_glyph_id(font, 0x1D453, &f);
+    double v = -1.0;
+    bool extended = false;
+    CHECK(daegun_font_math_italics_correction(font, f, &v) == DAEGUN_OK && v == 20.0, "the italic f's correction is %g", v);
+    CHECK(daegun_font_math_top_accent_attachment(font, f, &v) == DAEGUN_OK && v == 470.0, "its accent sits at %g", v);
+    CHECK(daegun_font_math_is_extended_shape(font, paren, &extended) == DAEGUN_OK && extended, "( is not extended");
+    CHECK(daegun_font_math_min_connector_overlap(font, &v) == DAEGUN_OK && v == 100.0, "the connector overlap is %g", v);
+    CHECK(daegun_font_math_kern(font, 7, DAEGUN_MATH_KERN_TOP_RIGHT, 250.0, &v) == DAEGUN_OK && v == 32.0,
+          "glyph 7's top right kern at 250 is %g", v);
+    CHECK(daegun_font_math_kern(font, 22, DAEGUN_MATH_KERN_BOTTOM_LEFT, 250.0, &v) == DAEGUN_OK && v == -90.0,
+          "glyph 22's bottom left kern at 250 is %g", v);
+    CHECK(daegun_font_math_kern(font, 7, 4, 250.0, &v) == DAEGUN_RANGE, "corner 4 was accepted");
+
+    daegun_math_construction *c = NULL;
+    CHECK(daegun_font_math_glyph_variants(font, paren, true, &c) == DAEGUN_OK, "( has no vertical variants");
+    size_t nv = 0, parts = 0;
+    const uint16_t *vg = NULL, *pg = NULL;
+    const double *va = NULL, *pv = NULL;
+    double ic = -1.0;
+    CHECK(daegun_math_construction_variants(c, &nv, &vg, &va) == DAEGUN_OK && nv == 13 && vg[0] == paren
+              && va[0] == 933.0 && vg[12] == 1312 && va[12] == 3821.0,
+          "( has %zu variants", nv);
+    CHECK(daegun_math_construction_variants(c, NULL, &vg, &va) == DAEGUN_NULL, "a NULL count was accepted");
+    CHECK(daegun_math_construction_assembly(c, &ic, &parts, &pg, &pv) == DAEGUN_OK && ic == 0.0 && parts == 3,
+          "( assembles from %zu parts", parts);
+    if (parts == 3) {
+        static const double want[12] = { 0, 250, 1273, 0, 1000, 1000, 1252, 1, 250, 0, 1273, 0 };
+        int same = pg[0] == 4862 && pg[1] == 4861 && pg[2] == 4860;
+        for (int k = 0; k < 12; k++) {
+            same &= pv[k] == want[k];
+        }
+        CHECK(same, "the parts of ( are not 4862, 4861 and 4860 as fontTools reads them");
+    }
+    daegun_math_construction_free(c);
+    c = NULL;
+    CHECK(daegun_font_math_glyph_variants(font, paren, false, &c) == DAEGUN_ABSENT && c == NULL,
+          "( has horizontal variants");
+    daegun_font_free(font);
+}
+
+/* fontTools' values: pairs first, last and deep in their lists, a default sequence, and two misses. */
+static void variation_sequences_answer(void)
+{
+    daegun_font *font = open_font("assets/test-fonts/source-han-sans/SourceHanSansJP-VF.otf");
+    if (!font) {
+        return;
+    }
+    static const struct {
+        uint32_t base, selector;
+        uint16_t want;
+    } found[4] = {
+        { 0x4FAE, 0xFE00, 15200 }, { 0x2A61A, 0xE0101, 17423 }, { 0x9089, 0xE010E, 17243 }, { 0x2E6EA, 0xE0100, 16144 },
+    };
+    for (size_t i = 0; i < 4; i++) {
+        uint16_t gid = 0;
+        CHECK(daegun_font_variation_glyph_id(font, found[i].base, found[i].selector, &gid) == DAEGUN_OK
+                  && gid == found[i].want,
+              "U+%04X U+%04X gave %u, not %u", found[i].base, found[i].selector, gid, found[i].want);
+    }
+    uint16_t gid = 0;
+    CHECK(daegun_font_variation_glyph_id(font, 0x4FAE, 0xE0104, &gid) == DAEGUN_ABSENT, "VS21 resolved U+4FAE");
+    CHECK(daegun_font_variation_glyph_id(font, 0x4FAE, 0xFE0F, &gid) == DAEGUN_ABSENT, "VS16 resolved U+4FAE");
+    daegun_font_free(font);
+}
+
+static void base_and_vertical_metrics_answer(void)
+{
+    daegun_font *font = open_font("assets/test-fonts/source-han-sans/SourceHanSansJP-VF.otf");
+    if (!font) {
+        return;
+    }
+    bool glyph_free = false;
+    CHECK(daegun_font_base_is_glyph_free(font, &glyph_free) == DAEGUN_OK && glyph_free, "BASE needs glyphs");
+    /* fontTools' values, icfb and icft moved by BASE's store at wght 900. */
+    static const char *const tags[4] = { "icfb", "icft", "ideo", "romn" };
+    static const double want[2][2][4] = {
+        { { -67, 827, -120, 0 }, { -94, 854, -120, 0 } },
+        { { 53, 947, 0, 120 }, { 26, 974, 0, 120 } },
+    };
+    const daegun_axis heavy = { "wght", 900 };
+    for (int vertical = 0; vertical < 2; vertical++) {
+        for (int at = 0; at < 2; at++) {
+            daegun_text *def = NULL;
+            daegun_str_list *names = NULL;
+            daegun_f64_list *coords = NULL;
+            CHECK(daegun_font_base_info(font, "hani", vertical, at ? &heavy : NULL, (size_t)at, &def, &names,
+                                        &coords) == DAEGUN_OK,
+                  "base_info failed");
+            size_t n = 0;
+            const double *c = daegun_f64_list_data(coords, &n);
+            bool same = text_is(def, "ideo") && strings_are(names, tags, 4) && n == 4;
+            for (size_t k = 0; same && k < 4; k++) {
+                same = fabs(c[k] - want[vertical][at][k]) < 1e-9;
+            }
+            CHECK(same, "hani's %s baselines at %s are not where fontTools puts them",
+                  vertical ? "vertical" : "horizontal", at ? "wght 900" : "the default");
+            daegun_text_free(def);
+            daegun_str_list_free(names);
+            daegun_f64_list_free(coords);
+        }
+    }
+    CHECK(daegun_font_base_info(font, "hani", false, NULL, 0, NULL, NULL, NULL) == DAEGUN_OK,
+          "base_info refused NULL outs");
+    bool has_min = true, has_max = true;
+    CHECK(daegun_font_base_extents(font, "hani", NULL, NULL, false, NULL, 0, &has_min, NULL, &has_max, NULL)
+              == DAEGUN_ABSENT,
+          "Source Han's BASE has no MinMax, yet base_extents answered");
+    uint16_t kan = 0;
+    daegun_font_glyph_id(font, 0x6F22, &kan);
+    uint32_t vadv = 0;
+    int32_t vorig = 0, dvorig = 0;
+    CHECK(daegun_font_vertical_advance(font, kan, NULL, 0, &vadv) == DAEGUN_OK && vadv == 1000,
+          "U+6F22's vertical advance is %u", vadv);
+    CHECK(daegun_font_vertical_origin(font, kan, NULL, 0, &vorig) == DAEGUN_OK && vorig == 880,
+          "U+6F22's vertical origin is %d", vorig);
+    CHECK(daegun_font_default_vertical_origin(font, &dvorig) == DAEGUN_OK && dvorig == 880,
+          "VORG's default is %d", dvorig);
+    daegun_font_free(font);
+}
+
+/* Scheherazade's JSTF names extenders and no priorities, so a priority level is added to Inter by
+ * hand: one level whose extension enables GSUB lookup 0. */
+static void justification_answers(void)
+{
+    daegun_font *arabic = open_font("assets/test-fonts/scheherazade-new/ScheherazadeNew-Regular.ttf");
+    if (arabic) {
+        daegun_u16_list *glyphs = NULL, *extenders = NULL;
+        size_t ng = 0, ne = 0;
+        CHECK(daegun_font_justification_glyphs(arabic, "arab", &glyphs) == DAEGUN_OK, "justification_glyphs failed");
+        CHECK(daegun_font_justification_extenders(arabic, "arab", &extenders) == DAEGUN_OK, "extenders failed");
+        const uint16_t *g = daegun_u16_list_data(glyphs, &ng);
+        const uint16_t *e = daegun_u16_list_data(extenders, &ne);
+        CHECK(ng == 2 && g[0] == 1313 && g[1] == 1315 && ne == 2 && e[0] == 1313 && e[1] == 1315,
+              "arab's extenders are not 1313 and 1315");
+        daegun_u16_list_free(glyphs);
+        daegun_u16_list_free(extenders);
+        daegun_jstf_priorities *none = NULL;
+        CHECK(daegun_font_justification_priorities(arabic, "arab", NULL, &none) == DAEGUN_ABSENT && none == NULL,
+              "priorities came back from a JSTF that names none");
+
+        daegun_shape_options opts;
+        daegun_shape_options_default(&opts);
+        opts.report_tatweel_positions = true;
+        daegun_run *run = NULL;
+        size_t nt = 0;
+        CHECK(daegun_font_shape_with_options(arabic, "\xD8\xA8\xD8\xA8", NULL, 0, false, &opts, &run) == DAEGUN_OK,
+              "shaping two behs failed");
+        const uint8_t *t = daegun_run_safe_to_insert_tatweel(run, &nt);
+        CHECK(nt == 2 && t[0] && !t[1], "a tatweel fits between two behs at %zu places", nt);
+        daegun_run_free(run);
+
+        /* "(" alone is Common and shapes as default; seeded Arabic, as between Arabic words, it mirrors. */
+        daegun_u32_list *runs = NULL;
+        size_t rn = 0;
+        CHECK(daegun_text_script_runs("\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85", &runs) == DAEGUN_OK, "script runs failed");
+        const uint32_t *rd = daegun_u32_list_data(runs, &rn);
+        daegun_shape_options_default(&opts);
+        opts.has_seed_script = rn >= 3;
+        opts.seed_script = rn >= 3 ? (uint16_t)rd[2] : 0;
+        daegun_u32_list_free(runs);
+        daegun_run *seeded = NULL, *plain = NULL;
+        size_t ns = 0, np = 0;
+        daegun_str shaper = { NULL, 0 };
+        CHECK(daegun_font_shape_with_options(arabic, "(", NULL, 0, false, &opts, &seeded) == DAEGUN_OK
+                  && daegun_font_shape_with_options(arabic, "(", NULL, 0, false, NULL, &plain) == DAEGUN_OK,
+              "shaping ( failed");
+        const uint16_t *sg = daegun_run_glyphs(seeded, &ns), *pg = daegun_run_glyphs(plain, &np);
+        CHECK(ns == 1 && np == 1 && sg[0] == 10 && pg[0] == 9, "( seeded Arabic is not the mirrored glyph");
+        CHECK(daegun_run_shaper(seeded, &shaper) == DAEGUN_OK && shaper.len == 6 && memcmp(shaper.data, "arabic", 6) == 0,
+              "( seeded Arabic did not reach the Arabic shaper");
+        daegun_run_free(seeded);
+        daegun_run_free(plain);
+        daegun_font_free(arabic);
+    }
+
+    daegun_font *inter = open_font(INTER);
+    if (!inter) {
+        return;
+    }
+    static const uint8_t jstf[46] = {
+        0, 1, 0, 0, 0, 1, 'l', 'a', 't', 'n', 0, 12,
+        0, 0, 0, 6, 0, 0,
+        0, 1, 0, 4,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 1, 0, 0,
+    };
+    daegun_table_map *map = NULL;
+    daegun_blob *built = NULL;
+    daegun_font *font = NULL;
+    size_t len = 0;
+    CHECK(daegun_font_instance_tables(inter, NULL, 0, &map) == DAEGUN_OK
+              && daegun_table_map_set(map, "JSTF", jstf, sizeof jstf) == DAEGUN_OK
+              && daegun_table_map_build(map, &built) == DAEGUN_OK,
+          "Inter with a JSTF table did not build");
+    const uint8_t *bytes = daegun_blob_data(built, &len);
+    CHECK(bytes && daegun_font_open(bytes, len, &font) == DAEGUN_OK, "Inter with a JSTF table does not open");
+    daegun_blob_free(built);
+    daegun_table_map_free(map);
+    daegun_font_free(inter);
+    if (!font) {
+        return;
+    }
+    daegun_jstf_priorities *levels = NULL;
+    size_t count = 0;
+    const daegun_jstf_mods *mods = NULL;
+    CHECK(daegun_font_justification_priorities(font, "latn", NULL, &levels) == DAEGUN_OK
+              && daegun_jstf_priorities_count(levels, &count) == DAEGUN_OK && count == 1,
+          "the JSTF table's %zu priority levels are not one", count);
+    CHECK(daegun_jstf_priorities_at(levels, 0, &mods) == DAEGUN_OK && mods != NULL, "level 0 is missing");
+    const daegun_jstf_mods *past = NULL;
+    CHECK(daegun_jstf_priorities_at(levels, 1, &past) == DAEGUN_RANGE, "a second level was found");
+    for (int32_t which = 0; which < 8; which++) {
+        const uint16_t *lookups = NULL;
+        size_t nl = 0;
+        daegun_status st = daegun_jstf_mods_lookups(mods, which, &lookups, &nl);
+        if (which == DAEGUN_JSTF_EXTENSION_ENABLE_GSUB) {
+            CHECK(st == DAEGUN_OK && nl == 1 && lookups[0] == 0, "the extension does not enable GSUB lookup 0");
+        } else {
+            CHECK(st == DAEGUN_ABSENT, "list %d came back as %d from a level that names none", which, st);
+        }
+    }
+    CHECK(daegun_jstf_mods_lookups(mods, 8, NULL, NULL) == DAEGUN_RANGE, "a ninth lookup list");
+    for (int shrink = 0; shrink < 2; shrink++) {
+        daegun_run *run = NULL;
+        size_t ng = 0;
+        CHECK(daegun_font_shape_justified(font, "Hi", NULL, 0, false, mods, shrink, &run) == DAEGUN_OK
+                  && daegun_run_glyphs(run, &ng) != NULL && ng == 2,
+              "shape_justified with shrink %d gave %zu glyphs", shrink, ng);
+        daegun_run_free(run);
+    }
+    daegun_jstf_priorities_free(levels);
+    daegun_font_free(font);
+}
+
+static void bidi_and_line_analysis_answer(void)
+{
+    const char *mixed = "abc \xD7\x90\xD7\x91\xD7\x92";
+    daegun_font *font = open_font(INTER);
+    if (font) {
+        daegun_bidi_runs *runs = NULL;
+        size_t n = 0, nc = 0, ng = 0;
+        const daegun_run *run = NULL;
+        uint8_t level = 9;
+        const size_t *chars = NULL;
+        CHECK(daegun_font_shape_bidi(font, mixed, NULL, 0, -1, &runs) == DAEGUN_OK
+                  && daegun_bidi_runs_count(runs, &n) == DAEGUN_OK && n == 2,
+              "abc and Hebrew shaped to %zu runs", n);
+        CHECK(daegun_bidi_runs_at(runs, 0, &run, &level, &chars, &nc) == DAEGUN_OK && level == 0 && nc == 4
+                  && chars[0] == 0 && chars[3] == 3,
+              "the first run is at level %u over %zu characters", level, nc);
+        const uint16_t *g = daegun_run_glyphs(run, &ng);
+        CHECK(ng == 4 && g[0] == 507 && g[3] == 1777, "abc and the space shaped to %zu glyphs", ng);
+        CHECK(daegun_bidi_runs_at(runs, 1, NULL, &level, &chars, &nc) == DAEGUN_OK && level == 1 && nc == 3
+                  && chars[0] == 4 && chars[2] == 6,
+              "the Hebrew run is at level %u over %zu characters", level, nc);
+        CHECK(daegun_bidi_runs_at(runs, 2, NULL, NULL, NULL, NULL) == DAEGUN_RANGE, "a third run was found");
+        daegun_bidi_runs_free(runs);
+
+        daegun_shape_options opts;
+        daegun_shape_options_default(&opts);
+        runs = NULL;
+        CHECK(daegun_font_shape_bidi_with(font, mixed, NULL, 0, 1, &opts, &runs) == DAEGUN_OK
+                  && daegun_bidi_runs_count(runs, &n) == DAEGUN_OK && n == 2
+                  && daegun_bidi_runs_at(runs, 1, NULL, &level, &chars, &nc) == DAEGUN_OK && level == 2
+                  && nc == 3 && chars[0] == 0,
+              "in a right-to-left paragraph abc is not the second run, at level 2");
+        daegun_bidi_runs_free(runs);
+        daegun_font_free(font);
+    }
+
+    daegun_bidi_paragraph *p = NULL;
+    daegun_visual_runs *vr = NULL;
+    uint8_t base = 9, level = 9;
+    size_t n = 0, nc = 0;
+    const size_t *chars = NULL;
+    CHECK(daegun_text_bidi_paragraph(mixed, -1, &p) == DAEGUN_OK
+              && daegun_bidi_paragraph_base_level(p, &base) == DAEGUN_OK && base == 0,
+          "the paragraph's base level is %u", base);
+    CHECK(daegun_text_line_visual_runs(p, 0, 7, &vr) == DAEGUN_OK && daegun_visual_runs_count(vr, &n) == DAEGUN_OK
+              && n == 2,
+          "the line has %zu visual runs", n);
+    CHECK(daegun_visual_runs_at(vr, 1, &level, &chars, &nc) == DAEGUN_OK && level == 1 && nc == 3
+              && chars[0] == 6 && chars[2] == 4,
+          "the Hebrew run is not reversed");
+    CHECK(daegun_visual_runs_at(vr, 2, NULL, NULL, NULL) == DAEGUN_RANGE, "a third visual run was found");
+    daegun_visual_runs_free(vr);
+    daegun_bidi_paragraph_free(p);
+    p = NULL;
+    CHECK(daegun_text_bidi_paragraph(mixed, 1, &p) == DAEGUN_OK
+              && daegun_bidi_paragraph_base_level(p, &base) == DAEGUN_OK && base == 1,
+          "a right-to-left paragraph has base level %u", base);
+    daegun_bidi_paragraph_free(p);
+
+    daegun_u32_list *words = NULL, *at = NULL;
+    daegun_blob *mandatory = NULL;
+    size_t nw = 0, na = 0, nm = 0;
+    CHECK(daegun_text_word_boundaries("hi there", &words) == DAEGUN_OK, "word_boundaries failed");
+    const uint32_t *w = daegun_u32_list_data(words, &nw);
+    CHECK(nw == 4 && w[0] == 0 && w[1] == 2 && w[2] == 3 && w[3] == 8, "hi there has %zu word boundaries", nw);
+    CHECK(daegun_text_line_break_opportunities("hi there\nyo", &at, &mandatory) == DAEGUN_OK, "line breaks failed");
+    const uint32_t *a = daegun_u32_list_data(at, &na);
+    const uint8_t *m = daegun_blob_data(mandatory, &nm);
+    CHECK(na == 3 && nm == 3 && a[0] == 3 && a[1] == 9 && a[2] == 11 && !m[0] && m[1] && m[2],
+          "the line breaks are not 3, then 9 and 11 demanded");
+    daegun_u32_list_free(words);
+    daegun_u32_list_free(at);
+    daegun_blob_free(mandatory);
+
+    CHECK(daegun_writing_mode_is_vertical(DAEGUN_WRITING_VERTICAL_RL)
+              && daegun_writing_mode_is_vertical(DAEGUN_WRITING_VERTICAL_LR)
+              && !daegun_writing_mode_is_vertical(DAEGUN_WRITING_HORIZONTAL),
+          "the writing modes disagree on which are vertical");
+}
+
+/* Tables too small for a fixture, built here: a format 6 lookup, a morx state machine, an ankr and a
+ * FeatureVariations record. The index map is Inter's own, against the Rust reader's answers. */
+static void the_walkers_read_tables_built_by_hand(void)
+{
+    static const uint8_t single[20] = { 0, 6, 0, 4, 0, 2, 0, 8, 0, 1, 0, 0, 0, 3, 0, 30, 0, 7, 0, 70 };
+    daegun_aat_lookup *lookup = NULL;
+    uint16_t v = 0;
+    CHECK(daegun_aat_lookup_open(single, sizeof single, 10, &lookup) == DAEGUN_OK, "the lookup did not open");
+    CHECK(daegun_aat_lookup_value(lookup, 7, &v) == DAEGUN_OK && v == 70, "glyph 7 maps to %u", v);
+    CHECK(daegun_aat_lookup_value(lookup, 5, &v) == DAEGUN_ABSENT, "glyph 5 maps to something");
+    daegun_glyph_value_list *entries = NULL;
+    size_t ne = 0;
+    CHECK(daegun_aat_lookup_entries(lookup, &entries) == DAEGUN_OK, "lookup entries failed");
+    const daegun_glyph_value *e = daegun_glyph_value_list_data(entries, &ne);
+    CHECK(ne == 2 && e[0].glyph == 3 && e[0].value == 30 && e[1].glyph == 7 && e[1].value == 70,
+          "the lookup lists %zu mappings", ne);
+    daegun_glyph_value_list_free(entries);
+    daegun_aat_lookup_free(lookup);
+
+    /* Five classes over three glyphs. From the start state, class 4 moves to state 1 with flags
+     * 0x8000 and its one extra word, 0x1234. */
+    static const uint8_t machine[56] = {
+        0, 0, 0, 5, 0, 0, 0, 16, 0, 0, 0, 24, 0, 0, 0, 44,
+        0, 0, 0, 4, 0, 4, 0, 3,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 1, 0x80, 0, 0x12, 0x34,
+    };
+    daegun_aat_state_table *table = NULL;
+    uint16_t k = 0;
+    daegun_aat_entry cell;
+    memset(&cell, 0xff, sizeof cell);
+    CHECK(daegun_aat_state_table_open(machine, sizeof machine, 1, 3, &table) == DAEGUN_OK, "the state table did not open");
+    CHECK(daegun_aat_state_table_class(table, 1, &k) == DAEGUN_OK && k == 4, "glyph 1 is class %u", k);
+    CHECK(daegun_aat_state_table_class(table, 3, &k) == DAEGUN_OK && k == 1, "a glyph past the font is class %u", k);
+    CHECK(daegun_aat_state_table_class(table, 0xFFFF, &k) == DAEGUN_OK && k == DAEGUN_AAT_CLASS_DELETED_GLYPH,
+          "the deleted glyph is class %u", k);
+    CHECK(daegun_aat_state_table_entry(table, DAEGUN_AAT_STATE_START_OF_TEXT, 4, &cell) == DAEGUN_OK
+              && cell.new_state == 1 && cell.flags == 0x8000 && cell.word1 == 0x1234 && cell.word2 == 0,
+          "the cell reads state %u, flags %x, words %x and %x", cell.new_state, cell.flags, cell.word1, cell.word2);
+    CHECK(daegun_aat_state_table_entry(table, 0, 5, &cell) == DAEGUN_RANGE, "a sixth class was read");
+    CHECK(daegun_aat_state_table_entry(table, 9, 0, &cell) == DAEGUN_RANGE, "a tenth state was read");
+    daegun_aat_state_table_free(table);
+
+    /* Glyph 1 has two anchors, (10, 20) and (-30, 40); glyphs 0 and 2 have none. */
+    static const uint8_t anchors[36] = {
+        0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 0, 20,
+        0, 0, 0, 12, 0, 0, 0, 12,
+        0, 0, 0, 2, 0, 10, 0, 20, 0xFF, 0xE2, 0, 40,
+        0, 0, 0, 0,
+    };
+    daegun_ankr *ankr = NULL;
+    uint32_t points = 9;
+    int16_t x = 0, y = 0;
+    CHECK(daegun_ankr_open(anchors, sizeof anchors, 3, &ankr) == DAEGUN_OK, "the ankr did not open");
+    CHECK(daegun_ankr_point_count(ankr, 1, &points) == DAEGUN_OK && points == 2, "glyph 1 has %u anchors", points);
+    CHECK(daegun_ankr_point_count(ankr, 0, &points) == DAEGUN_OK && points == 0, "glyph 0 has %u anchors", points);
+    CHECK(daegun_ankr_anchor_point(ankr, 1, 1, &x, &y) == DAEGUN_OK && x == -30 && y == 40,
+          "glyph 1's second anchor is (%d, %d)", x, y);
+    CHECK(daegun_ankr_anchor_point(ankr, 1, 2, &x, &y) == DAEGUN_ABSENT, "glyph 1 has a third anchor");
+    daegun_ankr_free(ankr);
+
+    /* One record: axis 0 from 0.5 to 1.0, 8192 to 16384 in F2Dot14, swaps feature 3 for the feature
+     * table at byte 42. */
+    static const uint8_t variations[46] = {
+        0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 16, 0, 0, 0, 30,
+        0, 1, 0, 0, 0, 6,
+        0, 1, 0, 0, 0x20, 0, 0x40, 0,
+        0, 1, 0, 0, 0, 1, 0, 3, 0, 0, 0, 12,
+        0, 0, 0, 0,
+    };
+    daegun_feature_variations *fv = NULL;
+    uint16_t record = 9;
+    size_t alternate = 0;
+    const int32_t inside[1] = { 12000 }, outside[1] = { 4000 };
+    CHECK(daegun_feature_variations_at(variations, sizeof variations, 0, &fv) == DAEGUN_OK, "feature_variations_at failed");
+    CHECK(daegun_feature_variations_find(fv, inside, 1, &record) == DAEGUN_OK && record == 0,
+          "0.73 matched record %u", record);
+    CHECK(daegun_feature_variations_find(fv, outside, 1, &record) == DAEGUN_ABSENT, "0.24 matched a record");
+    CHECK(daegun_feature_variations_substitute(fv, 0, 3, &alternate) == DAEGUN_OK && alternate == 42,
+          "feature 3's alternate is at %zu", alternate);
+    CHECK(daegun_feature_variations_substitute(fv, 0, 2, &alternate) == DAEGUN_ABSENT, "feature 2 has an alternate");
+    daegun_feature_variations_free(fv);
+
+    daegun_font *font = open_font(INTER);
+    if (!font) {
+        return;
+    }
+    daegun_bytes hvar = { NULL, 0 };
+    uint32_t map_at = 0;
+    daegun_delta_set_index_map *map = NULL;
+    size_t count = 0, outer = 0, inner = 0;
+    CHECK(daegun_font_table(font, "HVAR", &hvar) == DAEGUN_OK && daegun_read_u32_be(hvar.data, hvar.len, 8, &map_at) == DAEGUN_OK
+              && daegun_delta_set_index_map_parse(hvar.data, hvar.len, map_at, &map) == DAEGUN_OK,
+          "HVAR's advance map did not parse");
+    CHECK(daegun_delta_set_index_map_count(map, &count) == DAEGUN_OK && count == 2937, "the map has %zu entries", count);
+    CHECK(daegun_delta_set_index_map_lookup(map, 2, &outer, &inner) == DAEGUN_OK && outer == 3 && inner == 46,
+          "A maps to (%zu, %zu)", outer, inner);
+    CHECK(daegun_delta_set_index_map_lookup(map, 5000, &outer, &inner) == DAEGUN_OK && outer == 1 && inner == 302,
+          "past the end maps to (%zu, %zu), not the last entry", outer, inner);
+    daegun_delta_set_index_map_free(map);
+    daegun_font_free(font);
+}
+
+/* Runs after main returns, when the thread's storage may already be gone: a reason is read and set
+ * there, and neither may abort the process. */
+static void last_error_at_exit(void)
+{
+    (void)daegun_last_error();
+    daegun_font *junk = NULL;
+    static const uint8_t bytes[16] = {0xAB};
+    (void)daegun_font_open(bytes, sizeof bytes, &junk);
+    (void)daegun_last_error();
+}
+
 int main(int argc, char **argv)
 {
+    atexit(last_error_at_exit);
     const char *font = argc > 1 ? argv[1] : "assets/test-fonts/inter/InterVariable.ttf";
 
     printf("daegun C round trip\n");
@@ -2043,32 +3295,44 @@ int main(int argc, char **argv)
     metrics_answer_and_free_cleanly(font);
     a_subset_is_a_font(font);
     the_pen_draws_and_reentry_is_safe(font);
-    rasterizing_produces_ink(font);
     shaping_produces_positioned_glyphs(font);
     layout_wraps_and_borrows(font);
     text_analysis_needs_no_font();
-    drawing_picks_a_route(font);
     the_paint_graph_is_walkable("assets/test-fonts/colr-v1-test-glyphs/test_glyphs.ttf");
     math_constants_are_indexed("assets/test-fonts/stix-two-math/STIX2Math.otf");
     the_readers_are_bounds_checked();
     raw_tables_round_trip(font);
     paths_build_stroke_and_replay();
+    glyph_quads_come_back_as_floats(font);
+    the_subpixel_filter_is_readable();
+    a_prepared_outline_reaches_the_pen(font);
+    a_hinted_glyph_is_readable_from_c();
+    a_prepared_stroke_past_the_cap_is_range();
+    null_with_a_count_is_null(font);
+    a_stroke_that_overflows_is_refused();
+    the_remaining_readers_answer();
+    a_scene_holds_each_outline_once_within_a_bound();
+    paths_flatten_and_resolve();
+    a_path_can_draw_into_itself();
+    compositing_follows_colr();
+    a_color_scene_is_walkable("assets/test-fonts/colr-v1-test-glyphs/test_glyphs.ttf");
+    a_padded_gradient_holds_its_end_colors("assets/test-fonts/colr-v1-test-glyphs/test_glyphs.ttf");
     character_properties_need_no_font();
     the_format_walkers_read_a_real_table(font);
     loca_and_glyf_are_walkable(font);
-    the_shader_source_is_available();
-    routing_decides_without_drawing();
-    subpixel_params_come_from_a_layout();
-    the_gpu_backends_draw(font);
     the_atlas_packer_packs();
     the_rules_a_caller_would_get_wrong(font);
     scripts_answer_about_themselves();
     subsetting_maps_glyph_ids(font);
     stat_values_are_readable(font);
-    the_subpixel_filter_answers_about_itself();
-    device_profiles_come_from_every_api();
-    the_gpu_buffers_are_readable(font);
-    arbitrary_geometry_goes_into_a_batch();
+    a_face_describes_itself();
+    glyphs_and_runs_answer();
+    math_glyph_info_answers();
+    base_and_vertical_metrics_answer();
+    variation_sequences_answer();
+    justification_answers();
+    bidi_and_line_analysis_answer();
+    the_walkers_read_tables_built_by_hand();
 
     if (failures == 0) {
         printf("  ok\n");

@@ -1,8 +1,7 @@
 use daegun::Font;
 
-// The whole-file rule alone passed even while every directory entry was wrong,
-// because the file sum subtracted the stale adjustment back out. Both rules
-// have to be checked or the two errors keep cancelling.
+// The whole-file rule alone passes even with every directory entry wrong, since the file sum
+// subtracts the stale adjustment back out: both rules are checked, or the two errors cancel.
 fn checksum32(data: &[u8]) -> u32 {
     let mut sum = 0u32;
     let mut i = 0;

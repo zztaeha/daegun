@@ -409,7 +409,7 @@ fn update_consonant_positions(p: &Plan, buffer: &mut Buffer) {
 
 fn consonant_position(p: &Plan, consonant: u16, virama: u16) -> u8 {
     // Both orders are asked about, not one. Old spec writes the consonant before the virama and new
-    // spec after, but fonts copied lookups across unchanged and Uniscribe honours them anyway.
+    // spec after, but fonts copied lookups across unchanged and Uniscribe honors them anyway.
     let both = |tag: &[u8; 4]| {
         p.would_substitute(tag, &[virama, consonant]) || p.would_substitute(tag, &[consonant, virama])
     };

@@ -60,10 +60,6 @@ mod imp {
 pub use imp::{read, write, Mutable, Shared};
 
 #[cfg(not(feature = "threading"))]
-// An atomic under `threading`, and never a bare `Cell`: `Cell` is `Send` but not `Sync`, so one
-// anywhere in `FontCache` withdraws `Sync` from `Font` for the whole crate. `Relaxed` is correct
-// rather than a shortcut – this is a budget nothing else is ordered against, and two threads
-// racing it overspend by one index, which loosens a bound rather than losing it.
 pub(crate) struct Counter(core::cell::Cell<usize>);
 
 #[cfg(not(feature = "threading"))]
@@ -79,6 +75,10 @@ impl Counter {
     }
 }
 
+// An atomic, never a bare `Cell`: `Cell` is `Send` but not `Sync`, so one anywhere in `FontCache`
+// withdraws `Sync` from `Font` for the whole crate. `Relaxed` is correct rather than a shortcut: this
+// is a budget nothing else is ordered against, and two threads racing it overspend by one index,
+// which loosens a bound rather than losing it.
 #[cfg(feature = "threading")]
 pub(crate) struct Counter(core::sync::atomic::AtomicUsize);
 

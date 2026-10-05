@@ -1,15 +1,15 @@
 [package]
 name = "daegun"
-version = "1.1.7"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.97.1"
-description = "Your all-in-one text engine. Rust, no_std, zero dependencies."
+description = "The text engine that hands your rasterizer everything it needs. Rust, no_std, zero dependencies."
 license = "MIT"
 readme = "README.md"
 homepage = "https://dg.calia.cc"
-repository = "https://github.com/silly-tae/daegun"
+repository = "https://github.com/zztaeha/daegun"
 keywords = ["font", "opentype", "truetype", "variable-fonts", "subsetting"]
-categories = ["text-processing", "parser-implementations", "rendering"]
+categories = ["text-processing", "parser-implementations", "no-std"]
 exclude = ["tasks/", ".gitignore", "assets/", "scripts/"]
 
 [lib]
@@ -27,10 +27,6 @@ capi = ["threading"]
 [[test]]
 name = "api"
 path = "src/daegun/tests/api/main.rs"
-
-[[test]]
-name = "motion"
-path = "src/daegun/tests/motion/main.rs"
 
 [[test]]
 name = "alloc"
@@ -65,15 +61,3 @@ path = "src/daecore/tests/shaper/main.rs"
 [[test]]
 name = "type"
 path = "src/daecore/tests/type/main.rs"
-
-[[test]]
-name = "cpu"
-path = "src/daerizer/tests/cpu/main.rs"
-
-[[test]]
-name = "draw"
-path = "src/daerizer/tests/draw/main.rs"
-
-[[test]]
-name = "gpu"
-path = "src/daerizer/tests/gpu/main.rs"

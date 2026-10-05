@@ -1,21 +1,29 @@
 use crate::daecore::daetype::subsetter::GlyphSet;
 use alloc::vec::Vec;
-#[allow(unused_imports)]
-use crate::daecore::daetype::decoder::{read_u16_be, read_u32_be, write_u16_be};
 use super::lookup_list;
-use super::generic::{self, schemas};
+use super::generic::{self, schemas, Devices};
 
-pub(crate) fn subset_gpos_subtable(_effective_type: u16, schema: Option<&generic::schema::Schema>, buf: &[u8], off: usize, active: &GlyphSet, gid_map: &[u16]) -> Option<Vec<u8>> {
-    generic::subset_subtable(buf, off, schema?, active, gid_map)
+fn pass(gpos: &[u8], active: &GlyphSet, gid_map: &[u16], mark_sets: u16, devices: Devices) -> Option<Vec<u8>> {
+    let subtable: lookup_list::SubtableSubsetter = &|_, schema, buf, off, active, gid_map, work| {
+        generic::subset_subtable(buf, off, schema?, active, gid_map, devices, work)
+    };
+    lookup_list::subset_lookup_table(gpos, 9, active, gid_map, mark_sets, subtable, &schemas::gpos_schema_for_type)
 }
 
-fn subset_gpos_subtable_stripping_devices(_effective_type: u16, schema: Option<&generic::schema::Schema>, buf: &[u8], off: usize, active: &GlyphSet, gid_map: &[u16]) -> Option<Vec<u8>> {
-    generic::subset_subtable_stripping_devices(buf, off, schema?, active, gid_map)
+// GPOS with its Device and VariationIndex tables, or without them when they will not fit. A lookup
+// keeps its mark filtering set only if it is one of the `mark_sets` the subset's GDEF holds.
+pub fn subset_gpos(gpos: &[u8], active: &GlyphSet, gid_map: &[u16], mark_sets: u16) -> Option<Vec<u8>> {
+    pass(gpos, active, gid_map, mark_sets, Devices::Keep)
+        .or_else(|| pass(gpos, active, gid_map, mark_sets, Devices::Strip))
 }
 
-pub fn subset_gpos(gpos: &[u8], active: &GlyphSet, gid_map: &[u16], mark_filter_sets_survive: bool) -> Option<Vec<u8>> {
-    lookup_list::subset_lookup_table(gpos, 9, active, gid_map, mark_filter_sets_survive, &subset_gpos_subtable, &schemas::gpos_schema_for_type)
-        .or_else(|| lookup_list::subset_lookup_table(
-            gpos, 9, active, gid_map, mark_filter_sets_survive, &subset_gpos_subtable_stripping_devices, &schemas::gpos_schema_for_type,
-        ))
+// Every glyph's GPOS at an instance, each VariationIndex's delta in the value it adjusts, written
+// out afresh for a record that must gain a value to hold one.
+pub(crate) fn instance_gpos(
+    gpos: &[u8], n_glyphs: u16, mark_sets: u16, vary: &dyn Fn(u16, u16) -> i32,
+) -> Option<Vec<u8>> {
+    let mut active = GlyphSet::new();
+    (0..n_glyphs).for_each(|g| { active.insert(g); });
+    let gid_map: Vec<u16> = (0..n_glyphs).collect();
+    pass(gpos, &active, &gid_map, mark_sets, Devices::Vary(vary))
 }

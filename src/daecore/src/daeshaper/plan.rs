@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 pub use super::buffer::Direction;
 
 use super::face::Face;
+use crate::daecore::daetype::decoder::read_u16_be;
 use super::ot::map::{feature_flags as ff, LookupOverride, Map, MapBuilder, TableIndex, MAX_VALUE};
 use super::ot::LayoutTable;
 use super::script::Shaper;
@@ -215,8 +216,9 @@ impl ShapePlan {
             b.override_lookup(o.table, o.index, o.enable);
         }
 
-        let variation = gsub.as_ref().and_then(|t| t.find_variation_index(coords));
-        let map = b.compile(variation);
+        let axis_count = face.table("fvar").and_then(|f| read_u16_be(f, 8)).map_or(0, usize::from);
+        let variations = [gsub.as_ref(), gpos.as_ref()].map(|t| t.and_then(|t| t.find_variation_index(coords, axis_count)));
+        let map = b.compile(variations);
 
         let subtable_indexes = [
             table_subtable_indexes(face, gsub.as_ref(), &map, TableIndex::Gsub, GSUB_KINDS),
@@ -248,12 +250,10 @@ impl ShapePlan {
         let has_kerx = super::ot::kerx::is_usable(face);
         let has_gpos = apply_gpos;
 
-        // Three tests that each look like they could be simpler, and are not. `kerx` outranks the
-        // rest *unless* the font ships GSUB and GPOS both, since that is a maintained OpenType side
-        // and preferring `kerx` over it regressed real fonts. `is_usable` rather than `has_table`,
-        // because a `kerx` whose subtables are all variable or unknown would be selected and then do
-        // nothing, taking `kern` and the fallback down with it. And `kern` is a fallback only for a
-        // script whose shaper accepts one – applied to Devanagari it kerned two full stops apart.
+        // `kerx` outranks the rest unless the font also ships GSUB and GPOS, which real fonts shape
+        // better through. `is_usable`, not `has_table`: a `kerx` of only variable or unknown subtables
+        // does nothing and would take `kern` and the fallback down with it. `kern` falls back only for a
+        // script whose shaper takes it; under Devanagari it would set two full stops apart.
         let mut apply_kerx = has_kerx && !(substitutes_through_gsub && has_gpos);
         let apply_gpos = !apply_kerx && has_gpos;
         let mut apply_kern = false;

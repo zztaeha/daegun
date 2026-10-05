@@ -34,6 +34,7 @@ impl AutoPoints {
 pub struct CollectPen {
     pts: AutoPoints,
     contour_start: Option<usize>,
+    current: (f32, f32),
 }
 
 const TYPICAL_POINTS: usize = 64;
@@ -49,6 +50,7 @@ impl CollectPen {
                 contour_ends: Vec::with_capacity(TYPICAL_CONTOURS),
             },
             contour_start: None,
+            current: (0.0, 0.0),
         }
     }
 
@@ -63,8 +65,19 @@ impl CollectPen {
         self.pts.flags.push(flag);
     }
 
+    // Drawing without a move starts a contour where the pen is, as a move there would.
+    fn open(&mut self) {
+        if self.contour_start.is_none() {
+            self.contour_start = Some(self.pts.len());
+            self.push(self.current.0, self.current.1, ON_CURVE);
+        }
+    }
+
     fn end_contour(&mut self) {
         let Some(start) = self.contour_start.take() else { return };
+        if let (Some(&x), Some(&y)) = (self.pts.x.get(start), self.pts.y.get(start)) {
+            self.current = (x, y);
+        }
         let last = self.pts.len();
         if last <= start {
             return;
@@ -93,24 +106,53 @@ impl OutlinePen for CollectPen {
         self.end_contour();
         self.contour_start = Some(self.pts.len());
         self.push(x, y, ON_CURVE);
+        self.current = (x, y);
     }
 
     fn line_to(&mut self, x: f32, y: f32) {
+        self.open();
         self.push(x, y, ON_CURVE);
+        self.current = (x, y);
     }
 
     fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.open();
         self.push(cx, cy, CONIC);
         self.push(x, y, ON_CURVE);
+        self.current = (x, y);
     }
 
     fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
+        self.open();
         self.push(c1x, c1y, CUBIC);
         self.push(c2x, c2y, CUBIC);
         self.push(x, y, ON_CURVE);
+        self.current = (x, y);
     }
 
     fn close(&mut self) {
         self.end_contour();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A charstring may draw before it moves, or after it closes: the strays open a contour of their
+    // own at the pen rather than joining the next one or none.
+    #[test]
+    fn drawing_without_a_move_opens_a_contour() {
+        let mut pen = CollectPen::new();
+        pen.line_to(10.0, 0.0);
+        pen.line_to(10.0, 10.0);
+        pen.move_to(0.0, 0.0);
+        pen.line_to(5.0, 5.0);
+        pen.line_to(0.0, 5.0);
+        pen.close();
+        pen.line_to(20.0, 0.0);
+        let pts = pen.finish();
+        assert_eq!(pts.contour_ends, [2, 5, 7]);
+        assert_eq!((pts.x[6], pts.y[6]), (0.0, 0.0), "the strays after the close start where it closed");
     }
 }

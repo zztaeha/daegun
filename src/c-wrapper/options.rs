@@ -3,6 +3,8 @@
 // immediately above them. Where a call takes a raw buffer, its length is the caller's promise
 // from `daegun.h` and is not checkable here.
 
+use core::mem::offset_of;
+
 use crate::{Cap, HintMode, Join, StripeOrder, StrokeStyle, SubpixelLayout};
 
 use crate::ffi::handle::Status;
@@ -27,6 +29,7 @@ pub(crate) fn layout_of(code: i32) -> SubpixelLayout {
         LAYOUT_BGR_H_UNFILTERED => SubpixelLayout::unfiltered(StripeOrder::Bgr, true),
         LAYOUT_RGB_V_UNFILTERED => SubpixelLayout::unfiltered(StripeOrder::Rgb, false),
         LAYOUT_BGR_V_UNFILTERED => SubpixelLayout::unfiltered(StripeOrder::Bgr, false),
+        LAYOUT_GRAYSCALE => SubpixelLayout::grayscale(),
         _ => SubpixelLayout::grayscale(),
     }
 }
@@ -37,7 +40,7 @@ pub const HINT_CLASSIC: i32 = 2;
 pub const HINT_AUTO: i32 = 3;
 pub const HINT_AUTO_FORCE: i32 = 4;
 
-fn hint_of(code: i32) -> HintMode {
+pub(crate) fn hint_of(code: i32) -> HintMode {
     match code {
         HINT_SUBPIXEL => HintMode::Subpixel,
         HINT_CLASSIC => HintMode::Classic,
@@ -55,13 +58,30 @@ pub const CAP_BUTT: i32 = 0;
 pub const CAP_ROUND: i32 = 1;
 pub const CAP_SQUARE: i32 = 2;
 
+pub(crate) fn join_of(code: i32, miter_limit: f32) -> Join {
+    match code {
+        JOIN_ROUND => Join::Round,
+        JOIN_BEVEL => Join::Bevel,
+        _ => Join::Miter { limit: miter_limit },
+    }
+}
+
+pub(crate) fn cap_of(code: i32) -> Cap {
+    match code {
+        CAP_ROUND => Cap::Round,
+        CAP_SQUARE => Cap::Square,
+        _ => Cap::Butt,
+    }
+}
+
+pub(crate) fn stroke_of(width: f32, join: i32, miter_limit: f32, cap: i32) -> StrokeStyle {
+    StrokeStyle { width, join: join_of(join, miter_limit), cap: cap_of(cap) }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct RasterOptionsC {
-    pub layout: i32,
+pub struct OutlineOptionsC {
     pub hinting: i32,
-    pub has_gamma: i32,
-    pub gamma: f32,
     pub has_transform: i32,
     pub transform: [f32; 6],
     pub has_stroke: i32,
@@ -75,15 +95,27 @@ pub struct RasterOptionsC {
     pub oblique: f32,
 }
 
-const _: () = assert!(size_of::<RasterOptionsC>() == 80);
-const _: () = assert!(align_of::<RasterOptionsC>() == 4);
+// Mirrored by `_Static_assert` in `daegun.h`; a reordered field passes a size check alone.
+const _: () = assert!(size_of::<OutlineOptionsC>() == 68);
+const _: () = assert!(align_of::<OutlineOptionsC>() == 4);
+const _: () = {
+    assert!(offset_of!(OutlineOptionsC, hinting) == 0);
+    assert!(offset_of!(OutlineOptionsC, has_transform) == 4);
+    assert!(offset_of!(OutlineOptionsC, transform) == 8);
+    assert!(offset_of!(OutlineOptionsC, has_stroke) == 32);
+    assert!(offset_of!(OutlineOptionsC, stroke_width) == 36);
+    assert!(offset_of!(OutlineOptionsC, stroke_join) == 40);
+    assert!(offset_of!(OutlineOptionsC, stroke_miter_limit) == 44);
+    assert!(offset_of!(OutlineOptionsC, stroke_cap) == 48);
+    assert!(offset_of!(OutlineOptionsC, has_embolden) == 52);
+    assert!(offset_of!(OutlineOptionsC, embolden) == 56);
+    assert!(offset_of!(OutlineOptionsC, has_oblique) == 60);
+    assert!(offset_of!(OutlineOptionsC, oblique) == 64);
+};
 
-impl RasterOptionsC {
-    pub const DEFAULT: RasterOptionsC = RasterOptionsC {
-        layout: LAYOUT_GRAYSCALE,
+impl OutlineOptionsC {
+    pub const DEFAULT: OutlineOptionsC = OutlineOptionsC {
         hinting: HINT_NONE,
-        has_gamma: 0,
-        gamma: 0.0,
         has_transform: 0,
         transform: [0.0; 6],
         has_stroke: 0,
@@ -97,39 +129,25 @@ impl RasterOptionsC {
         oblique: 0.0,
     };
 
-    pub fn to_rust(self) -> crate::RasterOptions {
-        let mut out = crate::RasterOptions::default()
-            .with_layout(layout_of(self.layout))
-            .with_hinting(hint_of(self.hinting));
-        if self.has_gamma != 0 {
-            out = out.with_gamma(self.gamma);
+    pub fn to_rust(self) -> crate::OutlineOptions {
+        crate::OutlineOptions {
+            transform: (self.has_transform != 0).then_some(self.transform),
+            hinting: hint_of(self.hinting),
+            stroke: (self.has_stroke != 0)
+                .then(|| stroke_of(self.stroke_width, self.stroke_join, self.stroke_miter_limit, self.stroke_cap)),
+            embolden: (self.has_embolden != 0).then_some(self.embolden),
+            oblique: (self.has_oblique != 0).then_some(self.oblique),
         }
-        if self.has_transform != 0 {
-            out = out.with_transform(self.transform);
-        }
-        if self.has_stroke != 0 {
-            out = out.with_stroke(StrokeStyle {
-                width: self.stroke_width,
-                join: match self.stroke_join {
-                    JOIN_ROUND => Join::Round,
-                    JOIN_BEVEL => Join::Bevel,
-                    _ => Join::Miter { limit: self.stroke_miter_limit },
-                },
-                cap: match self.stroke_cap {
-                    CAP_ROUND => Cap::Round,
-                    CAP_SQUARE => Cap::Square,
-                    _ => Cap::Butt,
-                },
-            });
-        }
-        if self.has_embolden != 0 {
-            out = out.with_embolden(self.embolden);
-        }
-        if self.has_oblique != 0 {
-            out = out.with_oblique(self.oblique);
-        }
-        out
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_outline_options_default(out: *mut OutlineOptionsC) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
+    unsafe { *out = OutlineOptionsC::DEFAULT };
+    Status::Ok
 }
 
 #[unsafe(no_mangle)]
@@ -137,13 +155,6 @@ pub unsafe extern "C" fn daegun_hint_mode_may_autohint(mode: i32, out: *mut i32)
     if out.is_null() {
         return Status::Null;
     }
-    let mode = match mode {
-        HINT_SUBPIXEL => HintMode::Subpixel,
-        HINT_CLASSIC => HintMode::Classic,
-        HINT_AUTO => HintMode::Auto,
-        HINT_AUTO_FORCE => HintMode::AutoForce,
-        _ => HintMode::None,
-    };
-    unsafe { *out = i32::from(mode.may_autohint()) };
+    unsafe { *out = i32::from(hint_of(mode).may_autohint()) };
     Status::Ok
 }

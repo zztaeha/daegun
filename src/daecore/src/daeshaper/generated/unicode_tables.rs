@@ -411,8 +411,8 @@ pub(crate) static SCRIPT_ISO_CODES: &[&str] = &[
 
 // Every per-codepoint property, in one record.
 //
-// Thirteen sorted range tables used to answer thirteen separate binary searches for the same
-// codepoint. This is all thirteen at once, reached by three array indexes.
+// All thirteen at once for a codepoint, reached by three array indexes rather than a binary search
+// through each of thirteen sorted range tables.
 #[derive(Clone, Copy)]
 pub(crate) struct Props {
     pub(crate) script: u16,
@@ -3504,7 +3504,7 @@ pub(crate) static BIDI_BRACKETS: &[(u32, u32, u8)] = &[
 ];
 
 // Canonical pair decompositions, composed form and both parts all in the BMP.
-// Half the width of the `u32` triple this was, and it holds all but 46 of the rows.
+// Half the width of a `u32` triple, and it holds all but 46 of the rows.
 pub(crate) static DECOMPOSE_PAIR_BMP: &[(u16, u16, u16)] = &[
     (0x00C0, 0x0041, 0x0300),
     (0x00C1, 0x0041, 0x0301),
@@ -4561,9 +4561,8 @@ pub(crate) static DECOMPOSE_PAIR_SUPP: &[(u32, u32, u32)] = &[
 ];
 
 // Singleton decompositions of the CJK compatibility ideographs, indexed by
-// `codepoint - DECOMPOSE_SINGLE_CJK_BASE`. The block is dense, so the keys were
-// half the table and every one of them was derivable — this drops them and turns
-// the bisection into an index.
+// `codepoint - DECOMPOSE_SINGLE_CJK_BASE`. The block is dense, so keys would be
+// half the table and every one derivable: without them a bisection is an index.
 pub(crate) const DECOMPOSE_SINGLE_CJK_BASE: u32 = 0x2F800;
 pub(crate) static DECOMPOSE_SINGLE_CJK: &[u32; 542] = &[
     0x4E3D, 0x4E38, 0x4E41, 0x20122, 0x4F60, 0x4FAE, 0x4FBB, 0x5002,
@@ -5201,7 +5200,7 @@ pub(crate) static COMPOSE_INDEX: &[u16; 961] = &[
 ];
 
 // `(codepoint, its mirror)`, sorted. Both fit a `u16`: mirroring is a BMP-only
-// property, which halves the table against the `u32` pair it used to be.
+// property, which halves the table against a `u32` pair.
 pub(crate) static MIRRORING: &[(u16, u16)] = &[
     (0x0028, 0x0029),
     (0x0029, 0x0028),

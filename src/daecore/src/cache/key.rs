@@ -1,8 +1,8 @@
 use super::*;
 
-#[derive(Clone, Debug, Default)]
 // A newtype and not an alias because f64 has no Eq or Hash. `canonical_axes` drops non-finite
 // values first, so bit-pattern equality never has to handle NaN.
+#[derive(Clone, Debug, Default)]
 pub struct AxisKey(Vec<(String, f64)>);
 
 impl PartialEq for AxisKey {

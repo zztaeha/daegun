@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use super::format_1;
 use super::super::schema::{Schema, StructField, CountSource, DropPolicy, RebuildPolicy, OffsetWidth, PayloadShape, EnvRef};
 use super::context::{context_schema, chain_context_schema};
 
@@ -20,25 +21,25 @@ fn coverage_indexed_glyph_array_schema(drop_policy: DropPolicy) -> Schema {
 }
 
 pub(crate) fn multiple_subst_schema() -> Schema {
-    Schema::Struct(vec![
+    format_1(Schema::Struct(vec![
         StructField { name: "format", schema: Schema::U16, bind: None },
         StructField {
             name: "entries",
             schema: Schema::CoveredArray(vec![], Box::new(coverage_indexed_glyph_array_schema(DropPolicy::AllOrNothing)), PayloadShape::Offsets(OffsetWidth::W16)),
             bind: None,
         },
-    ])
+    ]))
 }
 
 pub(crate) fn alternate_subst_schema() -> Schema {
-    Schema::Struct(vec![
+    format_1(Schema::Struct(vec![
         StructField { name: "format", schema: Schema::U16, bind: None },
         StructField {
             name: "entries",
             schema: Schema::CoveredArray(vec![], Box::new(coverage_indexed_glyph_array_schema(DropPolicy::FilterSurvivorsOrFail)), PayloadShape::Offsets(OffsetWidth::W16)),
             bind: None,
         },
-    ])
+    ]))
 }
 
 fn ligature_schema() -> Schema {
@@ -57,10 +58,10 @@ fn ligature_set_schema() -> Schema {
 }
 
 pub(crate) fn ligature_subst_schema() -> Schema {
-    Schema::Struct(vec![
+    format_1(Schema::Struct(vec![
         StructField { name: "format", schema: Schema::U16, bind: None },
         StructField { name: "entries", schema: Schema::CoveredArray(vec![], Box::new(ligature_set_schema()), PayloadShape::Offsets(OffsetWidth::W16)), bind: None },
-    ])
+    ]))
 }
 
 pub(crate) fn context_subst_schema() -> Schema { context_schema() }

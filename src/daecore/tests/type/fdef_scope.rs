@@ -21,10 +21,10 @@ const GID_F: u16 = 6;
 
 fn hint_sequence(gids: &[u16]) -> Vec<Vec<i32>> {
     let (map, loca, glyf, upm) = parts();
-    let mut ctx = HintContext::new(&map, PPEM, upm, HintMode::Classic).expect("fixture hints");
+    let mut ctx = HintContext::new(&map, PPEM.into(), upm, HintMode::Classic).expect("fixture hints");
     gids.iter()
         .map(|&g| {
-            let out = ctx.hint_glyph(&glyf, &loca, g, PPEM, upm).unwrap_or_else(|| panic!("gid {g} hinted to nothing"));
+            let out = ctx.hint_glyph(&glyf, &loca, g).unwrap_or_else(|| panic!("gid {g} hinted to nothing"));
             out.x.clone()
         })
         .collect()

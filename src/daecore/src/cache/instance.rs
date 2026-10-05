@@ -11,6 +11,8 @@ impl FontCache {
         }
         let ttf = Shared::new(crate::daecore::daetype::instancer::instance_font_from_map(&self.table_map, &key)
             .unwrap_or_else(|_| crate::daecore::daetype::decoder::build_ttf(&self.table_map)));
+        // The newest instance stays whatever the budget: kept nowhere, every call at that location would
+        // instance the font again. Past the budget, it is the only one kept.
         let cost = ttf.len();
         let mut cache = write(&self.instance_cache);
         if self.instance_cache_bytes.get().saturating_add(cost) > self.instance_budget.get() {
@@ -34,12 +36,13 @@ impl FontCache {
             let cache = read(&self.instanced_cache);
             if let Some(fc) = cache.get(key) { return Shared::clone(fc); }
         }
-        let map = crate::daecore::daetype::instancer::instance_tables_from_map(&self.table_map, key)
+        let map = crate::daecore::daetype::instancer::instance_tables_for_drawing(&self.table_map, key)
             .map(|tables| {
                 tables.into_iter().map(|(tag, data)| (tag, TableBytes::from_vec(data.into_owned()))).collect()
             })
             .unwrap_or_else(|_| self.table_map.clone());
         let fc = Shared::new(FontCache::new(map));
+        // Kept whatever the budget, as the instance above is.
         let cost = fc.retained_bytes();
         let mut cache = write(&self.instanced_cache);
         if self.instanced_cache_bytes.get().saturating_add(cost) > self.instance_budget.get() {

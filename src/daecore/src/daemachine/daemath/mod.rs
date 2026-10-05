@@ -5,6 +5,7 @@ use crate::daecore::daemachine::float::FloatExt;
 pub mod blend;
 pub mod gradient;
 pub mod matrix;
+pub mod srgb;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Rgba {
@@ -97,7 +98,8 @@ impl Blend {
             Xor, Plus, Screen, Overlay, Darken, Lighten, ColorDodge, ColorBurn, HardLight, SoftLight,
             Difference, Exclusion, Multiply, HslHue, HslSaturation, HslColor, HslLuminosity,
         ];
-        MODES.get(mode as usize).copied().unwrap_or(SrcOver)
+        // The spec: "If an unrecognized value is encountered, COMPOSITE_CLEAR must be used."
+        MODES.get(mode as usize).copied().unwrap_or(Clear)
     }
 }
 
@@ -106,6 +108,35 @@ pub enum Stops {
     Nothing,
     Solid(Rgba),
     Many(Vec<Stop>),
+}
+
+// COLR defines a color line over its first to last stop, which may lie past or within 0..1, and extends
+// it from there. The geometry moves to those stops instead, so they span 0..1 and nothing is clamped.
+pub(crate) fn normalize_color_line(kind: GradientKind, mut stops: Vec<Stop>) -> (GradientKind, Vec<Stop>) {
+    let offsets = stops.iter().map(|s| s.offset).filter(|o| o.is_finite());
+    let (first, last) = offsets.fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), o| (a.min(o), b.max(o)));
+    if first > last || (first == last && (0.0..=1.0).contains(&first)) || (first == 0.0 && last == 1.0) {
+        return (kind, stops);
+    }
+    // A hard edge, every stop at one offset, has no span to move to: it keeps a length of 1 from there.
+    let (a, b) = (f64::from(first), f64::from(if first == last { first + 1.0 } else { last }));
+    let at = |p: f32, q: f32, t: f64| (f64::from(p) + t * (f64::from(q) - f64::from(p))) as f32;
+    let kind = match kind {
+        GradientKind::Linear { x0, y0, x1, y1 } => {
+            GradientKind::Linear { x0: at(x0, x1, a), y0: at(y0, y1, a), x1: at(x0, x1, b), y1: at(y0, y1, b) }
+        }
+        GradientKind::Radial { x0, y0, r0, x1, y1, r1 } => GradientKind::Radial {
+            x0: at(x0, x1, a), y0: at(y0, y1, a), r0: at(r0, r1, a),
+            x1: at(x0, x1, b), y1: at(y0, y1, b), r1: at(r0, r1, b),
+        },
+        GradientKind::Sweep { cx, cy, start_angle, end_angle } => GradientKind::Sweep {
+            cx, cy, start_angle: at(start_angle, end_angle, a), end_angle: at(start_angle, end_angle, b),
+        },
+    };
+    for s in &mut stops {
+        s.offset = ((f64::from(s.offset) - a) / (b - a)) as f32;
+    }
+    (kind, stops)
 }
 
 pub fn resolve_stops(mut stops: Vec<Stop>) -> Stops {

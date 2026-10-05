@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use daegun::{Font, HintMode, RasterOptions};
+use daegun::{Font, HintMode};
 
 fn font() -> Font {
     let path = format!("{}/eb-garamond/EBGaramond.ttf", crate::FONTS);
@@ -61,27 +61,27 @@ fn concurrent_outlining_agrees_with_one_thread() {
     }
 }
 
+// The only test of the autohinter under contention: its zones and contexts are shared per font.
 #[test]
-fn concurrent_rasterizing_agrees_with_one_thread() {
+fn concurrent_hinting_agrees_with_one_thread() {
     let gids: Vec<u16> = (1..40).collect();
-    let opts = RasterOptions::default().with_hinting(HintMode::AutoForce);
-
+    let opts = daegun::OutlineOptions::default().with_hinting(HintMode::AutoForce);
+    let draw = |f: &Font, g: u16| {
+        let mut p = daegun::Path::default();
+        f.prepared_outline(g, 24.0, &[], &opts, &mut p).map(|_| p)
+    };
     let solo = self::font();
-    let alone: Vec<Option<Vec<u8>>> = gids
-        .iter()
-        .map(|&g| solo.rasterize_glyph_with(g, 24.0, &[], &opts).map(|r| r.bitmap))
-        .collect();
+    let alone: Vec<Option<daegun::Path>> = gids.iter().map(|&g| draw(&solo, g)).collect();
+    assert!(alone.iter().flatten().count() > 30, "too few glyphs drew to mean anything");
 
     let shared = Arc::new(self::font());
     std::thread::scope(|s| {
         for _ in 0..8 {
             let f = Arc::clone(&shared);
-            let gids = gids.clone();
-            let want = alone.clone();
+            let (gids, want) = (gids.clone(), alone.clone());
             s.spawn(move || {
                 for (i, &g) in gids.iter().enumerate() {
-                    let got = f.rasterize_glyph_with(g, 24.0, &[], &opts).map(|r| r.bitmap);
-                    assert_eq!(got, want[i], "gid {g} rasterized differently under contention");
+                    assert_eq!(draw(&f, g), want[i], "gid {g} hinted differently under contention");
                 }
             });
         }

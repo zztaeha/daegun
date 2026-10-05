@@ -1,6 +1,6 @@
 # Tai Tham clusters. The Universal Shaping Engine grammar in use.grammar, with one relaxation.
 #
-# USE orders a cluster's vowels by position — `(VPre)* (VAbv)* (VBlw)* (VPst)*` — and Tai Tham
+# USE orders a cluster's vowels by position – `(VPre)* (VAbv)* (VBlw)* (VPst)*` – and Tai Tham
 # writes them in orders that pattern forbids, so a valid word is scored a broken cluster and takes
 # a dotted circle. Microsoft's own specification concedes the gap: "Tai Tham support is currently
 # limited. Additional encoding work is required for full text representation to be possible."
@@ -67,11 +67,11 @@ categories:
 
 definitions:
   # The spec's `[VS]` appears nowhere below, and deliberately: `universal.rs::included` drops CGJ
-  # before segmentation, which is the spec's own instruction — "CGJ has been omitted from the above
+  # before segmentation, which is the spec's own instruction – "CGJ has been omitted from the above
   # schema in order to avoid unnecessary complexity. It may occur anywhere in a cluster with no
   # effect." The table folds VS and ZWJ into CGJ, so all three are dropped the same way.
 
-  # The spec's `[FM]`, split by position. One post-base modifier, or a run of above and below ones —
+  # The spec's `[FM]`, split by position. One post-base modifier, or a run of above and below ones –
   # the split turns "at most one FM" into a shape the single class could not express.
   fm = FMAbv* FMBlw* | FMPst
 
@@ -109,9 +109,9 @@ definitions:
 
   # Everything a standard cluster carries once its base and stack are settled. A visible virama or
   # Sinhala's HVM may precede it: the spec's `< H | RK >` terminator covers Virama *and*
-  # Invisible_Stacker under one class, and the table separates them — the invisible one terminates,
+  # Invisible_Stacker under one class, and the table separates them – the invisible one terminates,
   # the visible one is drawn and stays inside the cluster.
-  # One or more vowels, and one or more vowel modifiers — spelled out because a sakot may only follow
+  # One or more vowels, and one or more vowel modifiers – spelled out because a sakot may only follow
   # something, and an all-optional run would let it follow nothing.
   v_run  = tail_mark+
   vm_run = tail_mark+
@@ -124,7 +124,7 @@ definitions:
   m_run = MPre MAbv? MBlw? MPst? | MAbv MBlw? MPst? | MBlw MPst? | MPst
 
   # A sakot closes a cluster that has something in it. With nothing before it, a sakot is a cluster on
-  # its own — which is why the empty branch here carries no `Sk?`.
+  # its own – which is why the empty branch here carries no `Sk?`.
   # A sakot never has finals after it: it either stacks the next base or ends the cluster. So the two
   # shapes are kept apart rather than folded into one `Sk?`.
   tail_plain = finals | m_run finals | m_run dangling_halant finals | m_run before_sakot finals | dangling_halant finals | before_sakot finals
@@ -132,7 +132,7 @@ definitions:
   sakot_prefix = m_run before_sakot? | m_run (H | HVM) | before_sakot
   tail_sakot = sakot_prefix Sk
   # A stack reached *through* a sakot is terminal: after it only the finals and another such stack
-  # follow, never more medials or vowels. That is what separates `Sk B` — a plain stack — from
+  # follow, never more medials or vowels. That is what separates `Sk B` – a plain stack – from
   # `H Sk B`, which ends the cluster's structure and leaves only its finals.
   sakot_entry = (H | HVM | sakot_prefix) Sk
   # Wordingham's other case: a subjoined consonant may be followed by vowels, not only finals.
@@ -146,7 +146,7 @@ definitions:
 
   after_stack = tail_plain | tail_sakot | sakot_stack
 
-  # A halant with no base after it cannot be a stack, so the cluster ends there — but it is still a
+  # A halant with no base after it cannot be a stack, so the cluster ends there – but it is still a
   # drawn virama inside the cluster, not a terminator, and what may follow is only what comes after
   # the vowels.
   dangling_halant = H HVM? vowel_mods
@@ -159,7 +159,7 @@ definitions:
   # continues a preceding cluster but causes a cluster break after itself when the following
   # character is not a mark character".
   # A cluster may also end on a stacker with no base under it, which is the `H`, `H Sk`, `IS` and
-  # `Sk` shapes — terminal, so nothing follows them.
+  # `Sk` shapes – terminal, so nothing follows them.
   after_head = cons_mods stacked (stacker | RK | after_stack) ZWNJ?
 
   # `SB* G [VS] [HR] [HM] SE*` – one hieroglyph with its modifiers and segment brackets.
@@ -175,23 +175,23 @@ syllables:
   number_joiner_terminated_cluster = N (HN N)* HN ZWNJ?
   numeral_cluster                  = N (HN N)* ZWNJ?
   # The spec's `< S | GB >`, with S arriving as O. A symbol head carries the same tail a base does,
-  # plus the symbol modifiers — which is what sends `GB SMAbv` here rather than to the standard
+  # plus the symbol modifiers – which is what sends `GB SMAbv` here rather than to the standard
   # cluster listed above it.
   # The spec's `< S | GB > [VS] (CMAbv)* (CMBlw)*`, with S arriving as O. The symbol modifiers attach
-  # to the head itself, not to a stack — so a symbol head takes either them or an ordinary tail.
+  # to the head itself, not to a stack – so a symbol head takes either them or an ordinary tail.
   symbol_cluster                   = (O | GB | SB) (sym_mods ZWNJ? | after_head)
   # The trailing joiner is the spec's own allowance: "implementations should support a Hieroglyph
   # cluster terminated by a joiner so the cluster is valid prior to input of a following HIEROGLYPH
   # character".
   hieroglyph_cluster               = hieroglyph (J (J | SB)* hieroglyph)* (J (J | SB)*)? ZWNJ?
   # A lone post-base final modifier is a cluster, not a broken one. The class is reached only by the
-  # digit-shaped syllable modifiers — the superscripts and subscripts two, three and four — which are
+  # digit-shaped syllable modifiers – the superscripts and subscripts two, three and four – which are
   # not marks and have nothing to attach to, so a dotted circle in front would invent a base for
   # something that never wanted one. Listed above `broken_cluster`, which also matches it, and one
   # character long either way – so the order is what decides it.
   non_cluster                      = FMPst
   # Not in the spec, and required by it: "when a cluster starts with any character that has UGC=Mc or
-  # UGC=Mn, USE inserts a dotted circle glyph to indicate a broken cluster". This is that case — the
+  # UGC=Mn, USE inserts a dotted circle glyph to indicate a broken cluster". This is that case – the
   # cluster's tail with no base to carry it.
   # A dangling halant is its own broken shape: the spec stacks `H B`, so an H with no base after it
   # cannot be a stack, and what may still follow is only what comes after the vowels.

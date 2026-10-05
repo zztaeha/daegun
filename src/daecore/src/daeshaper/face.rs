@@ -249,9 +249,7 @@ impl<'a> Face<'a> {
         let os2 = tables.get("OS/2").filter(|t| t.len() >= 72);
         let os2_value = || os2.and_then(|t| crate::daecore::daetype::decoder::read_i16_be(t, os2_off)).map(i32::from);
 
-        let use_typo = os2
-            .and_then(|t| crate::daecore::daetype::decoder::read_u16_be(t, 62))
-            .is_some_and(|fs| fs & 0x0080 != 0);
+        let use_typo = crate::daecore::daetype::decoder::parse_os2(tables).is_some_and(|o| o.use_typo_metrics());
         if use_typo
             && let Some(v) = os2_value() {
                 return Some(v);
@@ -284,10 +282,7 @@ impl<'a> Face<'a> {
             }
         } else if tables.contains_key("glyf") {
             match self.cache.loca_offsets() {
-                Some(loca) => crate::daecore::daetype::outline::outline_glyf_glyph_with_loca(
-                    tables, &loca, glyph, &mut pen as &mut dyn OutlinePen,
-                )
-                .is_ok(),
+                Some(loca) => self.cache.draw_glyf_reusing(&loca, glyph, &mut pen as &mut dyn OutlinePen).is_ok(),
                 None => false,
             }
         } else {
@@ -326,7 +321,7 @@ impl<'a> Face<'a> {
         let y_max = read_i16_be(glyf, start + 8)?;
 
         Some(GlyphExtents {
-            x_bearing: i32::from(x_min),
+            x_bearing: i32::from(x_min) + self.cache.glyf_origin_shift(&loca, glyph),
             y_bearing: i32::from(y_max),
             width: i32::from(x_max) - i32::from(x_min),
             height: i32::from(y_min) - i32::from(y_max),

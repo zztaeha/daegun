@@ -7,28 +7,14 @@ use alloc::borrow::ToOwned;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::ffi::{CStr, c_char, c_void};
+use core::ffi::{c_char, c_void};
 
 use crate::{Font, bytes, format};
 
-use crate::ffi::handle::{Bytes, OwnedStr, Status, Str, borrow, deliver, release};
+use crate::ffi::handle::{Bytes, OwnedStr, Status, Str, borrow, deliver, release, slice_of, str_of};
 use crate::ffi::list::{Axis, Blob, F64List, GlyphValue, GlyphValueList, StrList, U16List, UsizeList, axes_of};
 use crate::ffi::pen::{Pen, PenBridge};
 use crate::ffi::set_error;
-
-unsafe fn tag_of<'a>(s: *const c_char) -> Option<&'a str> {
-    if s.is_null() {
-        return None;
-    }
-    unsafe { CStr::from_ptr(s) }.to_str().ok()
-}
-
-unsafe fn slice_of<'a>(data: *const u8, len: usize) -> &'a [u8] {
-    if data.is_null() || len == 0 {
-        return &[];
-    }
-    unsafe { core::slice::from_raw_parts(data, len) }
-}
 
 #[inline]
 unsafe fn put<T>(out: *mut T, value: T) -> Status {
@@ -46,7 +32,7 @@ pub unsafe extern "C" fn daegun_font_table(
     out: *mut Bytes,
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(tag) = (unsafe { tag_of(tag) }) else { return Status::Null };
+    let Some(tag) = (unsafe { str_of(tag) }) else { return Status::Null };
     match font.table(tag) {
         Some(data) => unsafe { put(out, Bytes::of(data)) },
         None => {
@@ -78,7 +64,7 @@ pub unsafe extern "C" fn daegun_font_has_table(
     out: *mut i32,
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(tag) = (unsafe { tag_of(tag) }) else { return Status::Null };
+    let Some(tag) = (unsafe { str_of(tag) }) else { return Status::Null };
     unsafe { put(out, i32::from(font.has_table(tag))) }
 }
 
@@ -89,8 +75,11 @@ pub unsafe extern "C" fn daegun_font_instance_tables(
     axis_count: usize,
     out: *mut *mut TableMap,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let axes = unsafe { axes_of(axes, axis_count) };
+    let Some(axes) = (unsafe { axes_of(axes, axis_count) }) else { return Status::Null };
     let Some(tables) = font.instance_tables(&axes) else { return Status::Absent };
     let owned = tables.into_iter().map(|(tag, data)| (tag, data.into_owned())).collect();
     unsafe { deliver(out, TableMap::from_map(owned)) }
@@ -104,9 +93,12 @@ pub unsafe extern "C" fn daegun_font_instance_table(
     tag: *const c_char,
     out: *mut *mut Blob,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(tag) = (unsafe { tag_of(tag) }) else { return Status::Null };
-    let axes = unsafe { axes_of(axes, axis_count) };
+    let Some(tag) = (unsafe { str_of(tag) }) else { return Status::Null };
+    let Some(axes) = (unsafe { axes_of(axes, axis_count) }) else { return Status::Null };
     let Some(tables) = font.instance_tables(&axes) else { return Status::Absent };
     let Some(data) = tables.get(tag) else { return Status::Absent };
     unsafe { deliver(out, Blob(data.to_vec())) }
@@ -145,8 +137,13 @@ pub unsafe extern "C" fn daegun_table_map_tag_at(
     index: usize,
     out: *mut Str,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(map) = (unsafe { borrow(map) }) else { return Status::Null };
-    let Some(tag) = map.tags.get(index) else { return Status::Range };
+    let Some(tag) = map.tags.get(index) else {
+        return crate::ffi::range("no tag at that index: it is past the map's end");
+    };
     unsafe { put(out, tag.as_str()) }
 }
 
@@ -156,8 +153,13 @@ pub unsafe extern "C" fn daegun_table_map_bytes_at(
     index: usize,
     out: *mut Bytes,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(map) = (unsafe { borrow(map) }) else { return Status::Null };
-    let Some((_, data)) = map.tables.iter().nth(index) else { return Status::Range };
+    let Some((_, data)) = map.tables.iter().nth(index) else {
+        return crate::ffi::range("no table at that index: it is past the map's end");
+    };
     unsafe { put(out, Bytes::of(data)) }
 }
 
@@ -167,8 +169,11 @@ pub unsafe extern "C" fn daegun_table_map_get(
     tag: *const c_char,
     out: *mut Bytes,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(map) = (unsafe { borrow(map) }) else { return Status::Null };
-    let Some(tag) = (unsafe { tag_of(tag) }) else { return Status::Null };
+    let Some(tag) = (unsafe { str_of(tag) }) else { return Status::Null };
     match map.tables.get(tag) {
         Some(data) => unsafe { put(out, Bytes::of(data)) },
         None => Status::Absent,
@@ -185,9 +190,10 @@ pub unsafe extern "C" fn daegun_table_map_set(
     if map.is_null() {
         return Status::Null;
     }
-    let Some(tag) = (unsafe { tag_of(tag) }) else { return Status::Null };
+    let Some(tag) = (unsafe { str_of(tag) }) else { return Status::Null };
     let map = unsafe { &mut *map };
-    map.tables.insert(tag.to_string(), unsafe { slice_of(data, len) }.to_vec());
+    let Some(data) = (unsafe { slice_of(data, len) }) else { return Status::Null };
+    map.tables.insert(tag.to_string(), data.to_vec());
     map.resync();
     Status::Ok
 }
@@ -200,7 +206,7 @@ pub unsafe extern "C" fn daegun_table_map_remove(
     if map.is_null() {
         return Status::Null;
     }
-    let Some(tag) = (unsafe { tag_of(tag) }) else { return Status::Null };
+    let Some(tag) = (unsafe { str_of(tag) }) else { return Status::Null };
     let map = unsafe { &mut *map };
     if map.tables.remove(tag).is_none() {
         return Status::Absent;
@@ -214,6 +220,9 @@ pub unsafe extern "C" fn daegun_table_map_build(
     map: *const TableMap,
     out: *mut *mut Blob,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(map) = (unsafe { borrow(map) }) else { return Status::Null };
     if map.tables.is_empty() {
         set_error("cannot build a font from an empty table map");
@@ -235,7 +244,14 @@ pub unsafe extern "C" fn daegun_parse_loca(
     num_glyphs: usize,
     out: *mut *mut UsizeList,
 ) -> Status {
-    let loca = unsafe { slice_of(loca, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(loca) = (unsafe { slice_of(loca, len) }) else { return Status::Null };
+    if num_glyphs > usize::from(u16::MAX) {
+        crate::ffi::set_error("num_glyphs is past 65,535, which no font has");
+        return Status::Range;
+    }
     unsafe { deliver(out, UsizeList(crate::parse_loca(loca, format, num_glyphs))) }
 }
 
@@ -249,12 +265,8 @@ pub unsafe extern "C" fn daegun_outline_glyf_bytes(
     pen: *const Pen,
 ) -> Status {
     let Some(pen) = (unsafe { borrow(pen) }) else { return Status::Null };
-    let glyf = unsafe { slice_of(glyf, glyf_len) };
-    let loca = if loca.is_null() || loca_len == 0 {
-        &[][..]
-    } else {
-        unsafe { core::slice::from_raw_parts(loca, loca_len) }
-    };
+    let Some(glyf) = (unsafe { slice_of(glyf, glyf_len) }) else { return Status::Null };
+    let Some(loca) = (unsafe { slice_of(loca, loca_len) }) else { return Status::Null };
     let mut bridge = PenBridge(*pen);
     match crate::outline_glyf_bytes(glyf, loca, glyph, &mut bridge) {
         Ok(()) => Status::Ok,
@@ -274,7 +286,10 @@ macro_rules! reader {
             off: usize,
             out: *mut $ty,
         ) -> Status {
-            let data = unsafe { slice_of(data, len) };
+            if out.is_null() {
+                return Status::Null;
+            }
+            let Some(data) = (unsafe { slice_of(data, len) }) else { return Status::Null };
             match $call(data, off) {
                 Some(v) => unsafe { put(out, v) },
                 None => Status::Range,
@@ -333,7 +348,7 @@ pub unsafe extern "C" fn daegun_bytes_window(
     off: usize,
     n: usize,
 ) -> *const u8 {
-    let slice = unsafe { slice_of(data, len) };
+    let Some(slice) = (unsafe { slice_of(data, len) }) else { return core::ptr::null() };
     match off.checked_add(n) {
         Some(end) if end <= slice.len() => slice[off..end].as_ptr(),
         _ => core::ptr::null(),
@@ -381,7 +396,10 @@ pub unsafe extern "C" fn daegun_coverage_index(
     glyph: u16,
     out: *mut u16,
 ) -> Status {
-    let data = unsafe { slice_of(data, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(data) = (unsafe { slice_of(data, len) }) else { return Status::Null };
     match format::coverage_index(data, glyph) {
         Some(i) => unsafe { put(out, i) },
         None => Status::Absent,
@@ -395,7 +413,10 @@ pub unsafe extern "C" fn daegun_coverage_glyphs(
     off: usize,
     out: *mut *mut U16List,
 ) -> Status {
-    let buf = unsafe { slice_of(buf, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(buf) = (unsafe { slice_of(buf, len) }) else { return Status::Null };
     match format::coverage_glyphs(buf, off) {
         Ok(glyphs) => unsafe { deliver(out, U16List(glyphs)) },
         Err(e) => {
@@ -423,7 +444,10 @@ pub unsafe extern "C" fn daegun_aat_lookup_open(
     num_glyphs: u16,
     out: *mut *mut AatLookup,
 ) -> Status {
-    let data = unsafe { slice_of(data, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(data) = (unsafe { slice_of(data, len) }) else { return Status::Null };
     if format::Lookup::parse(data, num_glyphs).is_none() {
         set_error("aat lookup did not parse");
         return Status::Parse;
@@ -437,6 +461,9 @@ pub unsafe extern "C" fn daegun_aat_lookup_value(
     glyph: u16,
     out: *mut u16,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(lookup) = (unsafe { borrow(lookup) }) else { return Status::Null };
     let Some(view) = lookup.view() else { return Status::Parse };
     match view.value(glyph) {
@@ -450,6 +477,9 @@ pub unsafe extern "C" fn daegun_aat_lookup_entries(
     lookup: *const AatLookup,
     out: *mut *mut GlyphValueList,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(lookup) = (unsafe { borrow(lookup) }) else { return Status::Null };
     let Some(view) = lookup.view() else { return Status::Parse };
     let entries =
@@ -494,7 +524,10 @@ pub unsafe extern "C" fn daegun_aat_state_table_open(
     num_glyphs: u16,
     out: *mut *mut AatStateTable,
 ) -> Status {
-    let data = unsafe { slice_of(data, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(data) = (unsafe { slice_of(data, len) }) else { return Status::Null };
     if format::StateTable::parse(data, extra_words, num_glyphs).is_none() {
         set_error("aat state table did not parse");
         return Status::Parse;
@@ -508,6 +541,9 @@ pub unsafe extern "C" fn daegun_aat_state_table_class(
     glyph: u16,
     out: *mut u16,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(table) = (unsafe { borrow(table) }) else { return Status::Null };
     let Some(view) = table.view() else { return Status::Parse };
     unsafe { put(out, view.class(glyph)) }
@@ -520,20 +556,13 @@ pub unsafe extern "C" fn daegun_aat_state_table_entry(
     class: u16,
     out: *mut AatEntry,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(table) = (unsafe { borrow(table) }) else { return Status::Null };
     let Some(view) = table.view() else { return Status::Parse };
-    let Some(entry) = view.entry(state, class) else { return Status::Range };
-    unsafe {
-        put(
-            out,
-            AatEntry {
-                new_state: entry.new_state,
-                flags: entry.flags,
-                word1: entry.word1,
-                word2: entry.word2,
-            },
-        )
-    }
+    let Some(format::Entry { new_state, flags, word1, word2 }) = view.entry(state, class) else { return Status::Range };
+    unsafe { put(out, AatEntry { new_state, flags, word1, word2 }) }
 }
 
 #[unsafe(no_mangle)]
@@ -547,7 +576,10 @@ pub unsafe extern "C" fn daegun_ankr_version(
     len: usize,
     out: *mut u16,
 ) -> Status {
-    let data = unsafe { slice_of(data, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(data) = (unsafe { slice_of(data, len) }) else { return Status::Null };
     match format::ankr_version(data) {
         Some(v) => unsafe { put(out, v) },
         None => Status::Range,
@@ -562,11 +594,11 @@ pub unsafe extern "C" fn daegun_ankr_control_point(
     out_x: *mut i16,
     out_y: *mut i16,
 ) -> Status {
-    let data = unsafe { slice_of(data, len) };
-    let Some((x, y)) = format::control_point(data, at) else { return Status::Range };
     if out_x.is_null() || out_y.is_null() {
         return Status::Null;
     }
+    let Some(data) = (unsafe { slice_of(data, len) }) else { return Status::Null };
+    let Some((x, y)) = format::control_point(data, at) else { return Status::Range };
     unsafe {
         *out_x = x;
         *out_y = y;
@@ -592,7 +624,10 @@ pub unsafe extern "C" fn daegun_ankr_open(
     num_glyphs: u16,
     out: *mut *mut Ankr,
 ) -> Status {
-    let data = unsafe { slice_of(data, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(data) = (unsafe { slice_of(data, len) }) else { return Status::Null };
     if format::Ankr::parse(data, num_glyphs).is_none() {
         set_error("ankr table did not parse");
         return Status::Parse;
@@ -606,6 +641,9 @@ pub unsafe extern "C" fn daegun_ankr_point_count(
     glyph: u16,
     out: *mut u32,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(ankr) = (unsafe { borrow(ankr) }) else { return Status::Null };
     let Some(view) = ankr.view() else { return Status::Parse };
     unsafe { put(out, view.point_count(glyph)) }
@@ -619,12 +657,12 @@ pub unsafe extern "C" fn daegun_ankr_anchor_point(
     out_x: *mut i16,
     out_y: *mut i16,
 ) -> Status {
-    let Some(ankr) = (unsafe { borrow(ankr) }) else { return Status::Null };
-    let Some(view) = ankr.view() else { return Status::Parse };
-    let Some((x, y)) = view.anchor_point(glyph, index) else { return Status::Absent };
     if out_x.is_null() || out_y.is_null() {
         return Status::Null;
     }
+    let Some(ankr) = (unsafe { borrow(ankr) }) else { return Status::Null };
+    let Some(view) = ankr.view() else { return Status::Parse };
+    let Some((x, y)) = view.anchor_point(glyph, index) else { return Status::Absent };
     unsafe {
         *out_x = x;
         *out_y = y;
@@ -657,7 +695,10 @@ pub unsafe extern "C" fn daegun_feature_variations_open(
     len: usize,
     out: *mut *mut FeatureVariations,
 ) -> Status {
-    let layout = unsafe { slice_of(layout, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(layout) = (unsafe { slice_of(layout, len) }) else { return Status::Null };
     if format::FeatureVariations::parse(layout).is_none() {
         return Status::Absent;
     }
@@ -671,7 +712,7 @@ pub unsafe extern "C" fn daegun_feature_variations_at(
     at: usize,
     out: *mut *mut FeatureVariations,
 ) -> Status {
-    let layout = unsafe { slice_of(layout, len) };
+    let Some(layout) = (unsafe { slice_of(layout, len) }) else { return Status::Null };
     unsafe { deliver(out, FeatureVariations { layout: layout.to_vec(), at: Some(at) }) }
 }
 
@@ -682,14 +723,13 @@ pub unsafe extern "C" fn daegun_feature_variations_find(
     coord_count: usize,
     out: *mut u16,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(vars) = (unsafe { borrow(vars) }) else { return Status::Null };
     let Some(view) = vars.view() else { return Status::Absent };
-    let coords = if coords.is_null() || coord_count == 0 {
-        &[][..]
-    } else {
-        unsafe { core::slice::from_raw_parts(coords, coord_count) }
-    };
-    match view.find(coords) {
+    let Some(coords) = (unsafe { slice_of(coords, coord_count) }) else { return Status::Null };
+    match view.with_axis_count(coord_count).find(coords) {
         Some(v) => unsafe { put(out, v) },
         None => Status::Absent,
     }
@@ -702,6 +742,9 @@ pub unsafe extern "C" fn daegun_feature_variations_substitute(
     feature: u16,
     out: *mut usize,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(vars) = (unsafe { borrow(vars) }) else { return Status::Null };
     let Some(view) = vars.view() else { return Status::Absent };
     match view.substitute(variation, feature) {
@@ -735,7 +778,10 @@ pub unsafe extern "C" fn daegun_ivs_parse(
     base: usize,
     out: *mut *mut Ivs,
 ) -> Status {
-    let buf = unsafe { slice_of(buf, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(buf) = (unsafe { slice_of(buf, len) }) else { return Status::Null };
     match format::parse_item_variation_store(buf, base) {
         Ok(store) => unsafe { deliver(out, Ivs(store)) },
         Err(e) => {
@@ -747,8 +793,10 @@ pub unsafe extern "C" fn daegun_ivs_parse(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_ivs_axis_count(ivs: *const Ivs, out: *mut usize) -> Status {
-    let Some(ivs) = (unsafe { borrow(ivs) }) else { return Status::Null };
-    unsafe { put(out, ivs.0.axis_count) }
+    let Some(Ivs(format::ItemVariationStore { regions: _, ivd_data: _, axis_count })) = (unsafe { borrow(ivs) }) else {
+        return Status::Null;
+    };
+    unsafe { put(out, *axis_count) }
 }
 
 #[unsafe(no_mangle)]
@@ -764,11 +812,14 @@ pub unsafe extern "C" fn daegun_ivs_region_axis(
     axis: usize,
     out: *mut RegionAxis,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(ivs) = (unsafe { borrow(ivs) }) else { return Status::Null };
-    let Some(a) = ivs.0.regions.get(region).and_then(|r| r.get(axis)) else {
+    let Some(&format::RegionAxis { start, peak, end }) = ivs.0.regions.get(region).and_then(|r| r.get(axis)) else {
         return Status::Range;
     };
-    unsafe { put(out, RegionAxis { start: a.start, peak: a.peak, end: a.end }) }
+    unsafe { put(out, RegionAxis { start, peak, end }) }
 }
 
 #[unsafe(no_mangle)]
@@ -783,6 +834,9 @@ pub unsafe extern "C" fn daegun_ivs_ivd_rows(
     ivd: usize,
     out: *mut usize,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(ivs) = (unsafe { borrow(ivs) }) else { return Status::Null };
     let Some(data) = ivs.0.ivd_data.get(ivd) else { return Status::Range };
     unsafe { put(out, data.rows()) }
@@ -829,11 +883,7 @@ pub unsafe extern "C" fn daegun_ivs_region_scalars(
     out: *mut *mut F64List,
 ) -> Status {
     let Some(ivs) = (unsafe { borrow(ivs) }) else { return Status::Null };
-    let location = if location.is_null() || axis_count == 0 {
-        &[][..]
-    } else {
-        unsafe { core::slice::from_raw_parts(location, axis_count) }
-    };
+    let Some(location) = (unsafe { slice_of(location, axis_count) }) else { return Status::Null };
     unsafe { deliver(out, F64List(format::precompute_region_scalars(&ivs.0, location))) }
 }
 
@@ -847,11 +897,7 @@ pub unsafe extern "C" fn daegun_ivs_delta(
     out: *mut f64,
 ) -> Status {
     let Some(ivs) = (unsafe { borrow(ivs) }) else { return Status::Null };
-    let scalars = if scalars.is_null() || scalar_count == 0 {
-        &[][..]
-    } else {
-        unsafe { core::slice::from_raw_parts(scalars, scalar_count) }
-    };
+    let Some(scalars) = (unsafe { slice_of(scalars, scalar_count) }) else { return Status::Null };
     unsafe { put(out, format::compute_ivs_delta_f64(&ivs.0, outer, inner, scalars)) }
 }
 
@@ -869,7 +915,10 @@ pub unsafe extern "C" fn daegun_delta_set_index_map_parse(
     base: usize,
     out: *mut *mut DeltaSetIndexMap,
 ) -> Status {
-    let buf = unsafe { slice_of(buf, len) };
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(buf) = (unsafe { slice_of(buf, len) }) else { return Status::Null };
     match format::parse_delta_set_index_map(buf, base) {
         Ok(map) => unsafe { deliver(out, DeltaSetIndexMap(map)) },
         Err(e) => {

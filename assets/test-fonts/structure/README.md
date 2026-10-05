@@ -20,7 +20,7 @@ outline formats has no valid reading except the one `sfntVersion` names. Its gly
 table they came from, so a wrong choice is visible rather than subtle.
 
 `TestShapeLana.ttf` is the only Tai Tham font in this tree, and Tai Tham is the one script whose
-cluster grammar diverges from the specification's — see `scripts/data/grammars/lana.grammar`. No
+cluster grammar diverges from the specification's – see `scripts/data/grammars/lana.grammar`. No
 other fixture can tell that grammar apart from the ordinary one.
 
 `TestGVAREight.ttf` names its axes `CK`, `FR`, `HV`, `CN`, `BR` and `TC`. Every other variable font

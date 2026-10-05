@@ -39,18 +39,19 @@ impl Font {
         &self,
         axes: &[(&str, f64)],
     ) -> Option<alloc::collections::BTreeMap<String, alloc::borrow::Cow<'_, [u8]>>> {
+        let stored = || {
+            self.cache.table_map.iter().map(|(tag, data)| (tag.clone(), alloc::borrow::Cow::Borrowed(data.as_slice())))
+                .collect()
+        };
+        // A font whose fvar is missing or does not parse is static to the instancer, and a static font is
+        // its own instance. Its CFF2 is converted to CFF only to be drawn or subset.
+        if self.is_static() {
+            return Some(stored());
+        }
         let canonical = crate::daecore::cache::canonical_axes(axes);
         Some(
             crate::daecore::daetype::instancer::instance_tables_from_map(&self.cache.table_map, &canonical)
-                .unwrap_or_else(|_| {
-                    self.cache
-                        .table_map
-                        .iter()
-                        .map(|(tag, data)| {
-                            (tag.clone(), alloc::borrow::Cow::Borrowed(data.as_slice()))
-                        })
-                        .collect()
-                }),
+                .unwrap_or_else(|_| stored()),
         )
     }
 }

@@ -49,6 +49,11 @@ impl Path {
         self.verbs.len() + self.points.len() * core::mem::size_of::<(f32, f32)>()
     }
 
+    pub(crate) fn shrink_to_fit(&mut self) {
+        self.verbs.shrink_to_fit();
+        self.points.shrink_to_fit();
+    }
+
     pub fn replay(&self, transform: Option<&[f64; 6]>, pen: &mut dyn OutlinePen) {
         let mut at = 0usize;
         let mut open = false;
@@ -65,7 +70,12 @@ impl Path {
             let p = &self.points[at..at + verb.points()];
             at += verb.points();
             match verb {
-                Verb::Move => { let (x, y) = map(p[0]); pen.move_to(x, y); }
+                // A path replays as it fills: every contour closed, each before the next begins.
+                Verb::Move => {
+                    if open { pen.close(); }
+                    let (x, y) = map(p[0]);
+                    pen.move_to(x, y);
+                }
                 Verb::Line => { let (x, y) = map(p[0]); pen.line_to(x, y); }
                 Verb::Quad => {
                     let (cx, cy) = map(p[0]);
@@ -90,55 +100,91 @@ impl Path {
     }
 
     pub fn bounds(&self) -> Option<(f64, f64, f64, f64)> {
-        let mut e = Extent::default();
+        let mut b = Bounds::default();
         let mut at = 0usize;
-        let mut cur = (0.0f64, 0.0f64);
-        let mut start = (0.0f64, 0.0f64);
-
         for &verb in &self.verbs {
-            let n = verb.points();
-            let mut p = [(0.0f64, 0.0f64); 3];
-            for (dst, &(x, y)) in p.iter_mut().zip(&self.points[at..at + n]) {
-                *dst = (f64::from(x), f64::from(y));
-            }
-            at += n;
+            let p = &self.points[at..at + verb.points()];
+            at += verb.points();
             match verb {
-                Verb::Move => { e.point(p[0]); cur = p[0]; start = p[0]; }
-                Verb::Line => { e.point(p[0]); cur = p[0]; }
-                Verb::Quad => {
-                    e.point(p[1]);
-                    for axis in 0..2 {
-                        let (v0, v1, v2) = (at_axis(cur, axis), at_axis(p[0], axis), at_axis(p[1], axis));
-                        let den = v0 - 2.0 * v1 + v2;
-                        if den == 0.0 { continue; }
-                        let t = (v0 - v1) / den;
-                        if t > 0.0 && t < 1.0 {
-                            let u = 1.0 - t;
-                            e.axis(axis, u * u * v0 + 2.0 * u * t * v1 + t * t * v2);
-                        }
-                    }
-                    cur = p[1];
-                }
-                Verb::Cubic => {
-                    e.point(p[2]);
-                    for axis in 0..2 {
-                        let v0 = at_axis(cur, axis);
-                        let (v1, v2, v3) =
-                            (at_axis(p[0], axis), at_axis(p[1], axis), at_axis(p[2], axis));
-                        let (d0, d1, d2) = (v1 - v0, v2 - v1, v3 - v2);
-                        let (ts, nt) = roots(d0 - 2.0 * d1 + d2, 2.0 * (d1 - d0), d0);
-                        for &t in &ts[..nt] {
-                            let u = 1.0 - t;
-                            e.axis(axis, u * u * u * v0 + 3.0 * u * u * t * v1
-                                + 3.0 * u * t * t * v2 + t * t * t * v3);
-                        }
-                    }
-                    cur = p[2];
-                }
-                Verb::Close => cur = start,
+                Verb::Move => b.move_to(p[0].0, p[0].1),
+                Verb::Line => b.line_to(p[0].0, p[0].1),
+                Verb::Quad => b.quad_to(p[0].0, p[0].1, p[1].0, p[1].1),
+                Verb::Cubic => b.curve_to(p[0].0, p[0].1, p[1].0, p[1].1, p[2].0, p[2].1),
+                Verb::Close => b.close(),
             }
         }
-        e.finish()
+        b.finish()
+    }
+}
+
+// The tight box of an outline as it is drawn: each segment's end points and its curve's extremes
+// between them. A pen, so a box needs no path held.
+#[derive(Default)]
+pub(crate) struct Bounds {
+    e: Extent,
+    cur: (f64, f64),
+    start: (f64, f64),
+}
+
+impl Bounds {
+    pub(crate) fn finish(self) -> Option<(f64, f64, f64, f64)> {
+        self.e.finish()
+    }
+}
+
+impl OutlinePen for Bounds {
+    fn move_to(&mut self, x: f32, y: f32) {
+        let p = (f64::from(x), f64::from(y));
+        self.e.point(p);
+        self.cur = p;
+        self.start = p;
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        let p = (f64::from(x), f64::from(y));
+        self.e.point(p);
+        self.cur = p;
+    }
+
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        let (c, p) = ((f64::from(cx), f64::from(cy)), (f64::from(x), f64::from(y)));
+        self.e.point(p);
+        for axis in 0..2 {
+            let (v0, v1, v2) = (at_axis(self.cur, axis), at_axis(c, axis), at_axis(p, axis));
+            let den = v0 - 2.0 * v1 + v2;
+            if den == 0.0 { continue; }
+            let t = (v0 - v1) / den;
+            if t > 0.0 && t < 1.0 {
+                let u = 1.0 - t;
+                self.e.axis(axis, u * u * v0 + 2.0 * u * t * v1 + t * t * v2);
+            }
+        }
+        self.cur = p;
+    }
+
+    fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
+        let c1 = (f64::from(c1x), f64::from(c1y));
+        let c2 = (f64::from(c2x), f64::from(c2y));
+        let p = (f64::from(x), f64::from(y));
+        self.e.point(p);
+        for axis in 0..2 {
+            let v0 = at_axis(self.cur, axis);
+            let (v1, v2, v3) = (at_axis(c1, axis), at_axis(c2, axis), at_axis(p, axis));
+            // Controls between the ends keep the curve between them too, and both ends are counted.
+            let ends = v0.min(v3)..=v0.max(v3);
+            if ends.contains(&v1) && ends.contains(&v2) { continue; }
+            let (d0, d1, d2) = (v1 - v0, v2 - v1, v3 - v2);
+            let (ts, nt) = roots(d0 - 2.0 * d1 + d2, 2.0 * (d1 - d0), d0);
+            for &t in &ts[..nt] {
+                let u = 1.0 - t;
+                self.e.axis(axis, u * u * u * v0 + 3.0 * u * u * t * v1 + 3.0 * u * t * t * v2 + t * t * t * v3);
+            }
+        }
+        self.cur = p;
+    }
+
+    fn close(&mut self) {
+        self.cur = self.start;
     }
 }
 
@@ -226,5 +272,22 @@ impl OutlinePen for Path {
     }
     fn close(&mut self) {
         self.verbs.push(Verb::Close);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // x runs 0, 50, 150, 100: one control between the ends and one past them, so the curve bulges
+    // to about 113.7 before it comes back to 100. y stays between its ends and adds nothing.
+    #[test]
+    fn a_curve_with_one_control_past_its_ends_is_bounded_by_its_bulge() {
+        let mut path = Path::default();
+        path.move_to(0.0, 0.0);
+        path.curve_to(50.0, 10.0, 150.0, 20.0, 100.0, 30.0);
+        let (x0, y0, x1, y1) = path.bounds().expect("a box");
+        assert_eq!((x0, y0, y1), (0.0, 0.0, 30.0));
+        assert!((113.0..114.0).contains(&x1), "the bulge reached {x1}");
     }
 }

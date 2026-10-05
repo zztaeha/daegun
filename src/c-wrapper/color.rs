@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use crate::Font;
 
 use crate::ffi::handle::{Status, borrow, deliver, release};
-use crate::ffi::list::{Axis, axes_of};
+use crate::ffi::list::{Axis, Blob, U16List, axes_of};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -38,6 +38,9 @@ pub unsafe extern "C" fn daegun_font_colr_layers(
     gid: u16,
     out: *mut *mut ColrLayers,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(v) = font.colr_layers(gid) else { return Status::Absent };
     unsafe { deliver(out, layers_of(v)) }
@@ -50,6 +53,9 @@ pub unsafe extern "C" fn daegun_font_colr_layers_for_palette(
     palette_index: u16,
     out: *mut *mut ColrLayers,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(v) = font.colr_layers_for_palette(gid, palette_index) else { return Status::Absent };
     unsafe { deliver(out, layers_of(v)) }
@@ -105,12 +111,12 @@ pub unsafe extern "C" fn daegun_font_palette_info(
     let v = font
         .palette_info()
         .into_iter()
-        .map(|p| PaletteInfoC {
-            index: p.index,
-            light_safe: p.light_safe,
-            dark_safe: p.dark_safe,
-            has_name_id: p.name_id.is_some(),
-            name_id: p.name_id.unwrap_or(0),
+        .map(|crate::PaletteInfo { index, light_safe, dark_safe, name_id }| PaletteInfoC {
+            index,
+            light_safe,
+            dark_safe,
+            has_name_id: name_id.is_some(),
+            name_id: name_id.unwrap_or(0),
         })
         .collect();
     unsafe { deliver(out, Palettes(v)) }
@@ -134,12 +140,29 @@ pub unsafe extern "C" fn daegun_palettes_free(p: *mut Palettes) {
     unsafe { release(p) }
 }
 
-pub struct GlyphBitmapHandle {
-    png: Vec<u8>,
-    ppem: u16,
-    origin_x: i16,
-    origin_y: i16,
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_palette_entry_labels(
+    font: *const Font,
+    out_name_ids: *mut *mut U16List,
+    out_present: *mut *mut Blob,
+) -> Status {
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let labels = font.palette_entry_labels();
+    if !out_name_ids.is_null() {
+        let ids: Vec<u16> = labels.iter().map(|l| l.unwrap_or(0)).collect();
+        let st = unsafe { deliver(out_name_ids, U16List(ids)) };
+        if st != Status::Ok {
+            return st;
+        }
+    }
+    if !out_present.is_null() {
+        let present: Vec<u8> = labels.iter().map(|l| u8::from(l.is_some())).collect();
+        return unsafe { deliver(out_present, Blob(present)) };
+    }
+    Status::Ok
 }
+
+pub struct GlyphBitmapHandle(crate::GlyphBitmap);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_font_glyph_bitmap(
@@ -148,46 +171,70 @@ pub unsafe extern "C" fn daegun_font_glyph_bitmap(
     target_ppem: u16,
     out: *mut *mut GlyphBitmapHandle,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(b) = font.glyph_bitmap(gid, target_ppem) else { return Status::Absent };
-    unsafe {
-        deliver(
-            out,
-            GlyphBitmapHandle {
-                png: b.png,
-                ppem: b.ppem,
-                origin_x: b.origin_x,
-                origin_y: b.origin_y,
-            },
-        )
-    }
+    unsafe { deliver(out, GlyphBitmapHandle(b)) }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_glyph_bitmap_png(
+pub unsafe extern "C" fn daegun_glyph_bitmap_placement(
     b: *const GlyphBitmapHandle,
-    out_len: *mut usize,
     out_ppem: *mut u16,
-    out_origin_x: *mut i16,
-    out_origin_y: *mut i16,
-) -> *const u8 {
-    let Some(b) = (unsafe { borrow(b) }) else { return core::ptr::null() };
+    out_left: *mut i16,
+    out_top: *mut i16,
+    out_mirrored: *mut bool,
+) -> Status {
+    let Some(GlyphBitmapHandle(crate::GlyphBitmap { image: _, ppem, left, top, mirrored })) = (unsafe { borrow(b) })
+    else {
+        return Status::Null;
+    };
+    unsafe {
+        if !out_ppem.is_null() {
+            *out_ppem = *ppem;
+        }
+        if !out_left.is_null() {
+            *out_left = *left;
+        }
+        if !out_top.is_null() {
+            *out_top = *top;
+        }
+        if !out_mirrored.is_null() {
+            *out_mirrored = *mirrored;
+        }
+    }
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_glyph_bitmap_png(b: *const GlyphBitmapHandle, out_len: *mut usize) -> *const u8 {
+    let Some(GlyphBitmapHandle(b)) = (unsafe { borrow(b) }) else { return core::ptr::null() };
+    let crate::BitmapImage::Png(png) = &b.image else { return core::ptr::null() };
     if out_len.is_null() {
         return core::ptr::null();
     }
-    unsafe {
-        *out_len = b.png.len();
-        if !out_ppem.is_null() {
-            *out_ppem = b.ppem;
-        }
-        if !out_origin_x.is_null() {
-            *out_origin_x = b.origin_x;
-        }
-        if !out_origin_y.is_null() {
-            *out_origin_y = b.origin_y;
-        }
+    unsafe { *out_len = png.len() };
+    png.as_ptr()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_glyph_bitmap_coverage(
+    b: *const GlyphBitmapHandle,
+    out_width: *mut u16,
+    out_height: *mut u16,
+) -> *const u8 {
+    let Some(GlyphBitmapHandle(b)) = (unsafe { borrow(b) }) else { return core::ptr::null() };
+    let crate::BitmapImage::Coverage { width, height, pixels } = &b.image else { return core::ptr::null() };
+    if out_width.is_null() || out_height.is_null() {
+        return core::ptr::null();
     }
-    b.png.as_ptr()
+    unsafe {
+        *out_width = *width;
+        *out_height = *height;
+    }
+    pixels.as_ptr()
 }
 
 #[unsafe(no_mangle)]
@@ -236,6 +283,7 @@ pub struct PaintHandle {
     children: Vec<u32>,
     stop_offsets: Vec<f64>,
     stop_colors: Vec<u8>,
+    stop_foreground: Vec<u8>,
 }
 
 impl PaintHandle {
@@ -368,12 +416,32 @@ impl PaintHandle {
 
     fn push_stops(&mut self, stops: &[crate::ColorStop]) -> (u32, u32) {
         let start = self.stop_offsets.len() as u32;
-        for s in stops {
-            self.stop_offsets.push(s.offset);
-            self.stop_colors.extend_from_slice(&[s.r, s.g, s.b, s.alpha]);
+        for &crate::ColorStop { offset, r, g, b, alpha, is_foreground } in stops {
+            self.stop_offsets.push(offset);
+            self.stop_colors.extend_from_slice(&[r, g, b, alpha]);
+            self.stop_foreground.push(u8::from(is_foreground));
         }
         (start, stops.len() as u32)
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_font_colr_clip_box(
+    font: *const Font,
+    gid: u16,
+    axes: *const Axis,
+    axes_len: usize,
+    out: *mut i32,
+) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
+    let Some(clip) = font.colr_clip_box(gid, &location) else { return Status::Absent };
+    // SAFETY: the header asks for room for four values at `out`.
+    unsafe { core::ptr::copy_nonoverlapping(clip.as_ptr(), out, 4) };
+    Status::Ok
 }
 
 #[unsafe(no_mangle)]
@@ -385,8 +453,11 @@ pub unsafe extern "C" fn daegun_font_colr_v1_paint(
     palette_index: u16,
     out: *mut *mut PaintHandle,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let Some(paint) = font.colr_v1_paint(gid, &location, palette_index) else {
         return Status::Absent;
     };
@@ -395,6 +466,7 @@ pub unsafe extern "C" fn daegun_font_colr_v1_paint(
         children: Vec::new(),
         stop_offsets: Vec::new(),
         stop_colors: Vec::new(),
+        stop_foreground: Vec::new(),
     };
     built.flatten(&paint);
     unsafe { deliver(out, built) }
@@ -449,232 +521,43 @@ pub unsafe extern "C" fn daegun_paint_stops(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_paint_stops_foreground(
+    p: *const PaintHandle,
+    out_count: *mut usize,
+) -> *const u8 {
+    let Some(p) = (unsafe { borrow(p) }) else { return core::ptr::null() };
+    if out_count.is_null() {
+        return core::ptr::null();
+    }
+    unsafe { *out_count = p.stop_foreground.len() };
+    p.stop_foreground.as_ptr()
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_paint_free(p: *mut PaintHandle) {
     unsafe { release(p) }
 }
 
-pub struct Scene {
-    width: usize,
-    height: usize,
-    rgba: Vec<u8>,
-    left: i32,
-    top: i32,
-    skipped_ops: usize,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_font_render_colr_glyph(
-    font: *const Font,
-    gid: u16,
-    px: f32,
-    axes: *const Axis,
-    axes_len: usize,
-    palette_index: u16,
-    out: *mut *mut Scene,
-) -> Status {
-    unsafe {
-        daegun_font_render_colr_glyph_with(
-            font, gid, px, axes, axes_len, palette_index, core::ptr::null(), out,
-        )
+    // test_glyphs' glyph 148 paints a gradient whose middle stop takes the text color: C reads that at
+    // the stop's own index, since the stop's four color bytes then mean nothing.
+    #[test]
+    fn a_stop_that_takes_the_text_color_says_so_in_c() {
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/test-fonts/colr-v1-test-glyphs/test_glyphs.ttf")).unwrap();
+        let mut handle = core::ptr::null_mut();
+        assert_eq!(unsafe { crate::ffi::daegun_font_open(bytes.as_ptr(), bytes.len(), &mut handle) }, Status::Ok);
+        let mut paint = core::ptr::null_mut();
+        assert_eq!(unsafe { daegun_font_colr_v1_paint(handle, 148, core::ptr::null(), 0, 0, &mut paint) }, Status::Ok);
+        let mut stops = 0;
+        let none = (core::ptr::null_mut(), core::ptr::null_mut());
+        assert_eq!(unsafe { daegun_paint_stops(paint, &mut stops, none.0, none.1) }, Status::Ok);
+        let mut n = 0;
+        let flags = unsafe { core::slice::from_raw_parts(daegun_paint_stops_foreground(paint, &mut n), n) };
+        assert_eq!((stops, flags), (3, &[0u8, 1, 0][..]));
+        unsafe { daegun_paint_free(paint) };
+        unsafe { crate::ffi::daegun_font_free(handle) };
     }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_font_render_colr_glyph_with(
-    font: *const Font,
-    gid: u16,
-    px: f32,
-    axes: *const Axis,
-    axes_len: usize,
-    palette_index: u16,
-    foreground: *const u8,
-    out: *mut *mut Scene,
-) -> Status {
-    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
-    let rendered = match unsafe { crate::ffi::rgba_of(foreground) } {
-        Some(fg) => font.render_colr_glyph_with(gid, px, &location, palette_index, fg),
-        None => font.render_colr_glyph(gid, px, &location, palette_index),
-    };
-    let Some(s) = rendered else {
-        return Status::Absent;
-    };
-    unsafe {
-        deliver(
-            out,
-            Scene {
-                width: s.width,
-                height: s.height,
-                rgba: s.rgba,
-                left: s.left,
-                top: s.top,
-                skipped_ops: s.skipped_ops,
-            },
-        )
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_rgba(
-    s: *const Scene,
-    out_len: *mut usize,
-    out_width: *mut usize,
-    out_height: *mut usize,
-    out_left: *mut i32,
-    out_top: *mut i32,
-    out_skipped_ops: *mut usize,
-) -> *const u8 {
-    let Some(s) = (unsafe { borrow(s) }) else { return core::ptr::null() };
-    if out_len.is_null() {
-        return core::ptr::null();
-    }
-    unsafe {
-        *out_len = s.rgba.len();
-        if !out_width.is_null() {
-            *out_width = s.width;
-        }
-        if !out_height.is_null() {
-            *out_height = s.height;
-        }
-        if !out_left.is_null() {
-            *out_left = s.left;
-        }
-        if !out_top.is_null() {
-            *out_top = s.top;
-        }
-        if !out_skipped_ops.is_null() {
-            *out_skipped_ops = s.skipped_ops;
-        }
-    }
-    s.rgba.as_ptr()
-}
-
-pub(crate) fn wrap_scene(s: crate::RenderedScene) -> Scene {
-    Scene {
-        width: s.width,
-        height: s.height,
-        rgba: s.rgba,
-        left: s.left,
-        top: s.top,
-        skipped_ops: s.skipped_ops,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_free(s: *mut Scene) {
-    unsafe { release(s) }
-}
-
-pub struct SceneBuilder(crate::paint::DisplayList);
-
-#[unsafe(no_mangle)]
-pub extern "C" fn daegun_scene_builder_new() -> *mut SceneBuilder {
-    alloc::boxed::Box::into_raw(alloc::boxed::Box::new(SceneBuilder(crate::paint::DisplayList::default())))
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_builder_free(b: *mut SceneBuilder) {
-    unsafe { release(b) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_builder_push_path(
-    b: *mut SceneBuilder,
-    path: *const crate::ffi::outline::Path,
-    out_id: *mut usize,
-) -> Status {
-    if b.is_null() || out_id.is_null() {
-        return Status::Null;
-    }
-    let Some(path) = (unsafe { borrow(path) }) else { return Status::Null };
-    let b = unsafe { &mut *b };
-    let id = b.0.push_path(path.0.clone());
-    unsafe { *out_id = id };
-    Status::Ok
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_builder_fill(
-    b: *mut SceneBuilder,
-    path_id: usize,
-    rgba: *const u8,
-    rule: i32,
-    transform: *const f64,
-) -> Status {
-    if b.is_null() || rgba.is_null() || transform.is_null() {
-        return Status::Null;
-    }
-    let b = unsafe { &mut *b };
-    if b.0.path(path_id).is_none() {
-        return Status::Range;
-    }
-    let rule = match rule {
-        0 => crate::FillRule::NonZero,
-        1 => crate::FillRule::EvenOdd,
-        _ => return Status::Range,
-    };
-    // The caller promises four bytes and six doubles, per the header.
-    let c = unsafe { core::slice::from_raw_parts(rgba, 4) };
-    let t = unsafe { core::slice::from_raw_parts(transform, 6) };
-    if !t.iter().all(|v| v.is_finite()) {
-        return Status::Range;
-    }
-    b.0.push(crate::paint::Op::Fill {
-        path:      path_id,
-        paint:     crate::paint::Paint::Solid(crate::paint::Rgba {
-            r: c[0], g: c[1], b: c[2], a: c[3],
-        }),
-        rule,
-        transform: [t[0], t[1], t[2], t[3], t[4], t[5]],
-    });
-    Status::Ok
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_builder_render(
-    b: *const SceneBuilder,
-    px: f32,
-    upem: f32,
-    out: *mut *mut Scene,
-) -> Status {
-    let Some(b) = (unsafe { borrow(b) }) else { return Status::Null };
-    let Some(s) = crate::paint::render(&b.0, px, upem) else { return Status::Range };
-    unsafe { deliver(out, wrap_scene(s)) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_builder_is_empty(
-    b: *const SceneBuilder,
-    out: *mut bool,
-) -> Status {
-    let Some(b) = (unsafe { borrow(b) }) else { return Status::Null };
-    if out.is_null() {
-        return Status::Null;
-    }
-    unsafe { *out = b.0.is_empty() };
-    Status::Ok
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_builder_op_count(
-    b: *const SceneBuilder,
-    out: *mut usize,
-) -> Status {
-    let Some(b) = (unsafe { borrow(b) }) else { return Status::Null };
-    if out.is_null() {
-        return Status::Null;
-    }
-    unsafe { *out = b.0.ops().len() };
-    Status::Ok
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_scene_builder_path(
-    b: *const SceneBuilder,
-    path_id: usize,
-    out: *mut *mut crate::ffi::outline::Path,
-) -> Status {
-    let Some(b) = (unsafe { borrow(b) }) else { return Status::Null };
-    let Some(p) = b.0.path(path_id) else { return Status::Range };
-    unsafe { deliver(out, crate::ffi::outline::Path(p.clone())) }
 }

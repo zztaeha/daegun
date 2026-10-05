@@ -24,7 +24,7 @@ pub struct MathGlyphConstruction {
 
 fn variants_offset(table_map: &BTreeMap<String, TableBytes>) -> Option<(&[u8], usize)> {
     let math = table_map.get("MATH")?;
-    let off = read_u16_be(math, 8)? as usize;
+    let off = read_u16_be(math, 8).filter(|&o| o != 0)? as usize;
     Some((math, off))
 }
 

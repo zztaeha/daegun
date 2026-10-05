@@ -59,8 +59,15 @@ impl DisplayList {
         self.ops.push(op);
     }
 
+    pub(crate) fn path_mut(&mut self, id: PathId) -> Option<&mut Path> {
+        self.paths.get_mut(id)
+    }
+
     pub(crate) fn truncate(&mut self, to: usize) {
         self.ops.truncate(to);
     }
 
+    pub(crate) fn remove(&mut self, at: usize) {
+        self.ops.remove(at);
+    }
 }

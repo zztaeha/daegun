@@ -275,7 +275,7 @@ def compile_machine(categories, definitions, syllables):
 
 DEAD = 0xFFFF
 
-def minimise(transitions, accepts):
+def minimize(transitions, accepts):
     width = len(transitions[0])
     count = len(transitions)
 
@@ -350,7 +350,7 @@ def check_equivalent(before, after, width, rounds=4000):
         length = rng.randrange(1, 12)
         text = [rng.randrange(width) for _ in range(length)]
         if run(*before, text) != run(*after, text):
-            sys.exit("minimisation changed the segmentation of {}".format(text))
+            sys.exit("minimization changed the segmentation of {}".format(text))
 
 def emit(f, name, categories, syllables, transitions, accepts):
     upper = name.upper()
@@ -420,7 +420,7 @@ def main():
             categories, definitions, syllables = parse_grammar(path)
             transitions, accepts = compile_machine(categories, definitions, syllables)
             before = len(transitions)
-            small = minimise(transitions, accepts)
+            small = minimize(transitions, accepts)
             check_equivalent((transitions, accepts), small, len(transitions[0]))
             transitions, accepts = small
 

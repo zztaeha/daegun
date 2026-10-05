@@ -3,10 +3,8 @@ use core::ops::Deref;
 
 use crate::daecore::sync::Shared;
 
+// A window onto the font's one shared buffer, so a table is never copied; cloning is a refcount.
 #[derive(Clone)]
-// A font is one buffer and every table is a window onto it: extracting nineteen separate Vec<u8>
-// copied the whole file at open, 94% of `Font::from_bytes` and running at memory bandwidth, so it
-// could only be avoided rather than made faster. Cloning is a refcount.
 pub struct TableBytes {
     buf: Shared<Vec<u8>>,
     start: usize,
@@ -36,8 +34,6 @@ impl TableBytes {
     }
 }
 
-// `Deref<Target = [u8]>` is what kept this from being a rewrite: the hundred-odd places that read a
-// table still want `&[u8]`, and only the places that *build* one had to change.
 impl Deref for TableBytes {
     type Target = [u8];
 

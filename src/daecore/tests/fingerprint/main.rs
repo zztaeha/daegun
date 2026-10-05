@@ -130,14 +130,14 @@ fn autohinted_outlines() {
         for ppem in [8u16, 11, 16, 24, 40] {
             for gid in 0..n {
                 let Some(p) = collect(gid) else { continue };
-                let o = h.hint(&p, ppem);
+                let o = h.hint(&p, ppem.into());
                 for v in o.y.iter().chain(o.x.iter()) { f.i64(i64::from(*v)); }
                 for b in &o.flags { f.u64(u64::from(*b)); }
                 for c in &o.contour_ends { f.u64(*c as u64); }
             }
         }
     }
-    check("autohinted outlines", f.done(), 0x762e_4eeb_cf5d_1c9e);
+    check("autohinted outlines", f.done(), 0x79d1_8451_f6bd_6432);
 }
 
 #[test]
@@ -151,9 +151,9 @@ fn bytecode_hinted_outlines() {
     let mut f = Fnv::new();
     for ppem in [8u16, 11, 16, 24, 40] {
         for mode in [HintMode::Subpixel, HintMode::Classic] {
-            let Some(mut ctx) = HintContext::new(&map, ppem, upm, mode) else { continue };
+            let Some(mut ctx) = HintContext::new(&map, ppem.into(), upm, mode) else { continue };
             for gid in 0..n {
-                if let Some(o) = ctx.hint_glyph(&glyf, &loca, gid, ppem, upm) {
+                if let Some(o) = ctx.hint_glyph(&glyf, &loca, gid) {
                     daegun::daecore::daetype::hinting::draw_hinted(&o, &mut f);
                 }
             }
@@ -213,7 +213,7 @@ fn instanced_fonts() {
         ("inter/InterVariable.ttf", &[("wght", 700.0)]),
         ("eb-garamond/EBGaramond.ttf", &[("wght", 600.0)]),
         ("source-serif/SourceSerif4Variable-Roman.otf", &[("wght", 500.0)]),
-        ("colr-v1-test-glyphs/test_glyphs_variable.ttf", &[("wght", 500.0)]),
+        ("colr-v1-test-glyphs/test_glyphs_variable.ttf", &[("ROTA", 270.0), ("SCSX", 1.5), ("GRR0", -500.0), ("COL1", 1.0), ("CLXI", 100.0)]),
     ];
     let mut f = Fnv::new();
     for (rel, axes) in AXES {
@@ -225,7 +225,7 @@ fn instanced_fonts() {
             Err(e) => f.bytes(e.as_bytes()),
         }
     }
-    check("instanced fonts", f.done(), 0x1fc2_26de_d57f_6374);
+    check("instanced fonts", f.done(), 0x266f_2a55_f06c_0f1c);
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn subset_fonts() {
             Err(e) => f.bytes(e.as_bytes()),
         }
     }
-    check("subset fonts", f.done(), 0xc03a_ab76_96bc_87af);
+    check("subset fonts", f.done(), 0xc4a4_5883_a7b1_11ff);
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn color_glyphs() {
             }
         }
     }
-    check("color glyphs", f.done(), 0x34ed_518f_2325_865b);
+    check("color glyphs", f.done(), 0xc19a_a1b8_5271_a959);
 }
 
 #[test]

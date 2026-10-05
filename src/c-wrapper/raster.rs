@@ -5,11 +5,11 @@
 
 use alloc::vec::Vec;
 
-use crate::{Font, HintMode};
+use crate::Font;
 
-use crate::ffi::handle::{Status, borrow, deliver, release};
+use crate::ffi::handle::{Status, borrow, deliver, release, slice_of};
 use crate::ffi::list::{Axis, axes_of};
-use crate::ffi::options::RasterOptionsC;
+use crate::ffi::options::hint_of;
 use crate::ffi::pen::{Pen, PenBridge};
 
 #[unsafe(no_mangle)]
@@ -21,9 +21,21 @@ pub unsafe extern "C" fn daegun_font_outline_glyph(
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(pen) = (unsafe { borrow(pen) }) else { return Status::Null };
     let mut bridge = PenBridge(*pen);
-    match font.outline_glyph(gid, &mut bridge) {
-        Some(()) => Status::Ok,
-        None => Status::Absent,
+    outline_status(font, gid, &[], &mut bridge)
+}
+
+// ABSENT for a glyph the font does not have, PARSE with the decoder's reason for one it has that does
+// not decode.
+fn outline_status(font: &Font, gid: u16, axes: &[(&str, f64)], pen: &mut PenBridge) -> Status {
+    if gid >= font.num_glyphs() {
+        return Status::Absent;
+    }
+    match font.outline_glyph_drawn(gid, &crate::daecore::cache::canonical_axes(axes), pen) {
+        Ok(()) => Status::Ok,
+        Err(reason) => {
+            crate::ffi::set_error(&reason);
+            Status::Parse
+        }
     }
 }
 
@@ -37,12 +49,9 @@ pub unsafe extern "C" fn daegun_font_outline_glyph_instanced(
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(pen) = (unsafe { borrow(pen) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let mut bridge = PenBridge(*pen);
-    match font.outline_glyph_instanced(gid, &location, &mut bridge) {
-        Some(()) => Status::Ok,
-        None => Status::Absent,
-    }
+    outline_status(font, gid, &location, &mut bridge)
 }
 
 #[unsafe(no_mangle)]
@@ -55,12 +64,8 @@ pub unsafe extern "C" fn daegun_font_prewarm(
     out_added: *mut usize,
 ) -> Status {
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    if gids.is_null() && gids_len != 0 {
-        return Status::Null;
-    }
-    let ids =
-        if gids_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(gids, gids_len) } };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(ids) = (unsafe { slice_of(gids, gids_len) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let added = font.prewarm(ids.iter().copied(), &location);
     if !out_added.is_null() {
         unsafe { *out_added = added };
@@ -73,114 +78,6 @@ pub unsafe extern "C" fn daegun_font_clear_prewarm(font: *const Font) -> Status 
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     font.clear_prewarm();
     Status::Ok
-}
-
-pub struct Bitmap {
-    metrics: MetricsC,
-    pixels: Vec<u8>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct MetricsC {
-    pub xmin: i32,
-    pub ymin: i32,
-    pub width: usize,
-    pub height: usize,
-    pub advance_width: f32,
-    pub advance_height: f32,
-    pub bounds_xmin: f32,
-    pub bounds_ymin: f32,
-    pub bounds_width: f32,
-    pub bounds_height: f32,
-}
-const _: () = assert!(size_of::<MetricsC>() == 48);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_bitmap_metrics(
-    bitmap: *const Bitmap,
-    out: *mut MetricsC,
-) -> Status {
-    let Some(b) = (unsafe { borrow(bitmap) }) else { return Status::Null };
-    if out.is_null() {
-        return Status::Null;
-    }
-    unsafe { *out = b.metrics };
-    Status::Ok
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_bitmap_pixels(
-    bitmap: *const Bitmap,
-    out_len: *mut usize,
-) -> *const u8 {
-    let Some(b) = (unsafe { borrow(bitmap) }) else { return core::ptr::null() };
-    if out_len.is_null() {
-        return core::ptr::null();
-    }
-    unsafe { *out_len = b.pixels.len() };
-    b.pixels.as_ptr()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_bitmap_free(bitmap: *mut Bitmap) {
-    unsafe { release(bitmap) }
-}
-
-pub(crate) fn wrap(g: crate::RasterizedGlyph) -> Bitmap {
-    let m = g.metrics;
-    Bitmap {
-        metrics: MetricsC {
-            xmin: m.xmin,
-            ymin: m.ymin,
-            width: m.width,
-            height: m.height,
-            advance_width: m.advance_width,
-            advance_height: m.advance_height,
-            bounds_xmin: m.bounds.xmin,
-            bounds_ymin: m.bounds.ymin,
-            bounds_width: m.bounds.width,
-            bounds_height: m.bounds.height,
-        },
-        pixels: g.bitmap,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_font_rasterize_glyph(
-    font: *const Font,
-    gid: u16,
-    px: f32,
-    axes: *const Axis,
-    axes_len: usize,
-    out: *mut *mut Bitmap,
-) -> Status {
-    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
-    let Some(g) = font.rasterize_glyph(gid, px, &location) else { return Status::Absent };
-    unsafe { deliver(out, wrap(g)) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn daegun_font_rasterize_glyph_with(
-    font: *const Font,
-    gid: u16,
-    px: f32,
-    axes: *const Axis,
-    axes_len: usize,
-    opts: *const RasterOptionsC,
-    out: *mut *mut Bitmap,
-) -> Status {
-    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
-    let options = match unsafe { borrow(opts) } {
-        Some(o) => o.to_rust(),
-        None => RasterOptionsC::DEFAULT.to_rust(),
-    };
-    let Some(g) = font.rasterize_glyph_with(gid, px, &location, &options) else {
-        return Status::Absent;
-    };
-    unsafe { deliver(out, wrap(g)) }
 }
 
 pub struct HintedOutline(crate::HintedOutline);
@@ -201,22 +98,13 @@ pub unsafe extern "C" fn daegun_font_hinted_glyph(
     hint_mode: i32,
     out: *mut *mut HintedOutline,
 ) -> Status {
-    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
-    let mode = match hint_mode {
-        crate::ffi::options::HINT_SUBPIXEL => HintMode::Subpixel,
-        crate::ffi::options::HINT_CLASSIC => HintMode::Classic,
-        crate::ffi::options::HINT_AUTO => HintMode::Auto,
-        crate::ffi::options::HINT_AUTO_FORCE => HintMode::AutoForce,
-        _ => HintMode::None,
-    };
-    let Some(h) = font.hinted_glyph(gid, px, &location, mode) else { return Status::Absent };
-    unsafe {
-        deliver(
-            out,
-            HintedOutline(h),
-        )
+    if out.is_null() {
+        return Status::Null;
     }
+    let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
+    let Some(h) = font.hinted_glyph(gid, px, &location, hint_of(hint_mode)) else { return Status::Absent };
+    unsafe { deliver(out, HintedOutline(h)) }
 }
 
 #[unsafe(no_mangle)]
@@ -227,20 +115,22 @@ pub unsafe extern "C" fn daegun_hinted_outline_points(
     out_y: *mut *const i32,
     out_flags: *mut *const u8,
 ) -> Status {
-    let Some(o) = (unsafe { borrow(outline) }) else { return Status::Null };
+    let Some(HintedOutline(crate::HintedOutline { x, y, flags, contour_ends: _ })) = (unsafe { borrow(outline) }) else {
+        return Status::Null;
+    };
     if out_count.is_null() {
         return Status::Null;
     }
     unsafe {
-        *out_count = o.0.x.len();
+        *out_count = x.len();
         if !out_x.is_null() {
-            *out_x = o.0.x.as_ptr();
+            *out_x = x.as_ptr();
         }
         if !out_y.is_null() {
-            *out_y = o.0.y.as_ptr();
+            *out_y = y.as_ptr();
         }
         if !out_flags.is_null() {
-            *out_flags = o.0.flags.as_ptr();
+            *out_flags = flags.as_ptr();
         }
     }
     Status::Ok
@@ -266,6 +156,7 @@ pub unsafe extern "C" fn daegun_hinted_outline_free(outline: *mut HintedOutline)
 
 pub struct CffHints {
     stems: Vec<f64>,
+    masks: Vec<(usize, Vec<u8>)>,
 }
 
 #[unsafe(no_mangle)]
@@ -274,14 +165,18 @@ pub unsafe extern "C" fn daegun_font_cff_hints(
     gid: u16,
     out: *mut *mut CffHints,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
-    let Some(h) = font.cff_hints(gid) else { return Status::Absent };
-    let stems: Vec<f64> = h
-        .stems
+    let Some(crate::CffHints { stems, masks }) = font.cff_hints(gid) else { return Status::Absent };
+    let stems = stems
         .iter()
-        .flat_map(|s| [f64::from(u8::from(s.vertical)), f64::from(s.min), f64::from(s.max)])
+        .flat_map(|&crate::CffStem { min, max, vertical }| {
+            [f64::from(u8::from(vertical)), f64::from(min), f64::from(max)]
+        })
         .collect();
-    unsafe { deliver(out, CffHints { stems }) }
+    unsafe { deliver(out, CffHints { stems, masks }) }
 }
 
 #[unsafe(no_mangle)]
@@ -298,6 +193,104 @@ pub unsafe extern "C" fn daegun_cff_hints_stems(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_cff_hints_mask_count(hints: *const CffHints, out: *mut usize) -> Status {
+    let Some(h) = (unsafe { borrow(hints) }) else { return Status::Null };
+    if out.is_null() {
+        return Status::Null;
+    }
+    unsafe { *out = h.masks.len() };
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_cff_hints_mask_at(
+    hints: *const CffHints,
+    index: usize,
+    out_point: *mut usize,
+    out_bits: *mut *const u8,
+    out_len: *mut usize,
+) -> Status {
+    let Some(h) = (unsafe { borrow(hints) }) else { return Status::Null };
+    let Some((point, bits)) = h.masks.get(index) else { return Status::Range };
+    unsafe {
+        if !out_point.is_null() {
+            *out_point = *point;
+        }
+        if !out_bits.is_null() {
+            *out_bits = bits.as_ptr();
+        }
+        if !out_len.is_null() {
+            *out_len = bits.len();
+        }
+    }
+    Status::Ok
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_cff_hints_free(hints: *mut CffHints) {
     unsafe { release(hints) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Every STIX glyph's hint masks read through C as Rust gives them, each mask's point and bits, and
+    // none past the last.
+    #[test]
+    fn cff_hint_masks_reach_c_as_rust_gives_them() {
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/test-fonts/stix-two-math/STIX2Math.otf")).unwrap();
+        let font = Font::from_bytes(&bytes).unwrap();
+        let mut handle = core::ptr::null_mut();
+        assert_eq!(unsafe { crate::ffi::daegun_font_open(bytes.as_ptr(), bytes.len(), &mut handle) }, Status::Ok);
+        let mut masked = 0;
+        for gid in 0..font.num_glyphs() {
+            let Some(want) = font.cff_hints(gid) else { continue };
+            let mut hints = core::ptr::null_mut();
+            assert_eq!(unsafe { daegun_font_cff_hints(handle, gid, &mut hints) }, Status::Ok);
+            let mut count = 0;
+            assert_eq!(unsafe { daegun_cff_hints_mask_count(hints, &mut count) }, Status::Ok);
+            assert_eq!(count, want.masks.len(), "glyph {gid}");
+            for (i, (point, bits)) in want.masks.iter().enumerate() {
+                let (mut at, mut data, mut len) = (0, core::ptr::null(), 0);
+                assert_eq!(unsafe { daegun_cff_hints_mask_at(hints, i, &mut at, &mut data, &mut len) }, Status::Ok);
+                let got = unsafe { core::slice::from_raw_parts(data, len) };
+                assert_eq!((at, got), (*point, &bits[..]), "glyph {gid} mask {i}");
+            }
+            let none = core::ptr::null_mut();
+            let past = unsafe { daegun_cff_hints_mask_at(hints, count, none, core::ptr::null_mut(), none) };
+            assert_eq!(past, Status::Range);
+            masked += usize::from(count > 0);
+            unsafe { daegun_cff_hints_free(hints) };
+        }
+        assert!(masked > 1_000, "{masked} glyphs with masks");
+        unsafe { crate::ffi::daegun_font_free(handle) };
+    }
+
+    // EB Garamond with glyph `a`'s first two end points swapped, so it no longer decodes.
+    #[test]
+    fn a_glyph_that_does_not_decode_is_a_parse_error_not_an_absence() {
+        use crate::daecore::daetype::decoder::{build_ttf, extract_ttf_tables};
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/test-fonts/eb-garamond/EBGaramond.ttf")).unwrap();
+        let font = Font::from_bytes(&bytes).unwrap();
+        let a = font.glyph_id('a' as u32).unwrap();
+        let mut map: alloc::collections::BTreeMap<alloc::string::String, Vec<u8>> =
+            extract_ttf_tables(&bytes).unwrap().into_iter().map(|(t, d)| (t, d.to_vec())).collect();
+        let loca = crate::daecore::daetype::instancer::parse_loca(&extract_ttf_tables(&bytes).unwrap(), 1, usize::from(font.num_glyphs())).unwrap();
+        let at = loca[usize::from(a)];
+        let glyf = map.get_mut("glyf").unwrap();
+        assert!(glyf[at + 1] >= 2, "a has two contours to swap");
+        glyf.swap(at + 10, at + 12);
+        glyf.swap(at + 11, at + 13);
+        let broken = build_ttf(&map);
+        let mut handle = core::ptr::null_mut();
+        assert_eq!(unsafe { crate::ffi::daegun_font_open(broken.as_ptr(), broken.len(), &mut handle) }, Status::Ok);
+        let pen = Pen { move_to: None, line_to: None, quad_to: None, curve_to: None, close: None, user: core::ptr::null_mut() };
+        assert_eq!(unsafe { daegun_font_outline_glyph(handle, a, &pen) }, Status::Parse);
+        let reason = crate::ffi::daegun_last_error();
+        let reason = unsafe { core::slice::from_raw_parts(reason.data.cast::<u8>(), reason.len) };
+        assert!(core::str::from_utf8(reason).unwrap().contains("end points"));
+        assert_eq!(unsafe { daegun_font_outline_glyph(handle, u16::MAX, &pen) }, Status::Absent);
+        unsafe { crate::ffi::daegun_font_free(handle) };
+    }
 }

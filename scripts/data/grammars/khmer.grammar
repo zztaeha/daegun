@@ -12,8 +12,8 @@
 # **This is the one grammar where the spec is not the whole answer**, and it is worth saying why. The
 # reference implementation records that its own matra handling was worked out experimentally from
 # what Uniscribe accepts rather than from any specification. So the productions below start from the
-# published order and are then closed against the machine's observed behaviour, proved identical by
-# scripts/verify-syllable-equivalence.py — every input of every length, not a sample.
+# published order and are then closed against the machine's observed behavior, proved identical by
+# scripts/verify-syllable-equivalence.py – every input of every length, not a sample.
 #
 # **The table's classes are finer than the spec's.** The spec has one Cons; the table separates Ra,
 # because Ra is what becomes a robat. Its four vowel positions arrive as VPre, VBlw, VAbv and VPst,
@@ -51,7 +51,7 @@ definitions:
   y_signs = Ygroup*
 
   # The spec's `[PreV | BlwV] + [RegShift] + [AbvV] + {AbvS} + [PstV] + [PstS]`, matched in *written*
-  # order — before, below, above, after — whatever order the characters arrived in. That is what
+  # order – before, below, above, after – whatever order the characters arrived in. That is what
   # makes the reordering pass's job well defined.
   vowels_in_written_order = VPre? x_signs VBlw? x_signs (joiner? VAbv)? x_signs VPst?
   after_base = x_signs vowels_in_written_order x_signs (H c)? y_signs
@@ -63,7 +63,7 @@ syllables:
   # with nothing under it ends the syllable, which is the bare `H` alternative.
   consonant_syllable = (consonant_with_robat | PLACEHOLDER | DOTTEDCIRCLE) (Robatic? (H consonant_with_robat)* (H | after_base))
   # Not in the spec, and required by it: "if an invalid combination is found ... a new cluster will be
-  # formed that has the dotted circle as the base glyph". This is that cluster — the syllable with
+  # formed that has the dotted circle as the base glyph". This is that cluster – the syllable with
   # its base missing.
   broken_cluster     = Robatic? (H consonant_with_robat)* (H | after_base)
   non_khmer_cluster  = any

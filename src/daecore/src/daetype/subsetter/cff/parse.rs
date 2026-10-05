@@ -3,7 +3,8 @@ use alloc::vec::Vec;
 use crate::daecore::daetype::decoder::{read_u16_be, read_u32_be};
 use crate::daecore::daetype::format::cff::{walk_cff_dict, DictFlow, DictKind, DictOp};
 
-pub fn cff_index_spans(data: &[u8], off: usize, count_is_32bit: bool) -> Result<(Vec<(u32, u32)>, usize), String> {
+// An INDEX's count and offSize, and where its offsets and data start (both its end when it is empty).
+fn index_header(data: &[u8], off: usize, count_is_32bit: bool) -> Result<(usize, usize, usize, usize), String> {
     if data.len() > u32::MAX as usize {
         return Err("CFF INDEX: table larger than a CFF table can be".into());
     }
@@ -17,7 +18,7 @@ pub fn cff_index_spans(data: &[u8], off: usize, count_is_32bit: bool) -> Result<
         read_u16_be(data, off).ok_or("CFF INDEX: truncated")? as usize
     };
     if count == 0 {
-        return Ok((Vec::new(), off + count_size));
+        return Ok((0, 0, off + count_size, off + count_size));
     }
     if off + count_size + 1 > data.len() {
         return Err("CFF INDEX: missing offSize".into());
@@ -36,19 +37,42 @@ pub fn cff_index_spans(data: &[u8], off: usize, count_is_32bit: bool) -> Result<
     if data_start > data.len() {
         return Err("CFF INDEX: offsets array does not fit in the buffer".into());
     }
+    Ok((count, off_size, offsets_start, data_start))
+}
 
-    let mut offsets = Vec::with_capacity(offsets_count);
-    for i in 0..offsets_count {
-        let o = offsets_start + i * off_size;
-        if o + off_size > data.len() {
-            return Err("CFF INDEX: offsets truncated".into());
-        }
-        let mut v = 0usize;
-        for j in 0..off_size {
-            v = (v << 8) | data[o + j] as usize;
-        }
-        offsets.push(v);
+fn index_offset(data: &[u8], at: usize, off_size: usize) -> usize {
+    data[at..at + off_size].iter().fold(0, |v, &b| (v << 8) | usize::from(b))
+}
+
+// Where an INDEX ends, read from its last offset alone, for one whose objects are not wanted.
+pub fn cff_index_end(data: &[u8], off: usize, count_is_32bit: bool) -> Result<usize, String> {
+    let (count, off_size, offsets_start, data_start) = index_header(data, off, count_is_32bit)?;
+    if count == 0 {
+        return Ok(data_start);
     }
+    let data_len = index_offset(data, offsets_start + count * off_size, off_size).saturating_sub(1);
+    data_start.checked_add(data_len).filter(|&end| end <= data.len()).ok_or_else(|| "CFF INDEX: data truncated".into())
+}
+
+// An INDEX's object count, from its header alone.
+pub(crate) fn cff_index_count(data: &[u8], off: usize) -> Result<usize, String> {
+    index_header(data, off, false).map(|(count, ..)| count)
+}
+
+// One object of an INDEX, read through its two offsets without the others.
+pub(crate) fn cff_index_entry(data: &[u8], off: usize, i: usize) -> Option<&[u8]> {
+    let (count, off_size, offsets_start, data_start) = index_header(data, off, false).ok()?;
+    if i >= count { return None; }
+    let at = |k: usize| index_offset(data, offsets_start + k * off_size, off_size).checked_sub(1);
+    data.get(data_start.checked_add(at(i)?)?..data_start.checked_add(at(i + 1)?)?)
+}
+
+pub fn cff_index_spans(data: &[u8], off: usize, count_is_32bit: bool) -> Result<(Vec<(u32, u32)>, usize), String> {
+    let (count, off_size, offsets_start, data_start) = index_header(data, off, count_is_32bit)?;
+    if count == 0 {
+        return Ok((Vec::new(), data_start));
+    }
+    let offsets: Vec<usize> = (0..=count).map(|i| index_offset(data, offsets_start + i * off_size, off_size)).collect();
 
     let data_len = offsets[count].saturating_sub(1);
     if data_start.checked_add(data_len).is_none_or(|end| end > data.len()) {
@@ -185,11 +209,7 @@ where
         }
         1 | 2 => {
             let mut gid = 1usize;
-            let mut steps = 0usize;
-            let steps_cap = n_glyphs.max(cff.len());
             while gid < n_glyphs {
-                steps += 1;
-                if steps > steps_cap { break; }
                 let need = if format == 1 { 3 } else { 4 };
                 if pos + need > cff.len() {
                     return Err(format!("CFF charset format {}: truncated", format));
@@ -272,4 +292,24 @@ pub fn parse_fd_dict_private(dict: &[u8]) -> (usize, usize, Option<Vec<u8>>) {
         DictFlow::Continue
     });
     (priv_size, priv_off, font_matrix_raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::build::encode_cff_index;
+
+    // An INDEX's end from its last offset is where reading every object ends, for each offSize.
+    #[test]
+    fn an_index_ends_where_its_objects_do() {
+        for len in [0, 10, 300, 70_000] {
+            let mut data = vec![7u8; 3];
+            data.extend(encode_cff_index(&[vec![1; len], vec![2; 5]]).expect("an INDEX"));
+            data.extend([9; 4]);
+            let end = cff_index_spans(&data, 3, false).expect("it parses").1;
+            assert_eq!(cff_index_end(&data, 3, false), Ok(end));
+            assert!(cff_index_end(&data[..end - 1], 3, false).is_err());
+        }
+        assert_eq!(cff_index_end(&[0, 0, 0, 0], 0, true), Ok(4));
+    }
 }

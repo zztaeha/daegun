@@ -33,7 +33,7 @@ JT_BY_LETTER = {"U": JT_U, "L": JT_L, "R": JT_R, "D": JT_D, "C": JT_D, "T": JT_T
 def data_path(name):
     p = os.path.join(DATA, name)
     if not os.path.exists(p):
-        sys.exit("missing {} — see this file's docstring for the fetch command".format(p))
+        sys.exit("missing {} – see this file's docstring for the fetch command".format(p))
     return p
 
 def parse_semicolon_ranges(name, wanted=None, value_col=1):
@@ -114,7 +114,7 @@ def check_values(source, raw, known):
         sys.exit(
             "{}: {} this generator does not number: {}\n"
             "  Add each to the matching list, and check whether the Rust side needs to know about it"
-            " too — the numbering is shared with daeshaper/unicode/.".format(
+            " too – the numbering is shared with daeshaper/unicode/.".format(
                 source, "a value" if len(unknown) == 1 else "values", ", ".join(unknown)))
 
 def merge_named_ranges(raw, encode, default):
@@ -157,8 +157,8 @@ def emit_trie(f, columns):
 
     f.write("""// Every per-codepoint property, in one record.
 //
-// Thirteen sorted range tables used to answer thirteen separate binary searches for the same
-// codepoint. This is all thirteen at once, reached by three array indexes.
+// All thirteen at once for a codepoint, reached by three array indexes rather than a binary search
+// through each of thirteen sorted range tables.
 #[derive(Clone, Copy)]
 pub(crate) struct Props {
 """)
@@ -195,7 +195,7 @@ def bidi_long_to_short():
             parts = [p.strip() for p in line.split("#", 1)[0].split(";")]
             if len(parts) >= 3 and parts[0] == "bc":
                 out[parts[2]] = parts[1]
-    assert out, "PropertyValueAliases.txt lists no bidi classes — its shape changed"
+    assert out, "PropertyValueAliases.txt lists no bidi classes – its shape changed"
     return out
 
 def parse_bidi_missing(name):
@@ -452,7 +452,7 @@ def main():
             "DECOMPOSE_PAIR's BMP rows are no longer a sorted prefix; COMPOSE_INDEX would name the wrong entries"
 
         f.write("// Canonical pair decompositions, composed form and both parts all in the BMP.\n")
-        f.write("// Half the width of the `u32` triple this was, and it holds all but 46 of the rows.\n")
+        f.write("// Half the width of a `u32` triple, and it holds all but 46 of the rows.\n")
         f.write("pub(crate) static DECOMPOSE_PAIR_BMP: &[(u16, u16, u16)] = &[\n")
         for cp, a, b in pair_bmp:
             f.write("    (0x{:04X}, 0x{:04X}, 0x{:04X}),\n".format(cp, a, b))
@@ -475,9 +475,8 @@ def main():
             "a supplementary singleton decomposition appeared outside the CJK compatibility block"
 
         f.write("// Singleton decompositions of the CJK compatibility ideographs, indexed by\n")
-        f.write("// `codepoint - DECOMPOSE_SINGLE_CJK_BASE`. The block is dense, so the keys were\n")
-        f.write("// half the table and every one of them was derivable — this drops them and turns\n")
-        f.write("// the bisection into an index.\n")
+        f.write("// `codepoint - DECOMPOSE_SINGLE_CJK_BASE`. The block is dense, so keys would be\n")
+        f.write("// half the table and every one derivable: without them a bisection is an index.\n")
         f.write("pub(crate) const DECOMPOSE_SINGLE_CJK_BASE: u32 = 0x{:05X};\n".format(cjk_base))
         f.write("pub(crate) static DECOMPOSE_SINGLE_CJK: &[u32; {}] = &[\n".format(len(cjk)))
         for i in range(0, len(cjk), 8):
@@ -509,7 +508,7 @@ def main():
         assert all(a <= 0xFFFF and b <= 0xFFFF for a, b in mirroring), \
             "a mirrored pair left the BMP; MIRRORING can no longer be u16"
         f.write("// `(codepoint, its mirror)`, sorted. Both fit a `u16`: mirroring is a BMP-only\n")
-        f.write("// property, which halves the table against the `u32` pair it used to be.\n")
+        f.write("// property, which halves the table against a `u32` pair.\n")
         f.write("pub(crate) static MIRRORING: &[(u16, u16)] = &[\n")
         for a, b in mirroring:
             f.write("    (0x{:04X}, 0x{:04X}),\n".format(a, b))

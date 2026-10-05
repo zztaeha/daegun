@@ -6,9 +6,11 @@ use super::super::format::ivs::{parse_item_variation_store, parse_delta_set_inde
 use super::super::format::round::ot_round;
 use crate::daecore::daetype::TableBytes;
 
-pub fn expand_metrics(mtx_data: &[u8], num_glyphs: usize, long_metrics: usize) -> Vec<u8> {
+// Every glyph its own long metric, with the count the data then holds. A count of 0 has no advance
+// to repeat, so that data is kept as it is, with its count.
+pub fn expand_metrics(mtx_data: &[u8], num_glyphs: usize, long_metrics: usize) -> (Vec<u8>, usize) {
     if long_metrics >= num_glyphs || long_metrics == 0 {
-        return mtx_data.to_vec();
+        return (mtx_data.to_vec(), long_metrics);
     }
     let last_advance = read_u16_be(mtx_data, (long_metrics - 1) * 4).unwrap_or(0);
     let mut out = Vec::with_capacity(num_glyphs * 4);
@@ -25,30 +27,10 @@ pub fn expand_metrics(mtx_data: &[u8], num_glyphs: usize, long_metrics: usize) -
         out.extend_from_slice(&advance.to_be_bytes());
         out.extend_from_slice(&lsb.to_be_bytes());
     }
-    out
+    (out, num_glyphs)
 }
 
-pub fn apply_hvar(
-    table_map:  &BTreeMap<String, TableBytes>,
-    hmtx_data:  &mut [u8],
-    num_glyphs: usize,
-    long_metrics: usize,
-    location:   &[f64],
-) -> Result<(), String> {
-    apply_metric_var(table_map, "HVAR", hmtx_data, num_glyphs, long_metrics, location)
-}
-
-pub fn apply_vvar(
-    table_map:  &BTreeMap<String, TableBytes>,
-    vmtx_data:  &mut [u8],
-    num_glyphs: usize,
-    long_metrics: usize,
-    location:   &[f64],
-) -> Result<(), String> {
-    apply_metric_var(table_map, "VVAR", vmtx_data, num_glyphs, long_metrics, location)
-}
-
-fn apply_metric_var(
+pub(crate) fn apply_metric_var(
     table_map:  &BTreeMap<String, TableBytes>,
     var_tag:    &str,
     mtx_data:   &mut [u8],
@@ -85,4 +67,72 @@ fn apply_metric_var(
         write_u16_be(mtx_data, aw_off, aw.saturating_add(delta).clamp(0, 65535) as u16);
     }
     Ok(())
+}
+
+// HVAR's lsb and VVAR's tsb mappings, read only where a font has no phantom points to give them
+// (CFF2); a NULL mapping means the font varies no bearings.
+pub(crate) fn apply_bearing_var(
+    table_map: &BTreeMap<String, TableBytes>,
+    var_tag: &str,
+    mtx_data: &mut [u8],
+    num_glyphs: usize,
+    long_metrics: usize,
+    location: &[f64],
+) -> Result<(), String> {
+    let Some(var) = table_map.get(var_tag) else { return Ok(()) };
+    let map_off = read_u32_be(var, 12).ok_or_else(|| format!("{}: header truncated", var_tag))? as usize;
+    if map_off == 0 {
+        return Ok(());
+    }
+    let store = parse_item_variation_store(var, read_u32_be(var, 4).unwrap_or(0) as usize)?;
+    let map = parse_delta_set_index_map(var, map_off)?;
+    let scalars = precompute_region_scalars(&store, location);
+    for gid in 0..num_glyphs {
+        let (outer, inner) = delta_set_index_map_lookup(&map, gid);
+        let delta = ot_round(compute_ivs_delta_f64(&store, outer, inner, &scalars));
+        let at = if gid < long_metrics { gid * 4 + 2 } else { long_metrics * 4 + (gid - long_metrics) * 2 };
+        if delta == 0 || at + 2 > mtx_data.len() { continue; }
+        let bearing = i32::from(read_u16_be(mtx_data, at).unwrap_or(0) as i16);
+        write_u16_be(mtx_data, at, bearing.saturating_add(delta).clamp(-32768, 32767) as i16 as u16);
+    }
+    Ok(())
+}
+
+// VORG at the location: each glyph's origin moved by VVAR's vOrg mapping, written out as a record
+// wherever it now differs from the default.
+pub(crate) fn vary_vorg(table_map: &BTreeMap<String, TableBytes>, num_glyphs: usize, location: &[f64]) -> Option<Vec<u8>> {
+    let (vorg, vvar) = (table_map.get("VORG")?, table_map.get("VVAR")?);
+    let map_off = read_u32_be(vvar, 20)? as usize;
+    if map_off == 0 {
+        return None;
+    }
+    let store = parse_item_variation_store(vvar, read_u32_be(vvar, 4)? as usize).ok()?;
+    let map = parse_delta_set_index_map(vvar, map_off).ok()?;
+    let scalars = precompute_region_scalars(&store, location);
+    let default = read_u16_be(vorg, 4)? as i16;
+    let count = usize::from(read_u16_be(vorg, 6)?).min(vorg.len().saturating_sub(8) / 4);
+    let mut origins = alloc::vec![i32::from(default); num_glyphs];
+    for i in 0..count {
+        let gid = usize::from(read_u16_be(vorg, 8 + 4 * i)?);
+        if let Some(o) = origins.get_mut(gid) {
+            *o = i32::from(read_u16_be(vorg, 10 + 4 * i)? as i16);
+        }
+    }
+    let mut records = Vec::new();
+    for (gid, origin) in origins.iter().enumerate() {
+        let (outer, inner) = delta_set_index_map_lookup(&map, gid);
+        let y = origin.saturating_add(ot_round(compute_ivs_delta_f64(&store, outer, inner, &scalars))).clamp(-32768, 32767);
+        if y != i32::from(default) {
+            records.push((gid as u16, y as i16));
+        }
+    }
+    let mut out = Vec::with_capacity(8 + 4 * records.len());
+    out.extend_from_slice(&vorg[..4]);
+    out.extend_from_slice(&default.to_be_bytes());
+    out.extend_from_slice(&u16::try_from(records.len()).ok()?.to_be_bytes());
+    for (gid, y) in records {
+        out.extend_from_slice(&gid.to_be_bytes());
+        out.extend_from_slice(&y.to_be_bytes());
+    }
+    Some(out)
 }

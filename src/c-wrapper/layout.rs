@@ -7,9 +7,18 @@ use core::ffi::c_char;
 
 use crate::{Font, JustifyOptions, LayoutOptions};
 
-use crate::ffi::handle::{Status, borrow, deliver, release};
-use crate::ffi::list::{Axis, U16List, U32List, axes_of};
-use crate::ffi::shape::{Run, str_of};
+use crate::ffi::handle::{Status, borrow, deliver, release, str_of};
+use crate::ffi::list::{Axis, U32List, axes_of};
+use crate::ffi::shape::Run;
+
+// 0 left to right, 1 right to left, and -1 or anything else left to the first strong character.
+fn base_of(base: i32) -> Option<bool> {
+    match base {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
 
 #[repr(transparent)]
 pub struct JstfMods(crate::JstfModLists);
@@ -21,6 +30,9 @@ pub unsafe extern "C" fn daegun_font_justification_priorities(
     lang_sys_tag: *const c_char,
     out: *mut *mut JstfPriorities,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(tag) = (unsafe { str_of(script_tag) }) else { return Status::Null };
     let lang = unsafe { str_of(lang_sys_tag) };
@@ -65,6 +77,58 @@ pub unsafe extern "C" fn daegun_jstf_priorities_free(p: *mut JstfPriorities) {
     unsafe { release(p) }
 }
 
+pub const JSTF_SHRINKAGE_ENABLE_GSUB: i32 = 0;
+pub const JSTF_SHRINKAGE_DISABLE_GSUB: i32 = 1;
+pub const JSTF_SHRINKAGE_ENABLE_GPOS: i32 = 2;
+pub const JSTF_SHRINKAGE_DISABLE_GPOS: i32 = 3;
+pub const JSTF_EXTENSION_ENABLE_GSUB: i32 = 4;
+pub const JSTF_EXTENSION_DISABLE_GSUB: i32 = 5;
+pub const JSTF_EXTENSION_ENABLE_GPOS: i32 = 6;
+pub const JSTF_EXTENSION_DISABLE_GPOS: i32 = 7;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn daegun_jstf_mods_lookups(
+    mods: *const JstfMods,
+    which: i32,
+    out: *mut *const u16,
+    out_count: *mut usize,
+) -> Status {
+    let Some(JstfMods(crate::JstfModLists {
+        shrinkage_enable_gsub,
+        shrinkage_disable_gsub,
+        shrinkage_enable_gpos,
+        shrinkage_disable_gpos,
+        extension_enable_gsub,
+        extension_disable_gsub,
+        extension_enable_gpos,
+        extension_disable_gpos,
+    })) = (unsafe { borrow(mods) })
+    else {
+        return Status::Null;
+    };
+    let list = match which {
+        JSTF_SHRINKAGE_ENABLE_GSUB => shrinkage_enable_gsub,
+        JSTF_SHRINKAGE_DISABLE_GSUB => shrinkage_disable_gsub,
+        JSTF_SHRINKAGE_ENABLE_GPOS => shrinkage_enable_gpos,
+        JSTF_SHRINKAGE_DISABLE_GPOS => shrinkage_disable_gpos,
+        JSTF_EXTENSION_ENABLE_GSUB => extension_enable_gsub,
+        JSTF_EXTENSION_DISABLE_GSUB => extension_disable_gsub,
+        JSTF_EXTENSION_ENABLE_GPOS => extension_enable_gpos,
+        JSTF_EXTENSION_DISABLE_GPOS => extension_disable_gpos,
+        _ => return Status::Range,
+    };
+    let Some(list) = list else { return Status::Absent };
+    unsafe {
+        if !out.is_null() {
+            *out = list.as_ptr();
+        }
+        if !out_count.is_null() {
+            *out_count = list.len();
+        }
+    }
+    Status::Ok
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_font_shape_justified(
     font: *const Font,
@@ -76,10 +140,13 @@ pub unsafe extern "C" fn daegun_font_shape_justified(
     shrink: bool,
     out: *mut *mut Run,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
     let Some(mods) = (unsafe { borrow(mods) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let Some(r) = font.shape_justified(text, &location, vertical, &mods.0, shrink) else {
         return Status::Absent;
     };
@@ -108,30 +175,27 @@ pub unsafe extern "C" fn daegun_font_justify(
     tolerance: f64,
     out: *mut *mut Justified,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
     let Some(script) = (unsafe { str_of(script_tag) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
     let opts = JustifyOptions {
         script_tag: script,
         lang_sys_tag: unsafe { str_of(lang_sys_tag) },
         target_width,
         tolerance,
     };
-    let Some(j) = font.justify(text, &location, vertical, &opts) else { return Status::Absent };
-    unsafe {
-        deliver(
-            out,
-            Justified {
-                run: Run::of(&j.run),
-                has_level: j.level.is_some(),
-                level: j.level.unwrap_or(0),
-                shrink: j.shrink,
-                width: j.width,
-                best_effort: j.best_effort,
-            },
-        )
-    }
+    let Some(crate::Justified { run, level, shrink, width, best_effort }) =
+        font.justify(text, &location, vertical, &opts)
+    else {
+        return Status::Absent;
+    };
+    let run = Run::of(&run);
+    let built = Justified { run, has_level: level.is_some(), level: level.unwrap_or(0), shrink, width, best_effort };
+    unsafe { deliver(out, built) }
 }
 
 #[unsafe(no_mangle)]
@@ -179,6 +243,16 @@ pub unsafe extern "C" fn daegun_justified_free(j: *mut Justified) {
 
 pub struct BidiRuns(Vec<BidiRunEntry>);
 
+impl BidiRuns {
+    fn of(runs: Vec<crate::BidiRun>) -> BidiRuns {
+        BidiRuns(
+            runs.into_iter()
+                .map(|crate::BidiRun { run, level, chars }| BidiRunEntry { run: Run::of(&run), level, chars })
+                .collect(),
+        )
+    }
+}
+
 struct BidiRunEntry {
     run: Run,
     level: u8,
@@ -194,20 +268,15 @@ pub unsafe extern "C" fn daegun_font_shape_bidi(
     base: i32,
     out: *mut *mut BidiRuns,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
-    let base = match base {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
-    };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
+    let base = base_of(base);
     let Some(runs) = font.shape_bidi(text, &location, base) else { return Status::Absent };
-    let built = runs
-        .iter()
-        .map(|r| BidiRunEntry { run: Run::of(&r.run), level: r.level, chars: r.chars.clone() })
-        .collect();
-    unsafe { deliver(out, BidiRuns(built)) }
+    unsafe { deliver(out, BidiRuns::of(runs)) }
 }
 
 #[unsafe(no_mangle)]
@@ -220,28 +289,28 @@ pub unsafe extern "C" fn daegun_font_shape_bidi_with(
     opts: *const crate::ffi::shape::ShapeOptionsC,
     out: *mut *mut BidiRuns,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
-    let base = match base {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
-    };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
+    let base = base_of(base);
     let feats;
-    let mut built = crate::ShapeOptions::default();
-    if let Some(o) = unsafe { borrow(opts) } {
-        feats = unsafe { crate::ffi::shape::apply_options(o, &mut built) };
-        built.features = &feats;
-    }
+    let built = match unsafe { borrow(opts) } {
+        None => crate::ShapeOptions::default(),
+        Some(o) => {
+            let Some(f) = (unsafe { crate::ffi::shape::features_of(o.features, o.features_len) }) else {
+                return Status::Null;
+            };
+            feats = f;
+            unsafe { crate::ffi::shape::options_of(o, &feats) }
+        }
+    };
     let Some(runs) = font.shape_bidi_with(text, &location, base, &built) else {
         return Status::Absent;
     };
-    let built_runs = runs
-        .iter()
-        .map(|r| BidiRunEntry { run: Run::of(&r.run), level: r.level, chars: r.chars.clone() })
-        .collect();
-    unsafe { deliver(out, BidiRuns(built_runs)) }
+    unsafe { deliver(out, BidiRuns::of(runs)) }
 }
 
 #[unsafe(no_mangle)]
@@ -305,6 +374,38 @@ pub const ORIENTATION_SIDEWAYS: i32 = 2;
 
 pub const BREAK_GREEDY: i32 = 0;
 pub const BREAK_OPTIMAL: i32 = 1;
+
+pub(crate) fn align_of(code: i32) -> crate::Align {
+    match code {
+        ALIGN_END => crate::Align::End,
+        ALIGN_CENTER => crate::Align::Center,
+        ALIGN_JUSTIFY => crate::Align::Justify,
+        _ => crate::Align::Start,
+    }
+}
+
+pub(crate) fn writing_mode_of(code: i32) -> crate::WritingMode {
+    match code {
+        WRITING_VERTICAL_RL => crate::WritingMode::VerticalRl,
+        WRITING_VERTICAL_LR => crate::WritingMode::VerticalLr,
+        _ => crate::WritingMode::Horizontal,
+    }
+}
+
+pub(crate) fn orientation_of(code: i32) -> crate::TextOrientation {
+    match code {
+        ORIENTATION_UPRIGHT => crate::TextOrientation::Upright,
+        ORIENTATION_SIDEWAYS => crate::TextOrientation::Sideways,
+        _ => crate::TextOrientation::Mixed,
+    }
+}
+
+pub(crate) fn strategy_of(code: i32) -> crate::BreakStrategy {
+    match code {
+        BREAK_OPTIMAL => crate::BreakStrategy::Optimal,
+        _ => crate::BreakStrategy::Greedy,
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -385,82 +486,59 @@ pub unsafe extern "C" fn daegun_font_layout(
     opts: *const LayoutOptionsC,
     out: *mut *mut Layout,
 ) -> Status {
+    if out.is_null() {
+        return Status::Null;
+    }
     let Some(font) = (unsafe { borrow(font) }) else { return Status::Null };
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let location = unsafe { axes_of(axes, axes_len) };
+    let Some(location) = (unsafe { axes_of(axes, axes_len) }) else { return Status::Null };
 
-    let mut built = LayoutOptions::default();
-    if let Some(o) = unsafe { borrow(opts) } {
-        built.max_inline_size = o.max_inline_size;
-        built.align = match o.align {
-            ALIGN_END => crate::Align::End,
-            ALIGN_CENTER => crate::Align::Center,
-            ALIGN_JUSTIFY => crate::Align::Justify,
-            _ => crate::Align::Start,
-        };
-        built.writing_mode = match o.writing_mode {
-            WRITING_VERTICAL_RL => crate::WritingMode::VerticalRl,
-            WRITING_VERTICAL_LR => crate::WritingMode::VerticalLr,
-            _ => crate::WritingMode::Horizontal,
-        };
-        built.text_orientation = match o.text_orientation {
-            ORIENTATION_UPRIGHT => crate::TextOrientation::Upright,
-            ORIENTATION_SIDEWAYS => crate::TextOrientation::Sideways,
-            _ => crate::TextOrientation::Mixed,
-        };
-        built.base_direction = match o.base_direction {
-            0 => Some(false),
-            1 => Some(true),
-            _ => None,
-        };
-        built.language = unsafe { str_of(o.language) };
-        built.line_height = o.has_line_height.then_some(o.line_height);
-        built.strategy = match o.strategy {
-            BREAK_OPTIMAL => crate::BreakStrategy::Optimal,
-            _ => crate::BreakStrategy::Greedy,
-        };
-        built.max_lines = o.has_max_lines.then_some(o.max_lines);
-    }
+    let built = match unsafe { borrow(opts) } {
+        None => LayoutOptions::default(),
+        Some(o) => LayoutOptions {
+            max_inline_size: o.max_inline_size,
+            align: align_of(o.align),
+            writing_mode: writing_mode_of(o.writing_mode),
+            text_orientation: orientation_of(o.text_orientation),
+            base_direction: base_of(o.base_direction),
+            language: unsafe { str_of(o.language) },
+            line_height: o.has_line_height.then_some(o.line_height),
+            strategy: strategy_of(o.strategy),
+            max_lines: o.has_max_lines.then_some(o.max_lines),
+        },
+    };
 
-    let Some(l) = font.layout(text, &location, &built) else { return Status::Absent };
-    let lines = l
-        .lines
-        .iter()
-        .map(|line| LayoutLineEntry {
-            runs: line
-                .runs
-                .iter()
-                .map(|r| PositionedRunEntry {
-                    run: Run::of(&r.run),
-                    offset_x: r.offset.0,
-                    offset_y: r.offset.1,
-                    level: r.level,
-                    char_start: r.chars.0,
-                    char_end: r.chars.1,
-                    upright: r.upright,
-                })
-                .collect(),
-            char_start: line.chars.0,
-            char_end: line.chars.1,
-            baseline: line.baseline,
-            inline_size: line.inline_size,
-            ascent: line.ascent,
-            descent: line.descent,
-            hard_break: line.hard_break,
+    let Some(crate::TextLayout { lines, inline_size, block_size, truncated }) = font.layout(text, &location, &built)
+    else {
+        return Status::Absent;
+    };
+    let run_of = |crate::PositionedRun { run, offset, level, chars, upright }: crate::PositionedRun| {
+        PositionedRunEntry {
+            run: Run::of(&run),
+            offset_x: offset.0,
+            offset_y: offset.1,
+            level,
+            char_start: chars.0,
+            char_end: chars.1,
+            upright,
+        }
+    };
+    let lines = lines
+        .into_iter()
+        .map(|crate::LayoutLine { runs, chars, baseline, inline_size, ascent, descent, hard_break }| LayoutLineEntry {
+            runs: runs.into_iter().map(run_of).collect(),
+            char_start: chars.0,
+            char_end: chars.1,
+            baseline,
+            inline_size,
+            ascent,
+            descent,
+            hard_break,
         })
         .collect();
-    unsafe {
-        deliver(
-            out,
-            Layout {
-                lines,
-                inline_size: l.inline_size,
-                block_size: l.block_size,
-                has_truncated: l.truncated.is_some(),
-                truncated: l.truncated.unwrap_or(0),
-            },
-        )
-    }
+    let has_truncated = truncated.is_some();
+    let built = Layout { lines, inline_size, block_size, has_truncated, truncated: truncated.unwrap_or(0) };
+    unsafe { deliver(out, built) }
 }
 
 #[unsafe(no_mangle)]
@@ -586,11 +664,7 @@ pub unsafe extern "C" fn daegun_layout_free(layout: *mut Layout) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn daegun_writing_mode_is_vertical(mode: i32) -> bool {
-    match mode {
-        WRITING_VERTICAL_RL => crate::WritingMode::VerticalRl.is_vertical(),
-        WRITING_VERTICAL_LR => crate::WritingMode::VerticalLr.is_vertical(),
-        _ => crate::WritingMode::Horizontal.is_vertical(),
-    }
+    writing_mode_of(mode).is_vertical()
 }
 
 pub struct BidiParagraph {
@@ -605,11 +679,7 @@ pub unsafe extern "C" fn daegun_text_bidi_paragraph(
     out: *mut *mut BidiParagraph,
 ) -> Status {
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let base = match base {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
-    };
+    let base = base_of(base);
     let para = crate::resolve_bidi(text, base);
     unsafe { deliver(out, BidiParagraph { para, text: alloc::string::String::from(text) }) }
 }
@@ -643,7 +713,7 @@ pub unsafe extern "C" fn daegun_text_line_visual_runs(
 ) -> Status {
     let Some(p) = (unsafe { borrow(p) }) else { return Status::Null };
     let runs = crate::line_visual_runs(&p.para, &p.text, start, end);
-    let built = runs.into_iter().map(|r| (r.chars, r.level)).collect();
+    let built = runs.into_iter().map(|crate::VisualRun { chars, level }| (chars, level)).collect();
     unsafe { deliver(out, VisualRuns(built)) }
 }
 
@@ -718,7 +788,7 @@ pub unsafe extern "C" fn daegun_text_line_break_opportunities(
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
     let breaks = crate::line_break_opportunities(text);
     if !out_at.is_null() {
-        let at: Vec<u32> = breaks.iter().map(|b| b.at as u32).collect();
+        let at: Vec<u32> = breaks.iter().map(|&crate::LineBreak { at, mandatory: _ }| at as u32).collect();
         let st = unsafe { deliver(out_at, U32List(at)) };
         if st != Status::Ok {
             return st;
@@ -739,10 +809,8 @@ pub unsafe extern "C" fn daegun_text_script_runs(
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
     let runs = crate::script_runs(text);
     let mut v = Vec::with_capacity(runs.len() * 3);
-    for r in &runs {
-        v.push(r.start as u32);
-        v.push(r.end as u32);
-        v.push(u32::from(r.script.0));
+    for &crate::ScriptRun { start, end, script } in &runs {
+        v.extend_from_slice(&[start as u32, end as u32, u32::from(script.0)]);
     }
     unsafe { deliver(out, U32List(v)) }
 }
@@ -756,23 +824,19 @@ pub unsafe extern "C" fn daegun_text_resolve_bidi(
     out_visual_order: *mut *mut U32List,
 ) -> Status {
     let Some(text) = (unsafe { str_of(text) }) else { return Status::Null };
-    let base = match base {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
-    };
-    let para = crate::resolve_bidi(text, base);
+    let base = base_of(base);
+    let crate::BidiParagraph { base_level, levels, visual_order } = crate::resolve_bidi(text, base);
     if !out_base_level.is_null() {
-        unsafe { *out_base_level = para.base_level };
+        unsafe { *out_base_level = base_level };
     }
     if !out_levels.is_null() {
-        let st = unsafe { deliver(out_levels, crate::ffi::list::Blob(para.levels.clone())) };
+        let st = unsafe { deliver(out_levels, crate::ffi::list::Blob(levels)) };
         if st != Status::Ok {
             return st;
         }
     }
     if !out_visual_order.is_null() {
-        let order: Vec<u32> = para.visual_order.iter().map(|n| *n as u32).collect();
+        let order: Vec<u32> = visual_order.iter().map(|n| *n as u32).collect();
         return unsafe { deliver(out_visual_order, U32List(order)) };
     }
     Status::Ok
@@ -796,17 +860,15 @@ pub unsafe extern "C" fn daegun_script_is_rtl(script: u16, out: *mut bool) -> St
     Status::Ok
 }
 
-const _: Option<core::marker::PhantomData<U16List>> = None;
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn daegun_char_general_category(
     codepoint: u32,
     out: *mut i32,
 ) -> Status {
-    let Some(c) = char::from_u32(codepoint) else { return Status::Range };
     if out.is_null() {
         return Status::Null;
     }
+    let Some(c) = char::from_u32(codepoint) else { return Status::Range };
     unsafe { *out = crate::general_category(c) as i32 };
     Status::Ok
 }
@@ -817,10 +879,10 @@ pub unsafe extern "C" fn daegun_char_is_upright(
     has_vertical_form: i32,
     out: *mut i32,
 ) -> Status {
-    let Some(c) = char::from_u32(codepoint) else { return Status::Range };
     if out.is_null() {
         return Status::Null;
     }
+    let Some(c) = char::from_u32(codepoint) else { return Status::Range };
     unsafe { *out = i32::from(crate::is_upright(c, has_vertical_form != 0)) };
     Status::Ok
 }
@@ -830,11 +892,11 @@ pub unsafe extern "C" fn daegun_char_vertical_form(
     codepoint: u32,
     out: *mut u32,
 ) -> Status {
-    let Some(c) = char::from_u32(codepoint) else { return Status::Range };
-    let Some(v) = crate::vertical_form(c) else { return Status::Absent };
     if out.is_null() {
         return Status::Null;
     }
+    let Some(c) = char::from_u32(codepoint) else { return Status::Range };
+    let Some(v) = crate::vertical_form(c) else { return Status::Absent };
     unsafe { *out = v as u32 };
     Status::Ok
 }
@@ -855,4 +917,48 @@ pub unsafe extern "C" fn daegun_script_is_context_dependent(script: u16, out: *m
     }
     unsafe { *out = i32::from(crate::Script(script).is_context_dependent()) };
     Status::Ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Each list a level names comes back under its own selector, one it does not name as absent rather
+    // than empty, and a selector past the eight as out of range.
+    #[test]
+    fn each_jstf_lookup_list_reaches_c_under_its_own_selector() {
+        let lists = [
+            Some(alloc::vec![1u16]),
+            None,
+            Some(alloc::vec![3, 4]),
+            Some(Vec::new()),
+            Some(alloc::vec![5]),
+            None,
+            Some(alloc::vec![7, 8, 9]),
+            Some(alloc::vec![10]),
+        ];
+        let mods = JstfMods(crate::JstfModLists {
+            shrinkage_enable_gsub: lists[0].clone(),
+            shrinkage_disable_gsub: lists[1].clone(),
+            shrinkage_enable_gpos: lists[2].clone(),
+            shrinkage_disable_gpos: lists[3].clone(),
+            extension_enable_gsub: lists[4].clone(),
+            extension_disable_gsub: lists[5].clone(),
+            extension_enable_gpos: lists[6].clone(),
+            extension_disable_gpos: lists[7].clone(),
+        });
+        for (which, want) in lists.iter().enumerate() {
+            let (mut data, mut len) = (core::ptr::null(), 0);
+            let status = unsafe { daegun_jstf_mods_lookups(&mods, which as i32, &mut data, &mut len) };
+            match want {
+                None => assert_eq!(status, Status::Absent, "selector {which}"),
+                Some(want) => {
+                    assert_eq!(status, Status::Ok, "selector {which}");
+                    assert_eq!(unsafe { core::slice::from_raw_parts(data, len) }, &want[..], "selector {which}");
+                }
+            }
+        }
+        let (mut data, mut len) = (core::ptr::null(), 0);
+        assert_eq!(unsafe { daegun_jstf_mods_lookups(&mods, 8, &mut data, &mut len) }, Status::Range);
+    }
 }

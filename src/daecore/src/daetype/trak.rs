@@ -77,11 +77,7 @@ fn per_size(trak: &[u8], sizes: usize, values: usize, n_sizes: usize, ptem: f64)
         }
         let s0 = size_at(i - 1);
         let (v0, v1) = (value_at(i - 1), value_at(i));
-        let span = s1 - s0;
-        if span == 0.0 {
-            return (v0 + v1) * 0.5;
-        }
-        return v0 + (ptem - s0) / span * (v1 - v0);
+        return v0 + (ptem - s0) / (s1 - s0) * (v1 - v0);
     }
     value_at(n_sizes - 1)
 }

@@ -1,10 +1,11 @@
 # daegun benchmarks
 
-Every latency benchmark in the tree: 35 tests across six targets, plus the C harness. Nothing here
-is a summary of something else.
+Every latency benchmark the `latency` filter runs: 30 tests across four targets, plus the C harness.
+`outline_sweep`'s three sweeps over a whole font are run by name and are not listed. Nothing here is a
+summary of something else.
 
-Re-measured for 1.1.5. Every figure below is the best of three consecutive runs, which is what the
-closing note recommends and what the previous edition did not do.
+Re-measured for 1.2.0. Every figure below is the best of three consecutive runs, which is what the
+closing note recommends.
 
 ## Machine
 
@@ -20,39 +21,64 @@ closing note recommends and what the previous edition did not do.
 
 | | |
 |---|---|
-| daegun | 1.1.5 |
-| rustc | 1.97.1 (8bab26f4f 2026-07-14) |
+| daegun | 1.2.0 |
+| rustc | 1.99.0 (b940084d7 2026-09-28) |
 | Profile | release |
 | `opt-level` | 3 |
 | `lto` | true |
 | `codegen-units` | 1 |
 | `panic` | abort |
 | `overflow-checks` | false |
+| `strip` | debuginfo |
 | Command | `cargo test --release --test <target> latency -- --ignored --nocapture --test-threads=1` |
 
-## What moved since 1.1.0
+## What changed in 1.2.0
 
-The optimization work behind 1.1.5 targeted the shape cache hit path, the rasterizer's overlap
-resolution, and the allocations behind both. Rows that trace to a change made on purpose:
+daegun no longer rasterizes, so the two rasterizing sections are gone, and with them the
+`rasterize_glyph` rows in sections 1 and 7. In their place are the calls a rasterizer of your own
+makes instead, all on Inter's `g`: `prepared_outline` and `flatten` at 16px, and `glyph_quads`, which
+takes no size.
 
-| | 1.1.0 | 1.1.5 | |
+Everything else was measured against 1.1.7, built from its release tag with its own fixtures, on the
+same day, machine and compiler: three rounds with the two versions interleaved, best of three each.
+Shaping, the glyf outlines, the autohinter's whole-face sweeps, opening a font and section 6's float
+math are within a few percent of 1.1.7. These rows are not:
+
+| | 1.1.7 | 1.2.0 | why |
 |---|---|---|---|
-| `advance_widths` ×1 | 26.0 ns | 19.6 ns | −25% |
-| `rasterize_glyph`, cached | 73.4 ns | 63.5 ns | −13% |
-| `colr_v1_paint_graph_variable` | 621.708 µs | 555.584 µs | −11% |
-| `cpu_pipeline_by_glyph`, `B` | 4.999 µs | 4.543 µs | −9% |
+| `glyph_id` | 63.2 ns | 44.5 ns | the best cmap subtable is chosen at the font's first lookup |
+| `outline_glyph` | 248.3 ns | 270.5 ns | a TrueType outline is drawn at its origin, as FreeType and HarfBuzz draw it, which reads the glyph's side bearing: 18 ns, measured with it turned off |
+| `outline_glyf_eb_garamond_composite` | 1.333 µs | 1.416 µs | components are read with the checks a malformed composite needs |
+| `outline_cff_stix` | 11.166 µs | 14.042 µs | the CFF pen numbers points for hint masks, finds a seac wherever its endchar sits and draws a charstring that draws before it moves; no single cause |
+| `outline_cff_sweep` | 2.304 ms | 2.467 ms | the same |
+| `autohint_inter_h` | 458 ns | 625 ns | blue zones are fitted to the size, segments link by a sorted search a crafted outline cannot make quadratic, and edges are swept once; the whole-face sweeps are unchanged |
+| `autohint_stix_h` | 1.208 µs | 1.500 µs | the same, and the CFF pen above |
+| `hint_glyph_bytecode` | 792 ns | 1.500 µs | hinting as FreeType does: each glyph starts from the twilight zone the CVT program left (1.1.7 zeroed it), IUP interpolates from the unscaled outline, Subpixel keeps all of v40's backward compatibility, and heavy instructions are charged against a work budget |
+| `hint_glyph_context_cached` | 791 ns | 1.500 µs | the same |
+| `hint_glyph_context_per_glyph` | 3.375 µs | 6.208 µs | the same, and a new context keeps a copy of what the CVT program left, for each glyph to start from |
+| `colr_v1_paint_graph_static` | 35.500 µs | 39.792 µs | each paint is charged against a budget, so a crafted graph cannot run without end: the largest new cost in its profile |
+| `cache_colr_variable` | 39.958 µs | 43.583 µs | the same |
+| `colr_v1_paint_graph_variable` | 549.9 µs | 754.7 µs | the same 16,800 region scalars a sweep, each about 1.4 times slower: every axis is checked for a range the spec says to ignore, one that runs backward or crosses zero |
 
-The first three share a cause: resolving an axis position stopped building a `BTreeMap` and two
-intermediate vectors to hold what is almost always one axis. The fourth is the rasterizer's
-overlap resolution, whose innermost loop no longer divides.
+`line_metrics` reads 9.9 ns against 9.2 with the same code as 1.1.7; that difference is not
+attributed. The cached path a caller takes, `cache_colr_variable`, keeps the region scalars for a
+location, which is why it is seventeen times faster than `colr_v1_paint_graph_variable`.
 
-Other rows moved too – `font_open` by 5%, the whole C column by more – but nothing was changed on
-those paths, and the previous edition was a single run where this one is the best of three. Read
-those as the measurement improving, not the engine.
+Section 6 changed with daemachine's own work. Gradients now blend as the OpenType spec says, in linear
+light with alpha premultiplied: a linear one takes 11.8 ns a pixel against 14.6 for 1.1.7's sRGB blend,
+a sweep 23.8 against 30.7, and a radial 23.1 against 21.0, the one row slower. The last row is a
+linear gradient blended in sRGB, as Chrome does it: 7.4. SrcOver composites in 4.0 rather than 5.5, and
+f64 `round` without std takes 0.78 ns rather than 1.40. The blending anchor, `blend` in SrcOver, reads
+2.0 ns rather than 1.0: `#[inline]` now lets a caller's crate inline these functions, and in this LTO
+build it also reshapes a loop that calls `blend` directly. `composite`, what a rasterizer calls, is
+the faster for it.
 
-Shaping is flat, because these tests measure a fresh shape rather than a repeat and so never touch
-the run cache that got 17× cheaper. The maths and GPU sections are unchanged work and move only
-with the noise floor.
+`f32 round` reads 0.763 ns against 0.671 for another reason: 1.2.0 changed the benchmark's own loop,
+from `chunks_exact(4)` to `as_chunks::<4>()`, and run with the old loop it reads 0.671 too. The blend
+rows read the same with either loop. `blend HardLight` swings between runs: 3.38 to 4.04 ns for 1.1.7
+across these three.
+
+Compare releases on figures measured the same day.
 
 ---
 
@@ -62,19 +88,20 @@ with the noise floor.
 
 | | min | median |
 |---|---|---|
-| `from_bytes`, borrowed | 15.375 µs | 15.917 µs |
-| `from_vec`, owned | 1.125 µs | 1.250 µs |
-| `rasterize_glyph`, uncached | 4.711 µs | 4.801 µs |
-| `outline_glyph` | 248.2 ns | 248.6 ns |
-| `rasterize_glyph`, cached | 63.5 ns | 64.7 ns |
-| `glyph_id` | 63.2 ns | 63.5 ns |
-| `advance_widths` ×1 | 19.6 ns | 19.8 ns |
-| `line_metrics` | 9.2 ns | 9.3 ns |
-| `descender` | 6.7 ns | 6.8 ns |
+| `from_bytes`, borrowed | 15.208 µs | 15.333 µs |
+| `from_vec`, owned | 1.125 µs | 1.333 µs |
+| `flatten` | 983.8 ns | 987.3 ns |
+| `prepared_outline` | 805.8 ns | 822.3 ns |
+| `glyph_quads` | 454.0 ns | 456.1 ns |
+| `outline_glyph` | 270.5 ns | 271.0 ns |
+| `glyph_id` | 44.5 ns | 44.8 ns |
+| `advance_widths` ×1 | 19.8 ns | 20.0 ns |
+| `line_metrics` | 9.9 ns | 10.0 ns |
+| `descender` | 6.4 ns | 6.5 ns |
 | `ascender` | 6.4 ns | 6.5 ns |
-| `cap_height` | 0.8 ns | 0.9 ns |
-| `num_glyphs` | 0.2 ns | 0.3 ns |
-| `upm` | 0.2 ns | 0.3 ns |
+| `cap_height` | 0.8 ns | 0.8 ns |
+| `upm` | 0.3 ns | 0.3 ns |
+| `num_glyphs` | 0.3 ns | 0.3 ns |
 
 ---
 
@@ -84,11 +111,11 @@ with the noise floor.
 
 | test | font | n | min | median | p95 |
 |---|---|---|---|---|---|
-| `shape_cjk_sentence_source_han` | Source Han Sans JP, 30 chars | 120,000 | 916 ns | 1.042 µs | 1.084 µs |
-| `shape_latin_ligatures_eb_garamond` | EB Garamond, liga fires repeatedly | 20,000 | 2.917 µs | 3.084 µs | 3.250 µs |
-| `shape_devanagari_conjuncts_noto` | Noto Sans Devanagari, conjuncts and matra reordering | 8,000 | 8.291 µs | 8.500 µs | 9.084 µs |
-| `shape_arabic_joined_run_scheherazade` | Scheherazade New, one fully joined run | 15,000 | 8.458 µs | 8.708 µs | 9.250 µs |
-| `shape_latin_sentence_inter` | Inter, 78-character sentence | 20,000 | 9.500 µs | 9.708 µs | 10.292 µs |
+| `shape_cjk_sentence_source_han` | Source Han Sans JP, 30 chars | 120,000 | 917 ns | 1.041 µs | 1.083 µs |
+| `shape_latin_ligatures_eb_garamond` | EB Garamond, liga fires repeatedly | 20,000 | 2.916 µs | 3.042 µs | 3.167 µs |
+| `shape_arabic_joined_run_scheherazade` | Scheherazade New, one fully joined run | 15,000 | 8.250 µs | 8.458 µs | 8.750 µs |
+| `shape_devanagari_conjuncts_noto` | Noto Sans Devanagari, conjuncts and matra reordering | 8,000 | 8.417 µs | 8.625 µs | 8.875 µs |
+| `shape_latin_sentence_inter` | Inter, 78-character sentence | 20,000 | 9.458 µs | 9.625 µs | 9.917 µs |
 
 ---
 
@@ -98,15 +125,15 @@ with the noise floor.
 
 | test | scope | n | min | median |
 |---|---|---|---|---|
-| `autohint_inter_h` | Inter `H` at 13 ppem, glyf, collect + grid fit | 20,000 | 458 ns | 583 ns |
-| `autohint_stix_h` | STIX `H` at 13 ppem, CFF, collect + grid fit | 20,000 | 1.167 µs | 1.291 µs |
-| `outline_glyf_eb_garamond_composite` | EB Garamond gid 2244, 7-component composite | 50,000 | 1.291 µs | 1.417 µs |
+| `autohint_inter_h` | Inter `H` at 13 ppem, glyf, collect + grid fit | 20,000 | 625 ns | 709 ns |
+| `outline_glyf_eb_garamond_composite` | EB Garamond gid 2244, 7-component composite | 50,000 | 1.416 µs | 1.541 µs |
+| `autohint_stix_h` | STIX `H` at 13 ppem, CFF, collect + grid fit | 20,000 | 1.500 µs | 1.625 µs |
 | `outline_glyf_scheherazade` | Scheherazade gid 1583, 1,683 points | 20,000 | 9.041 µs | 9.167 µs |
-| `outline_cff_stix` | STIX gid 2257, 5,819-byte Type 2 charstring | 2,000 | 11.250 µs | 11.459 µs |
-| `outline_glyf_sweep` | EB Garamond, 3,247 glyphs, whole face | 60 | 2.247 ms | 2.351 ms |
-| `outline_cff_sweep` | STIX, 5,543 glyphs, 123,321 segments | 30 | 2.336 ms | 2.356 ms |
-| `autohint_sweep_inter` | Inter, 2,937 glyphs, 131,498 points | 20 | 6.753 ms | 6.929 ms |
-| `autohint_sweep_stix` | STIX, 5,543 glyphs, 211,893 points | 10 | 15.472 ms | 15.662 ms |
+| `outline_cff_stix` | STIX gid 2257, 5,819-byte Type 2 charstring | 2,000 | 14.042 µs | 14.166 µs |
+| `outline_glyf_sweep` | EB Garamond, 3,247 glyphs, whole face | 60 | 2.356 ms | 2.423 ms |
+| `outline_cff_sweep` | STIX, 5,543 glyphs, 123,321 segments | 30 | 2.467 ms | 2.511 ms |
+| `autohint_sweep_inter` | Inter, 2,937 glyphs, 131,498 points | 20 | 6.862 ms | 7.034 ms |
+| `autohint_sweep_stix` | STIX, 5,543 glyphs, 211,893 points | 10 | 14.540 ms | 14.837 ms |
 
 ---
 
@@ -116,160 +143,75 @@ with the noise floor.
 
 | test | scope | n | min | median |
 |---|---|---|---|---|
-| `hint_glyph_context_cached` | 5 glyphs through `FontCache` | 40,000 | 792 ns | 917 ns |
-| `hint_glyph_bytecode` | 5 hinted glyphs at 16 ppem | 40,000 | 833 ns | 917 ns |
-| `hint_glyph_context_per_glyph` | 5 glyphs, `HintContext` rebuilt each time | 4,000 | 3.375 µs | 3.708 µs |
+| `hint_glyph_bytecode` | 5 hinted glyphs at 16 ppem | 40,000 | 1.500 µs | 1.625 µs |
+| `hint_glyph_context_cached` | 5 glyphs through `FontCache` | 40,000 | 1.500 µs | 1.625 µs |
+| `hint_glyph_context_per_glyph` | 5 glyphs, `HintContext` rebuilt each time | 4,000 | 6.208 µs | 6.625 µs |
 
 ---
 
-## 5. Colour
+## 5. Color
 
 `--test type` · `colr_latency` · 3 tests
 
 | test | scope | n | min | median |
 |---|---|---|---|---|
-| `colr_v1_paint_graph_static` | 200 base glyphs, whole sweep | 2,000 | 35.583 µs | 36.334 µs |
-| `cache_colr_variable` | 200 base glyphs through `FontCache` | 2,000 | 39.958 µs | 40.500 µs |
-| `colr_v1_paint_graph_variable` | 200 base glyphs, whole sweep | 2,000 | 555.584 µs | 577.292 µs |
-
----
-## 6. Rasterizing, CPU
-
-`--test cpu` · 3 tests
-
-### `cpu_pipeline_by_glyph` – 16px, grayscale, no gamma
-
-| glyph | pen ops | bitmap | raster | flatten | alloc | draw | resolve |
-|---|---|---|---|---|---|---|---|
-| `.` | 10 | 3×3 | 0.291 µs | 57.4% | 14.1% | 14.4% | 14.1% |
-| `l` | 34 | 4×13 | 0.707 µs | 58.8% | 5.8% | 23.6% | 11.7% |
-| `W` | 122 | 15×12 | 2.082 µs | 48.0% | 2.0% | 38.0% | 12.0% |
-| `o` | 31 | 8×8 | 2.833 µs | 83.8% | 1.4% | 11.8% | 2.9% |
-| `B` | 71 | 9×12 | 4.543 µs | 86.2% | 0.9% | 10.1% | 2.8% |
-| `@` | 86 | 12×12 | 7.959 µs | 87.4% | 0.5% | 10.0% | 2.1% |
-| `g` | 76 | 8×12 | 41.208 µs | 98.2% | 0.1% | 1.4% | 0.3% |
-
-### `cpu_pipeline_by_size` – EB Garamond `B`, 71 pen ops, grayscale, no gamma
-
-| size | bitmap | raster | flatten | alloc | draw | resolve |
-|---|---|---|---|---|---|---|
-| 12px | 7×9 | 4.166 µs | 87.0% | 1.0% | 10.0% | 2.0% |
-| 16px | 9×12 | 4.542 µs | 86.2% | 0.9% | 10.1% | 2.8% |
-| 24px | 14×17 | 5.666 µs | 81.6% | 0.7% | 11.8% | 5.9% |
-| 32px | 18×23 | 6.584 µs | 78.5% | 0.6% | 12.7% | 8.2% |
-| 64px | 35×44 | 8.959 µs | 61.4% | 0.9% | 15.3% | 22.3% |
-| 128px | 69×86 | 16.667 µs | 38.2% | 1.5% | 14.7% | 45.5% |
-| 256px | 137×171 | 45.876 µs | 21.1% | 3.4% | 9.9% | 65.7% |
-
-### `cpu_pipeline_by_layout` – EB Garamond `B`
-
-| layout | size | bitmap | raster | flatten | alloc | draw | resolve |
-|---|---|---|---|---|---|---|---|
-| grayscale | 16px | 9×12 | 4.583 µs | 85.5% | 0.9% | 10.9% | 2.7% |
-| grayscale + gamma | 16px | 9×12 | 4.543 µs | 85.3% | 0.9% | 10.1% | 3.7% |
-| subpixel RGB + gamma | 16px | 11×12 | 6.209 µs | 63.1% | 0.7% | 12.1% | 24.2% |
-| subpixel RGB | 16px | 11×12 | 6.250 µs | 62.7% | 0.7% | 12.0% | 24.7% |
-| grayscale | 64px | 35×44 | 8.916 µs | 60.7% | 1.4% | 15.4% | 22.4% |
-| subpixel RGB | 64px | 37×44 | 26.708 µs | 20.1% | 0.9% | 9.4% | 69.6% |
-
-Resolve is what subpixel costs: it is a quarter of a 16px glyph and seven tenths of a 64px one,
-because the coverage buffer is three times wider and every sample gets filtered.
+| `colr_v1_paint_graph_static` | 200 base glyphs, whole sweep | 2,000 | 39.792 µs | 40.167 µs |
+| `cache_colr_variable` | 200 base glyphs through `FontCache` | 2,000 | 43.583 µs | 44.083 µs |
+| `colr_v1_paint_graph_variable` | 200 base glyphs, whole sweep | 2,000 | 754.708 µs | 765.334 µs |
 
 ---
 
-## 7. Rasterizing, GPU
+## 6. Math
 
-`--test gpu` · 2 tests · empty draw, median of 200, stages cumulative
-
-### `draw_cost_by_stage`
-
-| backend | target | submit | +wait | +read | readback |
-|---|---|---|---|---|---|
-| Metal | 64×64 | 10.0 µs | 276.0 µs | 500.7 µs | 224.7 µs |
-| Metal | 256×256 | 8.7 µs | 276.4 µs | 506.2 µs | 229.8 µs |
-| Metal | 512×512 | 9.9 µs | 277.5 µs | 532.8 µs | 255.3 µs |
-| Metal | 1024×1024 | 10.9 µs | 288.8 µs | 559.2 µs | 270.4 µs |
-| Metal | 2048×1024 | 9.4 µs | 310.2 µs | 605.9 µs | 295.7 µs |
-| Vulkan | 64×64 | 122.1 µs | 333.1 µs | 599.9 µs | 266.8 µs |
-| Vulkan | 256×256 | 123.9 µs | 337.3 µs | 586.4 µs | 249.0 µs |
-| Vulkan | 512×512 | 125.0 µs | 337.3 µs | 607.5 µs | 270.2 µs |
-| Vulkan | 1024×1024 | 124.9 µs | 333.2 µs | 660.4 µs | 327.1 µs |
-| Vulkan | 2048×1024 | 115.1 µs | 367.9 µs | 668.7 µs | 300.0 µs |
-
-Fitted:
-
-| backend | stage | fixed | per 1000 px |
-|---|---|---|---|
-| Metal | submit | 6.9 µs | 0.013 µs |
-| Metal | +wait | 275.0 µs | 0.016 µs |
-| Metal | +read | 510.1 µs | 0.046 µs |
-| Vulkan | submit | 122.6 µs | 0.006 µs |
-| Vulkan | +wait | 331.9 µs | 0.014 µs |
-| Vulkan | +read | 597.4 µs | 0.039 µs |
-
-Taking the best of three runs cleans up the submit fit that used to slope the wrong way: the
-first-call cost of a run lands in whichever size is measured first, and it no longer survives three
-passes. Wait and read were always the stable ones.
-
-### `a_read_is_never_cheaper_than_the_wait_inside_it`
-
-| backend | wait | read |
-|---|---|---|
-| Metal | 310.6 µs | 561.0 µs |
-| Vulkan | 358.8 µs | 604.3 µs |
-
----
-## 8. Maths
-
-`--test machine` · 9 tests · daegun is `no_std` and carries its own float maths
+`--test machine` · 9 tests · daegun is `no_std` and carries its own float math
 
 ### `float_ext_against_std` – ratio > 1 means daegun is slower
 
 | | daegun | std | ratio |
 |---|---|---|---|
-| `f64 abs` | 0.234 ns | 0.234 ns | 1.00× |
 | `f32 abs` | 0.244 ns | 0.244 ns | 1.00× |
+| `f64 abs` | 0.234 ns | 0.234 ns | 1.00× |
 | `f32 round_ties_even` | 0.376 ns | 0.244 ns | 1.54× |
-| `f32 floor` | 0.438 ns | 0.244 ns | 1.79× |
-| `f64 round_ties_even` | 0.549 ns | 0.234 ns | 2.33× |
-| `f32 round` | 0.631 ns | 0.244 ns | 2.58× |
-| `f64 trunc` | 0.621 ns | 0.234 ns | 2.65× |
-| `f64 ceil` | 0.661 ns | 0.234 ns | 2.82× |
-| `f64 floor` | 0.926 ns | 0.234 ns | 3.95× |
-| `f64 round` | 1.404 ns | 0.234 ns | 6.00× |
+| `f32 floor` | 0.397 ns | 0.244 ns | 1.63× |
+| `f64 trunc` | 0.539 ns | 0.234 ns | 2.30× |
+| `f64 round_ties_even` | 0.549 ns | 0.234 ns | 2.35× |
+| `f64 ceil` | 0.621 ns | 0.234 ns | 2.65× |
+| `f32 round` | 0.763 ns | 0.244 ns | 3.13× |
+| `f64 round` | 0.783 ns | 0.234 ns | 3.35× |
+| `f64 floor` | 0.834 ns | 0.234 ns | 3.56× |
 
 ### `sqrt_against_std` – Newton iteration against one hardware instruction
 
 | | daegun | std | ratio |
 |---|---|---|---|
-| `f32 sqrt` | 2.340 ns | 0.285 ns | 8.21× |
-| `f64 sqrt` | 2.706 ns | 0.315 ns | 8.58× |
+| `f32 sqrt` | 2.340 ns | 0.295 ns | 7.93× |
+| `f64 sqrt` | 2.706 ns | 0.315 ns | 8.59× |
 
 ### `trig_against_std`
 
 | | daegun | std | ratio |
 |---|---|---|---|
-| `f64 sin_cos` | 3.245 ns | 7.070 ns | 0.44× |
-| `f64 atan2` | 7.558 ns | 7.578 ns | 0.94× |
+| `f64 sin_cos` | 4.089 ns | 6.927 ns | 0.59× |
+| `f64 atan2` | 7.589 ns | 7.589 ns | 1.00× |
 
 ### `rounding_old_against_new` – ratio < 1 means the new one is faster
 
 | | new | old | ratio |
 |---|---|---|---|
-| `round_ties_even` | 0.549 ns | 1.943 ns | 0.27× |
-| `ceil` | 0.661 ns | 1.546 ns | 0.43× |
-| `floor` | 0.926 ns | 0.977 ns | 0.93× |
-| `trunc` | 0.621 ns | 0.621 ns | 1.00× |
-| `round` | 1.404 ns | 1.404 ns | 1.00× |
+| `round_ties_even` | 0.549 ns | 1.933 ns | 0.28× |
+| `round` | 0.783 ns | 1.404 ns | 0.56× |
+| `ceil` | 0.621 ns | 0.743 ns | 0.84× |
+| `floor` | 0.834 ns | 0.987 ns | 0.84× |
+| `trunc` | 0.539 ns | 0.621 ns | 0.87× |
 
 ### `atan2_cost_breakdown`
 
 | | first | second | ratio |
 |---|---|---|---|
-| atan2 vs one divide | 7.222 ns | 0.336 ns | 20.89× |
-| atan2 vs horner20 | 7.212 ns | 3.286 ns | 2.19× |
-| horner20 vs one divide | 3.296 ns | 0.336 ns | 9.82× |
-| estrin20 vs horner20 | 2.156 ns | 3.296 ns | 0.65× |
+| atan2 vs one divide | 7.192 ns | 0.336 ns | 21.40× |
+| atan2 vs horner20 | 7.162 ns | 3.286 ns | 2.18× |
+| horner20 vs one divide | 3.296 ns | 0.336 ns | 9.81× |
+| estrin20 vs horner20 | 2.156 ns | 3.286 ns | 0.66× |
 
 ### `atan_polynomial_shape` – 11 coefficients, identical inputs
 
@@ -281,21 +223,21 @@ passes. Wait and read were always the stable ones.
 
 | | first | second | ratio |
 |---|---|---|---|
-| hybrid, one arm | 2.838 ns | 4.028 ns | 0.70× |
-| branchless, scattered | 5.117 ns | 5.687 ns | 0.90× |
-| branchless, raster sweep | 5.117 ns | 5.524 ns | 0.92× |
-| hybrid, mid range | 5.737 ns | 5.890 ns | 0.94× |
-| hybrid, raster sweep | 5.259 ns | 5.524 ns | 0.95× |
-| hybrid, scattered | 5.829 ns | 5.687 ns | 1.03× |
-| branchless, one arm | 5.117 ns | 4.028 ns | 1.27× |
+| hybrid, one arm | 3.571 ns | 4.028 ns | 0.89× |
+| branchless, scattered | 5.605 ns | 5.666 ns | 0.99× |
+| branchless, raster sweep | 5.605 ns | 5.524 ns | 1.01× |
+| hybrid, mid range | 6.765 ns | 6.592 ns | 1.03× |
+| hybrid, raster sweep | 6.205 ns | 5.513 ns | 1.13× |
+| hybrid, scattered | 6.836 ns | 5.666 ns | 1.21× |
+| branchless, one arm | 5.605 ns | 4.028 ns | 1.39× |
 
 ### `sqrt_iteration_shape`
 
 | | first | second | ratio |
 |---|---|---|---|
-| rsqrt 4 vs current | 2.787 ns | 2.706 ns | 1.03× |
-| rsqrt 5 vs current | 3.530 ns | 2.706 ns | 1.30× |
-| current vs std sqrt | 2.716 ns | 0.305 ns | 8.68× |
+| rsqrt 4 vs current | 2.777 ns | 2.696 ns | 1.03× |
+| rsqrt 5 vs current | 3.520 ns | 2.706 ns | 1.30× |
+| current vs std sqrt | 2.706 ns | 0.305 ns | 8.87× |
 
 Accuracy against std, worst ulp over 60,000 values in [1e-8, 1e8]:
 
@@ -309,45 +251,45 @@ Accuracy against std, worst ulp over 60,000 values in [1e-8, 1e8]:
 
 | | ns/px | anchor | ratio |
 |---|---|---|---|
-| blend Multiply | 1.943 | 2.238 | 0.87× |
-| blend HardLight | 4.995 | 2.248 | 2.21× |
-| blend HslSaturation | 7.925 | 2.238 | 3.54× |
-| composite SrcOver | 5.483 | 1.007 | 5.36× |
+| blend Multiply | 1.638 | 1.953 | 0.84× |
+| blend HardLight | 4.873 | 1.953 | 2.50× |
+| blend HslSaturation | 7.253 | 1.973 | 3.68× |
+| composite SrcOver | 3.957 | 2.045 | 1.93× |
 
 ### `daemath_baseline` – gradients, per pixel, anchored on linear
 
 | | ns/px | anchor | ratio |
 |---|---|---|---|
-| gradient linear | 14.974 | anchor | 1.00× |
-| gradient radial | 21.820 | 14.974 | 1.44× |
-| gradient sweep | 32.104 | 15.208 | 2.03× |
+| gradient linear | 11.790 | anchor | 1.00× |
+| gradient radial | 23.082 | 11.902 | 1.94× |
+| gradient sweep | 23.793 | 11.790 | 2.02× |
+| gradient linear, sRGB | 7.446 | 11.821 | 0.63× |
 
 ---
 
-## 9. The C ABI
+## 7. The C ABI
 
 `src/c-wrapper/tests/latency.c` · 200 rounds after 50 warmup · both sides on a release build
 
 | | Rust min | C min | Rust median | C median |
 |---|---|---|---|---|
-| `from_bytes`, borrowed | 15.375 µs | 15.000 µs | 15.917 µs | 16.000 µs |
-| `from_vec`, owned | 1.125 µs | 1.000 µs | 1.250 µs | 1.000 µs |
-| `rasterize_glyph`, uncached | 4.711 µs | 4.684 µs | 4.801 µs | 4.768 µs |
-| `outline_glyph` | 248.2 ns | 270.0 ns | 248.6 ns | 272.0 ns |
-| `rasterize_glyph`, cached | 63.5 ns | 104.0 ns | 64.7 ns | 106.0 ns |
-| `glyph_id` | 63.2 ns | 66.0 ns | 63.5 ns | 68.0 ns |
-| `advance_widths` ×1 | 19.6 ns | 48.0 ns | 19.8 ns | 50.0 ns |
-| `upm` | 0.2 ns | 0.0 ns | 0.3 ns | 0.0 ns |
+| `from_bytes`, borrowed | 15.208 µs | 15.000 µs | 15.333 µs | 15.000 µs |
+| `from_vec`, owned | 1.125 µs | 1.000 µs | 1.333 µs | 1.000 µs |
+| `flatten` | 983.8 ns | 1.004 µs | 987.3 ns | 1.010 µs |
+| `prepared_outline` | 805.8 ns | 852.0 ns | 822.3 ns | 856.0 ns |
+| `glyph_quads` | 454.0 ns | 486.0 ns | 456.1 ns | 490.0 ns |
+| `outline_glyph` | 270.5 ns | 302.0 ns | 271.0 ns | 304.0 ns |
+| `glyph_id` | 44.5 ns | 48.0 ns | 44.8 ns | 48.0 ns |
+| `advance_widths` ×1 | 19.8 ns | 48.0 ns | 20.0 ns | 50.0 ns |
+| `upm` | 0.3 ns | 0.0 ns | 0.3 ns | 0.0 ns |
 
-The C column comes off `clock_gettime` over batches of 500, which quantises it to 2 ns steps. Read
+The C column comes off `clock_gettime` over batches of 500, which quantizes it to 2 ns steps. Read
 the cheap rows as an upper bound rather than a figure – `upm` at 0.0 ns means "below what this clock
-can see", not free.
+can see", not free. The two open rows are timed one call a sample instead, at the clock's 1 µs
+resolution on this machine, so they read low: C is not faster than Rust there.
 
-The overhead over Rust fell on both cheap rows – `glyph_id` from 35 ns to 3 ns, `advance_widths`
-from 48 ns to 28 ns. Only part of that is real: `advance_widths` got faster on the Rust side too,
-but `glyph_id` did not change at all this release, so most of its apparent gain is the previous
-edition having been a single run of a clock that quantises to 2 ns steps. Treat the C column as
-bounded above, and compare releases on the Rust column.
+The first C run of the session read `from_bytes` at 35 µs; every run after it, of either version,
+read 15. That is one reason every figure here is the best of three.
 
 ---
 
@@ -357,29 +299,25 @@ They are latency tests living beside the ordinary ones, marked `#[ignore]` becau
 rather than assert. The gate runs what can fail; these report, and are run by hand.
 
 Every figure is the best of three consecutive runs. A single run of this suite moves by several
-percent between passes, and more than that on the GPU stages, so a lone number is not a baseline.
+percent between passes, so a lone number is not a baseline.
 
 `--test-threads=1` is not optional. The reports are multi-line and interleave into nonsense without
 it, which makes them look broken rather than unread.
 
 `min` rather than mean is the number to watch for a regression, being the least polluted by whatever
-else the machine was doing. Section 9 is not a cargo target and has to be built against a release
+else the machine was doing. Section 7 is not a cargo target and has to be built against a release
 staticlib, or it measures a debug library and reports several times the real cost:
 
 ```sh
 cargo rustc --release --features capi --crate-type staticlib
 cc -std=c11 -O2 -I src/c-wrapper src/c-wrapper/tests/latency.c target/release/libdaegun.a \
-   <platform frameworks> -o clat && ./clat assets/test-fonts/inter/InterVariable.ttf
+   <system libraries, as daegun.h lists them> -o clat && ./clat assets/test-fonts/inter/InterVariable.ttf
 ```
 
 Each sweep in sections 3 to 5 runs a different face, so divide by the glyph count before reading
 anything across their rows. `DAEGUN_SWEEP_FONT` repoints `outline_glyf_sweep`; every other sweep is
 fixed to the face named beside it.
 
-Nothing here measures a whole frame. For that – frame times as a distribution, cache hit rates, and
-where a frame's milliseconds actually go – see `tasks/stat-log-2.md`, which covers the engine under
-a real-time budget rather than call by call.
-
 For counters rather than wall clock, `scripts/tools/perf/pmu.sh` drives Instruments, and
 `insn-diff.py` and `pmu-attribute.py` beside it attribute the difference between two builds down to
-the function. `tasks/baselines/` holds captured before-and-after studies from past optimization work.
+the function.

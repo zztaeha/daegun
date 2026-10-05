@@ -29,3 +29,5 @@ mod fdef_scope;
 
 #[cfg(feature = "threading")]
 mod hint_threading;
+
+mod font_decoders;

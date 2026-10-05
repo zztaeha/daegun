@@ -24,7 +24,7 @@ pub fn apply_cvar(
     let mut serialized_pos = serialized_start;
     let mut shared_points: Option<Vec<usize>> = None;
     if has_shared_pts {
-        let (pts, next) = parse_packed_points(cvar, serialized_pos, num_cvts);
+        let (pts, next) = parse_packed_points(cvar, serialized_pos);
         shared_points  = pts;
         serialized_pos = next;
     }
@@ -44,7 +44,12 @@ pub fn apply_cvar(
         let has_peak         = (tuple_index_word & 0x8000) != 0;
         let has_intermediate = (tuple_index_word & 0x4000) != 0;
         let has_private_pts  = (tuple_index_word & 0x2000) != 0;
-        if !has_peak { return Err("cvar: tuple without embedded peak".into()); }
+        // cvar has no shared tuples, so a tuple without its own peak names nothing; it alone is skipped.
+        if !has_peak {
+            header_pos += if has_intermediate { 4 * axis_count } else { 0 };
+            private_data_pos += var_data_size;
+            continue;
+        }
 
         let mut peak = Vec::with_capacity(axis_count);
         for _ in 0..axis_count {
@@ -76,7 +81,7 @@ pub fn apply_cvar(
                 .checked_sub(num_cvts.max(1))
                 .ok_or("cvar: tuple work budget exhausted")?;
             let points = if has_private_pts {
-                let (pts, next) = parse_packed_points(cvar, private_data_pos, num_cvts);
+                let (pts, next) = parse_packed_points(cvar, private_data_pos);
                 private_data_pos = next;
                 pts
             } else {
@@ -103,4 +108,25 @@ pub fn apply_cvar(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    // Two tuples over two CVT entries: the first has no peak of its own, which cvar cannot resolve,
+    // and the second moves entry 1 by 12 at the axis's maximum.
+    #[test]
+    fn a_tuple_without_its_own_peak_is_skipped_alone() {
+        let mut cvar = vec![0, 1, 0, 0, 0, 2, 0, 18];
+        cvar.extend([0, 4, 0x20, 0]);
+        cvar.extend([0, 5, 0xA0, 0, 0x40, 0]);
+        cvar.extend([0, 1, 0x80, 0x80]);
+        cvar.extend([1, 0, 1, 0, 12]);
+        let map: BTreeMap<String, TableBytes> = [("cvar".into(), TableBytes::from_vec(cvar))].into_iter().collect();
+        let mut cvt = vec![0, 100, 0, 200];
+        apply_cvar(&map, &mut cvt, &[1.0], 1).expect("applies");
+        assert_eq!((read_i16_be(&cvt, 0), read_i16_be(&cvt, 2)), (Some(100), Some(212)));
+    }
 }

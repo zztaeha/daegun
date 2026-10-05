@@ -57,6 +57,64 @@ fn describes(
     })
 }
 
+// A static font names one value per axis, so where several tables matched the instance's
+// coordinate, the one the spec picks stays: a format 1 or 3 over a format 2 whose range it touches,
+// unless that range starts at its own nominal value; of format 2 ranges, the higher where they
+// touch, unless the lower's nominal is the touching value and the higher's above it.
+fn choose_per_axis(stat: &[u8], matched: &[usize], location: &BTreeMap<u16, f64>) -> Vec<usize> {
+    let single_axis = |at: usize| {
+        let format = read_u16_be(stat, at)?;
+        let older_sibling = read_u16_be(stat, at + 4)? & 0x0001 != 0;
+        let axis = read_u16_be(stat, at + 2)?;
+        (matches!(format, 1..=3) && !older_sibling && location.contains_key(&axis)).then_some((format, axis))
+    };
+    let mut chosen: BTreeMap<u16, usize> = BTreeMap::new();
+    let mut out: Vec<usize> = matched.iter().copied().filter(|&at| single_axis(at).is_none()).collect();
+    for &at in matched {
+        let Some((format, axis)) = single_axis(at) else { continue };
+        let coord = location[&axis];
+        let Some(&held) = chosen.get(&axis) else {
+            chosen.insert(axis, at);
+            continue;
+        };
+        let range = |at: usize| Some((read_fixed(stat, at + 8)?, read_fixed(stat, at + 12)?, read_fixed(stat, at + 16)?));
+        let held_format = read_u16_be(stat, held).unwrap_or(0);
+        let take = match (held_format == 2, format == 2) {
+            (false, false) => false,
+            (true, false) => !range(held).is_some_and(|(nominal, min, _)| close(min, coord) && close(nominal, min)),
+            (false, true) => range(at).is_some_and(|(nominal, min, _)| close(min, coord) && close(nominal, min)),
+            (true, true) => match (range(held), range(at)) {
+                (Some(a), Some(b)) => prefer_range(a, b, coord),
+                _ => false,
+            },
+        };
+        if take {
+            chosen.insert(axis, at);
+        }
+    }
+    out.extend(chosen.into_values());
+    out.sort_unstable();
+    out
+}
+
+// Whether range `b` (nominal, min, max) is to be used over `a` at `coord`, both holding it.
+fn prefer_range(a: (f64, f64, f64), b: (f64, f64, f64), coord: f64) -> bool {
+    let ((_, a_min, a_max), (_, b_min, b_max)) = (a, b);
+    if close(a_min, b_min) && close(a_max, b_max) {
+        return false;
+    }
+    if a_min <= b_min && b_max <= a_max {
+        return false;
+    }
+    if b_min <= a_min && a_max <= b_max {
+        return true;
+    }
+    let (lower, higher, b_is_higher) = if b_min > a_min { (a, b, true) } else { (b, a, false) };
+    let touching = close(lower.2, coord) && close(higher.1, coord);
+    let lower_wins = touching && close(lower.0, coord) && higher.0 > coord;
+    b_is_higher != lower_wins
+}
+
 pub(crate) fn filter_stat_to_instance(stat: &[u8], axis_coords: &BTreeMap<String, f64>) -> Option<Vec<u8>> {
     if stat.len() < 18 {
         return None;
@@ -83,17 +141,21 @@ pub(crate) fn filter_stat_to_instance(stat: &[u8], axis_coords: &BTreeMap<String
         }
     }
 
-    let mut kept: Vec<&[u8]> = Vec::new();
+    let mut matched: Vec<usize> = Vec::new();
     let mut combo_left = stat.len() / 6;
     for i in 0..axis_value_count {
         let rel = read_u16_be(stat, offsets_array + i * 2)? as usize;
         let at = offsets_array.checked_add(rel)?;
         let Some(len) = axis_value_len(stat, at) else { continue };
-        let Some(bytes) = stat.get(at..).and_then(|s| s.get(..len)) else { continue };
+        if stat.get(at..).and_then(|s| s.get(..len)).is_none() { continue };
         if describes(stat, at, &location, &mut combo_left).unwrap_or(false) {
-            kept.push(bytes);
+            matched.push(at);
         }
     }
+    let kept: Vec<&[u8]> = choose_per_axis(stat, &matched, &location)
+        .into_iter()
+        .filter_map(|at| stat.get(at..at + axis_value_len(stat, at)?))
+        .collect();
 
     let elided_fallback = if minor >= 1 && stat.len() >= 20 { read_u16_be(stat, 18)? } else { 2 };
 

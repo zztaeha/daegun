@@ -27,7 +27,7 @@ fn hint_contention() {
     let glyf = Arc::new(glyf);
 
     for &g in &gids {
-        let _ = cache.hint_glyph_cached(&glyf, &loca, g, PPEM, upm, HintMode::Classic);
+        let _ = cache.hint_glyph_cached(&glyf, &loca, g, PPEM.into(), upm, HintMode::Classic);
     }
 
     const PASSES: usize = 4000;
@@ -42,7 +42,7 @@ fn hint_contention() {
                     for _ in 0..PASSES {
                         for &g in &gids {
                             if let Some(o) =
-                                cache.hint_glyph_cached(&glyf, &loca, g, PPEM, upm, HintMode::Classic)
+                                cache.hint_glyph_cached(&glyf, &loca, g, PPEM.into(), upm, HintMode::Classic)
                             {
                                 ops += o.x.len();
                             }

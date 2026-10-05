@@ -16,7 +16,7 @@
 #
 # The spec's P, S, R, WJ, WS, O, D and D0 classes never reach here: they are folded to Placeholder or
 # X while the categories are assigned, so its "simple non-compounding cluster" production needs no
-# rule of its own — a lone Placeholder is already a base.
+# rule of its own – a lone Placeholder is already a base.
 #
 # Numbers match src/daeshaper/script/indic_category.rs, since the same table feeds this.
 
@@ -55,7 +55,7 @@ definitions:
 
   # CS is not in the Myanmar spec, and is **unreachable on real Myanmar text**: the table assigns it
   # to three ranges only, all Kannada and Brahmi. The four machines share one category space, so it
-  # can still reach this one inside a run — and when it does it prefixes a cluster, as USE's
+  # can still reach this one inside a run – and when it does it prefixes a cluster, as USE's
   # `[<R | CS>]` does with the same class. It stands *instead of* a kinzi, never alongside one.
   # What may be stacked under a base: the spec's `<C | IV>`.
   stack = C | IV | Ra
@@ -85,19 +85,19 @@ definitions:
   # `(VPst [MH] (As)* (VAbv)* (A)* [DB [As]])*`
   post_vowels = (VPst mh? As* VAbv* A* (DB As?)?)*
 
-  # `(PT < [A] [DB] [As] | [As] [A] >)*`, with two corrections the observed behaviour forces.
+  # `(PT < [A] [DB] [As] | [As] [A] >)*`, with two corrections the observed behavior forces.
   #
-  # The spec page renders repeats as `(X)` where the original had a superscript asterisk — its prose
+  # The spec page renders repeats as `(X)` where the original had a superscript asterisk – its prose
   # gives the counts, and several were restored above the same way. The anusvara here is one of them:
   # `PT A A` is one cluster, so `[A]` is a repeat, not an option.
   #
   # The disjunction's second branch, `[As] [A]`, is not reachable: `PT As A` breaks between the asat
   # and the anusvara. So a Pwo tone takes any number of anusvara, then at most one dot below, then at
-  # most one asat — which is the first branch, and nothing else.
+  # most one asat – which is the first branch, and nothing else.
   #
   # A visarga or Shan tone is the same kind of thing and sits in the same repeat, so the two
-  # interleave: `visarga` then a Pwo tone is one cluster. Written as two separate runs — the tones,
-  # then the modifiers — a tone after a modifier fell out of the cluster and took a dotted circle.
+  # interleave: `visarga` then a Pwo tone is one cluster. Written as two separate runs – the tones,
+  # then the modifiers – a tone after a modifier would fall out of the cluster and take a dotted circle.
   tone_group = sm | (PT A* DB? As?)
 
   # The spec's V, which the table splits in two: the ordinary marks, and the digit-shaped ones the
@@ -121,7 +121,7 @@ syllables:
   # something that never wanted one. Listed above `broken_cluster`, which also matches it, and one
   # character long either way – so the order is what decides it.
   non_myanmar_cluster = SMPst
-  # The spec requires this without naming it — "the engine verifies that the run consists of valid
+  # The spec requires this without naming it – "the engine verifies that the run consists of valid
   # clusters and inserts a placeholder glyph (U+25CC) wherever combining marks occur without a valid
   # base". This is that case: everything a cluster may carry, with nothing to hang it on. It takes
   # the halant-terminated shape too, since the spec's second production ends in a bare halant and a

@@ -1,9 +1,6 @@
 pub fn window<const N: usize>(data: &[u8], off: usize) -> Option<&[u8; N]> {
-    // `checked_add` is load-bearing, not belt and braces. `overflow-checks` is off in this crate's
-    // release profile but a consumer may turn it on, and there a plain `off + N` panics before the
-    // range check refuses. And offsets arrive as `read_u32_be(..) as usize`, so on a 32-bit target
-    // a hostile 0xFFFFFFFF *is* usize::MAX and the add wraps to a small in-range offset – reading a
-    // real value out of the wrong part of the table rather than refusing.
+    // A consumer may turn overflow checks on, and on 32-bit a hostile 0xFFFFFFFF offset is usize::MAX,
+    // so a plain add would panic or wrap to a wrong in-range read.
     data.get(off..off.checked_add(N)?)?.try_into().ok()
 }
 

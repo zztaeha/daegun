@@ -105,7 +105,7 @@ fn grapheme_break_between(chars: &[char], i: usize) -> bool {
         if is_extended_pictographic(chars[j]) { return false; }
     }
 
-    // GB9c: a Devanagari-style conjunct holds together — consonant, then linkers and extends with
+    // GB9c: a Devanagari-style conjunct holds together – consonant, then linkers and extends with
     // at least one linker among them, then consonant. Added in Unicode 15.1, and the only rule here
     // that has to look back past an arbitrary run for a *specific* property rather than any of them.
     if conjunct_break(chars[i]) == incb::CONSONANT {
@@ -200,7 +200,7 @@ fn word_break_at(chars: &[char], significant: &[usize], i: usize) -> bool {
 
     // WB5.
     if is_letter(prev) && is_letter(cur) { return false; }
-    // WB6, WB7: a letter, one mid-letter punctuation, a letter — the apostrophe in "don't".
+    // WB6, WB7: a letter, one mid-letter punctuation, a letter – the apostrophe in "don't".
     if is_letter(prev) && matches!(cur, wb::MID_LETTER | wb::MID_NUM_LET | wb::SINGLE_QUOTE)
         && is_letter(next) { return false; }
     if is_letter(prev2) && matches!(prev, wb::MID_LETTER | wb::MID_NUM_LET | wb::SINGLE_QUOTE)
@@ -213,7 +213,7 @@ fn word_break_at(chars: &[char], significant: &[usize], i: usize) -> bool {
     if prev == wb::NUMERIC && cur == wb::NUMERIC { return false; }
     if is_letter(prev) && cur == wb::NUMERIC { return false; }
     if prev == wb::NUMERIC && is_letter(cur) { return false; }
-    // WB11, WB12: one separator inside a number — the comma in "1,000".
+    // WB11, WB12: one separator inside a number – the comma in "1,000".
     if prev2 == wb::NUMERIC && matches!(prev, wb::MID_NUM | wb::MID_NUM_LET | wb::SINGLE_QUOTE)
         && cur == wb::NUMERIC { return false; }
     if prev == wb::NUMERIC && matches!(cur, wb::MID_NUM | wb::MID_NUM_LET | wb::SINGLE_QUOTE)

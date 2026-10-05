@@ -251,7 +251,7 @@ impl<'a> ApplyContext<'a> {
 
         if ligature {
             props |= glyph_props::LIGATED;
-            // Uniscribe honours only the last of ligate/expand/ligate, so re-ligating forgives an
+            // Uniscribe honors only the last of ligate/expand/ligate, so re-ligating forgives an
             // intervening multiplication. Matching it is what keeps output identical on Windows.
             props &= !glyph_props::MULTIPLIED;
         }

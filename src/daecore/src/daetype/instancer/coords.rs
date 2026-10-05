@@ -1,10 +1,7 @@
 use alloc::vec::Vec;
 use super::super::decoder::{read_u16_be, read_i16_be, write_i16_be};
 use super::super::format::round::ot_round;
-use super::super::format::glyf::{
-    ARGS_ARE_XY_VALUES, ARG_1_AND_2_ARE_WORDS, MORE_COMPONENTS, WE_HAVE_AN_X_AND_Y_SCALE,
-    WE_HAVE_A_SCALE, WE_HAVE_A_TWO_BY_TWO,
-};
+use super::super::format::glyf::{scale_len, ARGS_ARE_XY_VALUES, ARG_1_AND_2_ARE_WORDS, MORE_COMPONENTS};
 
 #[derive(Default)]
 pub struct GlyphCoords {
@@ -13,12 +10,6 @@ pub struct GlyphCoords {
     pub flags:      Vec<u8>,
     pub end_pts:    Vec<usize>,
     pub num_points: usize,
-}
-
-pub fn extract_coords(data: &[u8], start: usize, n_contours: usize) -> GlyphCoords {
-    let mut out = GlyphCoords::default();
-    extract_coords_into(data, start, n_contours, &mut out);
-    out
 }
 
 impl GlyphCoords {
@@ -31,9 +22,11 @@ impl GlyphCoords {
     }
 }
 
-pub fn extract_coords_into(data: &[u8], start: usize, n_contours: usize, out: &mut GlyphCoords) {
+// A simple glyph's points. False, with nothing kept, where the end points do not increase or the
+// flags or coordinates run out before the points do.
+pub fn extract_coords_into(data: &[u8], start: usize, n_contours: usize, out: &mut GlyphCoords) -> bool {
     out.reset();
-    let empty = |out: &mut GlyphCoords| out.reset();
+    let empty = |out: &mut GlyphCoords| { out.reset(); false };
     out.end_pts.reserve(n_contours);
     for i in 0..n_contours {
         let off = start + 10 + i * 2;
@@ -68,10 +61,11 @@ pub fn extract_coords_into(data: &[u8], start: usize, n_contours: usize, out: &m
         let mut cur = 0i32;
         for (x, &f) in xs.iter_mut().zip(flags) {
             if f & 0x02 != 0 {
-                let v = match data.get(pos) { Some(&b) => { pos += 1; b as i32 } None => break };
-                cur = cur.saturating_add(if f & 0x10 != 0 { v } else { v.saturating_neg() });
+                let Some(&b) = data.get(pos) else { return empty(out) };
+                pos += 1;
+                cur = cur.saturating_add(if f & 0x10 != 0 { b as i32 } else { (b as i32).saturating_neg() });
             } else if f & 0x10 == 0 {
-                let v = match read_i16_be(data, pos) { Some(v) => v, None => break };
+                let Some(v) = read_i16_be(data, pos) else { return empty(out) };
                 cur = cur.saturating_add(v as i32); pos += 2;
             }
             *x = cur;
@@ -85,10 +79,11 @@ pub fn extract_coords_into(data: &[u8], start: usize, n_contours: usize, out: &m
         let mut cur = 0i32;
         for (y, &f) in ys.iter_mut().zip(flags) {
             if f & 0x04 != 0 {
-                let v = match data.get(pos) { Some(&b) => { pos += 1; b as i32 } None => break };
-                cur = cur.saturating_add(if f & 0x20 != 0 { v } else { v.saturating_neg() });
+                let Some(&b) = data.get(pos) else { return empty(out) };
+                pos += 1;
+                cur = cur.saturating_add(if f & 0x20 != 0 { b as i32 } else { (b as i32).saturating_neg() });
             } else if f & 0x20 == 0 {
-                let v = match read_i16_be(data, pos) { Some(v) => v, None => break };
+                let Some(v) = read_i16_be(data, pos) else { return empty(out) };
                 cur = cur.saturating_add(v as i32); pos += 2;
             }
             *y = cur;
@@ -96,41 +91,36 @@ pub fn extract_coords_into(data: &[u8], start: usize, n_contours: usize, out: &m
     }
 
     out.num_points = num_points;
+    true
 }
 
+// Moves the points a tuple leaves untouched between the touched ones around them, contour by contour.
+// `touched` and `order` are scratch.
 pub fn iup(
     dx: &mut [f64], dy: &mut [f64],
     touched_points: &[usize],
-    end_pts: &[usize],
-    num_points: usize,
-    orig_x: &[i32], orig_y: &[i32],
+    cc: &GlyphCoords,
+    touched: &mut Vec<bool>, order: &mut Vec<usize>,
 ) {
-    let touched: Vec<bool> = {
-        let mut t = vec![false; num_points];
-        for &p in touched_points { if p < num_points { t[p] = true; } }
-        t
-    };
+    touched.clear();
+    touched.resize(cc.num_points, false);
+    for &p in touched_points { if p < cc.num_points { touched[p] = true; } }
 
     let mut start = 0;
-    for &end in end_pts {
-        iup_axis(dx, &touched, orig_x, start, end);
-        iup_axis(dy, &touched, orig_y, start, end);
+    for &end in &cc.end_pts {
+        let n = end + 1 - start;
+        order.clear();
+        if let Some(first) = (start..=end).find(|&i| touched[i]) {
+            order.extend((0..n).map(|step| (first - start + step) % n + start).filter(|&i| touched[i]));
+            iup_axis(dx, &cc.x_coords, order, start, n);
+            iup_axis(dy, &cc.y_coords, order, start, n);
+        }
         start = end + 1;
     }
 }
 
-fn iup_axis(delta: &mut [f64], touched: &[bool], coords: &[i32], start: usize, end: usize) {
-    if end < start { return; }
-    let n = end - start + 1;
-
-    let first = match (start..=end).find(|&i| touched[i]) { Some(f) => f, None => return };
-
-    let mut touched_pos: Vec<usize> = Vec::new();
-    for step in 0..n {
-        let i = (first - start + step) % n + start;
-        if touched[i] { touched_pos.push(i); }
-    }
-
+// `touched_pos` lists a contour's touched points in order, starting from its first.
+fn iup_axis(delta: &mut [f64], coords: &[i32], touched_pos: &[usize], start: usize, n: usize) {
     for t in 0..touched_pos.len() {
         let prev_idx   = touched_pos[t];
         let next_idx   = touched_pos[(t + 1) % touched_pos.len()];
@@ -140,10 +130,7 @@ fn iup_axis(delta: &mut [f64], touched: &[bool], coords: &[i32], start: usize, e
         let next_coord = coords[next_idx] as f64;
 
         let mut cur = (prev_idx - start + 1) % n + start;
-        let mut steps = 0usize;
         while cur != next_idx {
-            if steps >= n { break; }
-            steps += 1;
             let cur_coord = coords[cur] as f64;
             delta[cur] = if prev_coord == next_coord {
                 if prev_delta == next_delta { prev_delta } else { 0.0 }
@@ -159,143 +146,105 @@ fn iup_axis(delta: &mut [f64], touched: &[bool], coords: &[i32], start: usize, e
     }
 }
 
+// The glyph with its points moved, written onto the end of `out`. `cc` holds its points as read
+// and is left moved; `flags` is scratch.
+#[allow(clippy::too_many_arguments, reason = "the glyph, its deltas and the three buffers it reuses")]
 pub fn apply_simple_glyph_deltas(
     data: &[u8], start: usize, end: usize,
     n_contours: usize,
     dx: &[f64], dy: &[f64],
-    pre: Option<&GlyphCoords>,
-) -> Vec<u8> {
+    cc: &mut GlyphCoords, flags: &mut Vec<u8>, out: &mut Vec<u8>,
+) {
+    let raw = |out: &mut Vec<u8>| {
+        let s = start.min(data.len());
+        let e = end.min(data.len()).max(s);
+        out.extend_from_slice(&data[s..e]);
+    };
     let instr_len_off = start + 10 + n_contours * 2;
-    let instruction_len = match read_u16_be(data, instr_len_off) {
-        Some(v) => v as usize,
-        None => {
-            let s = start.min(data.len());
-            let e = end.min(data.len()).max(s);
-            return data[s..e].to_vec();
-        }
-    };
+    let Some(instruction_len) = read_u16_be(data, instr_len_off) else { return raw(out) };
+    let header_size = instr_len_off + 2 + usize::from(instruction_len) - start;
+    let Some(header) = data.get(start..start + header_size) else { return raw(out) };
 
-    let (num_points, flags, mut x_coords, mut y_coords) = if let Some(cc) = pre {
-        (cc.num_points, cc.flags.clone(), cc.x_coords.clone(), cc.y_coords.clone())
-    } else {
-        let cc = extract_coords(data, start, n_contours);
-        (cc.num_points, cc.flags, cc.x_coords, cc.y_coords)
-    };
-
-    for i in 0..num_points {
-        x_coords[i] = x_coords[i].saturating_add(ot_round(dx[i]));
-        y_coords[i] = y_coords[i].saturating_add(ot_round(dy[i]));
+    let n = cc.num_points;
+    let (xs, ys) = (&mut cc.x_coords[..n], &mut cc.y_coords[..n]);
+    for i in 0..n {
+        xs[i] = xs[i].saturating_add(ot_round(dx[i]));
+        ys[i] = ys[i].saturating_add(ot_round(dy[i]));
     }
+    let range = |v: &[i32]| (v.iter().copied().min().unwrap_or(0), v.iter().copied().max().unwrap_or(0));
+    let ((x_min, x_max), (y_min, y_max)) = (range(xs), range(ys));
 
-    let (x_min, x_max, y_min, y_max) = if num_points > 0 {
-        let mut xmn = x_coords[0]; let mut xmx = x_coords[0];
-        let mut ymn = y_coords[0]; let mut ymx = y_coords[0];
-        for i in 1..num_points {
-            if x_coords[i] < xmn { xmn = x_coords[i]; }
-            if x_coords[i] > xmx { xmx = x_coords[i]; }
-            if y_coords[i] < ymn { ymn = y_coords[i]; }
-            if y_coords[i] > ymx { ymx = y_coords[i]; }
-        }
-        (xmn, xmx, ymn, ymx)
-    } else { (0, 0, 0, 0) };
-
-    let mut ttf_flags = vec![0u8; num_points];
-    let mut x_deltas  = vec![0i16; num_points];
-    let mut y_deltas  = vec![0i16; num_points];
-    let mut prev_x = 0i32; let mut prev_y = 0i32;
-    for i in 0..num_points {
-        let dxp = x_coords[i].wrapping_sub(prev_x) as i16;
-        let dyp = y_coords[i].wrapping_sub(prev_y) as i16;
-        prev_x = x_coords[i]; prev_y = y_coords[i];
-        x_deltas[i] = dxp; y_deltas[i] = dyp;
-
-        let mut f = flags[i] & 0xC1;
+    flags.clear();
+    let (mut prev_x, mut prev_y) = (0i32, 0i32);
+    for i in 0..n {
+        let dxp = xs[i].wrapping_sub(prev_x) as i16;
+        let dyp = ys[i].wrapping_sub(prev_y) as i16;
+        prev_x = xs[i]; prev_y = ys[i];
+        let mut f = cc.flags[i] & 0xC1;
         if dxp == 0 { f |= 0x10; }
         else if (-255..=255).contains(&dxp) { f |= 0x02; if dxp > 0 { f |= 0x10; } }
         if dyp == 0 { f |= 0x20; }
         else if (-255..=255).contains(&dyp) { f |= 0x04; if dyp > 0 { f |= 0x20; } }
-        ttf_flags[i] = f;
+        flags.push(f);
     }
 
-    let mut encoded_flags: Vec<u8> = Vec::new();
+    let at = out.len();
+    out.reserve(header_size + n * 5);
+    out.extend_from_slice(header);
+    write_i16_be(out, at + 2, x_min as i16);
+    write_i16_be(out, at + 4, y_min as i16);
+    write_i16_be(out, at + 6, x_max as i16);
+    write_i16_be(out, at + 8, y_max as i16);
     let mut i = 0;
-    let mut outer_guard = 0usize;
-    while i < num_points {
-        outer_guard += 1;
-        if outer_guard > num_points { break; }
-        encoded_flags.push(ttf_flags[i]);
-        let mut rep = 0usize;
-        let mut rep_guard = 0usize;
-        while i + 1 + rep < num_points && rep < 255 && rep_guard < 255 && ttf_flags[i + 1 + rep] == ttf_flags[i] { rep += 1; rep_guard += 1; }
+    while i < n {
+        let rep = flags[i + 1..].iter().take(255).take_while(|&&f| f == flags[i]).count();
         if rep > 0 {
-            #[allow(clippy::unwrap_used, reason = "encoded_flags was just pushed to unconditionally above")]
-            { *encoded_flags.last_mut().unwrap() |= 0x08; }
-            encoded_flags.push(rep as u8);
-            i += 1 + rep;
-        } else { i += 1; }
-    }
-
-    let mut x_bytes: Vec<u8> = Vec::new();
-    for i in 0..num_points {
-        let f = ttf_flags[i];
-        if f & 0x02 != 0 { x_bytes.push(x_deltas[i].unsigned_abs() as u8); }
-        else if f & 0x10 == 0 { x_bytes.push((x_deltas[i] >> 8) as u8); x_bytes.push(x_deltas[i] as u8); }
-    }
-
-    let mut y_bytes: Vec<u8> = Vec::new();
-    for i in 0..num_points {
-        let f = ttf_flags[i];
-        if f & 0x04 != 0 { y_bytes.push(y_deltas[i].unsigned_abs() as u8); }
-        else if f & 0x20 == 0 { y_bytes.push((y_deltas[i] >> 8) as u8); y_bytes.push(y_deltas[i] as u8); }
-    }
-
-    let header_size = instr_len_off + 2 + instruction_len - start;
-    let header_bytes = match data.get(start..start + header_size) {
-        Some(b) => b,
-        None => {
-            let s = start.min(data.len());
-            let e = end.min(data.len()).max(s);
-            return data[s..e].to_vec();
+            out.extend_from_slice(&[flags[i] | 0x08, rep as u8]);
+        } else {
+            out.push(flags[i]);
         }
-    };
-    let mut out = Vec::with_capacity(header_size + encoded_flags.len() + x_bytes.len() + y_bytes.len());
-    out.extend_from_slice(header_bytes);
-    write_i16_be(&mut out, 2, x_min as i16);
-    write_i16_be(&mut out, 4, y_min as i16);
-    write_i16_be(&mut out, 6, x_max as i16);
-    write_i16_be(&mut out, 8, y_max as i16);
-    out.extend_from_slice(&encoded_flags);
-    out.extend_from_slice(&x_bytes);
-    out.extend_from_slice(&y_bytes);
-    out
+        i += 1 + rep;
+    }
+    push_deltas(out, flags, xs, 0x02, 0x10);
+    push_deltas(out, flags, ys, 0x04, 0x20);
 }
 
-pub fn count_composite_components(data: &[u8], start: usize) -> usize {
+// One axis as glyf stores it: each point's step from the one before, a byte where `short` is set
+// (`same` then giving its sign), else a word unless `same` says it repeats.
+fn push_deltas(out: &mut Vec<u8>, flags: &[u8], coords: &[i32], short: u8, same: u8) {
+    let mut prev = 0i32;
+    for (&f, &c) in flags.iter().zip(coords) {
+        let d = c.wrapping_sub(prev) as i16;
+        prev = c;
+        if f & short != 0 { out.push(d.unsigned_abs() as u8); }
+        else if f & same == 0 { out.extend_from_slice(&d.to_be_bytes()); }
+    }
+}
+
+// Bounded by the glyph's own end, as apply_composite_glyph_deltas reads it.
+pub fn count_composite_components(data: &[u8], start: usize, end: usize) -> usize {
+    let glyph = data.get(..end).unwrap_or(data);
     let mut pos = start + 10;
     let mut count = 0;
-    while count <= data.len() {
-        let f = match read_u16_be(data, pos) { Some(v) => v, None => break };
+    loop {
+        let f = match read_u16_be(glyph, pos) { Some(v) if pos + 4 <= end => v, _ => break };
         pos += 4; count += 1;
         pos += if f & ARG_1_AND_2_ARE_WORDS != 0 { 4 } else { 2 };
-        if      f & WE_HAVE_A_TWO_BY_TWO != 0 { pos += 8; }
-        else if f & WE_HAVE_AN_X_AND_Y_SCALE     != 0 { pos += 4; }
-        else if f & WE_HAVE_A_SCALE  != 0 { pos += 2; }
+        pos += scale_len(f);
         if f & MORE_COMPONENTS == 0 { break; }
     }
     count
 }
 
+// The glyph with its component offsets moved, written onto the end of `out`.
 pub fn apply_composite_glyph_deltas(
     data: &[u8], start: usize, end: usize,
-    dx: &[f64], dy: &[f64], num_components: usize,
-) -> Vec<u8> {
-    let src = match data.get(start..end) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    if src.len() < 10 { return src.to_vec(); }
+    dx: &[f64], dy: &[f64], num_components: usize, out: &mut Vec<u8>,
+) {
+    let Some(src) = data.get(start..end) else { return };
+    if src.len() < 10 { return out.extend_from_slice(src); }
 
-    let mut out = src[..10].to_vec();
+    out.extend_from_slice(&src[..10]);
     let mut pos = 10usize;
     let mut comp = 0usize;
     while comp < num_components {
@@ -335,7 +284,7 @@ pub fn apply_composite_glyph_deltas(
             out.push(na1 as i8 as u8);
         }
 
-        let t_len = if f & WE_HAVE_A_TWO_BY_TWO != 0 { 8 } else if f & WE_HAVE_AN_X_AND_Y_SCALE != 0 { 4 } else if f & WE_HAVE_A_SCALE != 0 { 2 } else { 0 };
+        let t_len = scale_len(f);
         match src.get(pos..pos + t_len) {
             Some(t) => out.extend_from_slice(t),
             None => break,
@@ -345,5 +294,23 @@ pub fn apply_composite_glyph_deltas(
         if f & MORE_COMPONENTS == 0 { break; }
     }
     if pos < src.len() { out.extend_from_slice(&src[pos..]); }
-    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    // One component that says more follow, then the next glyph's bytes: the count stops at the
+    // glyph's own end.
+    #[test]
+    fn a_component_count_stops_at_the_glyphs_end() {
+        let mut glyf = vec![0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0];
+        glyf.extend([0x00, 0x20 | 0x02, 0, 1, 0, 0]);
+        let end = glyf.len();
+        for _ in 0..1000 {
+            glyf.extend([0x00, 0x22, 0, 1, 0, 0]);
+        }
+        assert_eq!(count_composite_components(&glyf, 0, end), 1);
+    }
 }

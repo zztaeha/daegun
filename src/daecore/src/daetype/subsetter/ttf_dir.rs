@@ -35,6 +35,18 @@ pub fn owned_table(ttf: &[u8], map: &BTreeMap<String, TtfEntry>, tag: &str) -> O
     slice_table(ttf, map, tag).map(|s| s.to_vec())
 }
 
+// The metrics table and its count of full entries, or None where the font has none that way.
+pub fn metrics_of<'a>(
+    map: &'a BTreeMap<String, TableBytes>,
+    mtx_tag: &str,
+    hea_tag: &str,
+) -> Option<(&'a [u8], usize)> {
+    let mtx = map.get(mtx_tag)?.as_slice();
+    let hea = map.get(hea_tag)?.as_slice();
+    if hea.len() < 36 { return None; }
+    Some((mtx, read_u16_be(hea, 34)? as usize))
+}
+
 pub fn map_advances_all(
     map: &BTreeMap<String, TableBytes>,
     mtx_tag: &str,
@@ -47,12 +59,7 @@ pub fn map_advances_all(
         .filter(|h| h.len() >= 20)
         .and_then(|h| read_u16_be(h, 18))
         .filter(|&v| v > 0);
-    let resolved = (|| {
-        let mtx = get(mtx_tag)?;
-        let hea = get(hea_tag)?;
-        if hea.len() < 36 { return None; }
-        Some((mtx, read_u16_be(hea, 34)? as usize, upm?))
-    })();
+    let resolved = metrics_of(map, mtx_tag, hea_tag).zip(upm).map(|((mtx, n), upm)| (mtx, n, upm));
     let Some((mtx, num_metrics, upm)) = resolved else {
         let default = match upm {
             Some(u) if !mtx_tag.starts_with('v') => {

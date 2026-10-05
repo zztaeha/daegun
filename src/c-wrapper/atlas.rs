@@ -52,5 +52,3 @@ pub unsafe extern "C" fn daegun_shelf_packer_reset(packer: *mut ShelfPacker) -> 
 pub unsafe extern "C" fn daegun_shelf_packer_free(packer: *mut ShelfPacker) {
     unsafe { release(packer) }
 }
-
-extern crate alloc;

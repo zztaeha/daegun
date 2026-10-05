@@ -446,13 +446,14 @@ fn pair(ctx: &mut ApplyContext, data: &[u8], second_cache: &mut Second) -> bool 
         }
     };
 
-    let records = match format {
+    // A format 1 record's devices are offsets from its PairSet; a format 2 record's from the subtable.
+    let (records, parent) = match format {
         1 => {
             let Some(set) = offset_slice(data, 10 + first_index as usize * 2) else {
                 return false;
             };
             let Some(r) = pair_set_lookup(set, second, format1, format2) else { return false };
-            r
+            (r, set)
         }
         2 => {
             let (Some(class1), Some(class2)) =
@@ -466,7 +467,7 @@ fn pair(ctx: &mut ApplyContext, data: &[u8], second_cache: &mut Second) -> bool 
             let c1 = class1.class_of(first);
             let c2 = class2.class_of(second);
             match class_matrix_lookup(data, c1, c2, count1, count2, format1, format2) {
-                Some(r) => r,
+                Some(r) => (r, data),
                 None => {
                     let idx = ctx.buffer.idx;
                     ctx.buffer.unsafe_to_concat(idx, second_pos + 1);
@@ -482,8 +483,8 @@ fn pair(ctx: &mut ApplyContext, data: &[u8], second_cache: &mut Second) -> bool 
     let has2 = value_record_len(format2) != 0;
 
     let idx = ctx.buffer.idx;
-    let moved1 = has1 && r1.apply(ctx, data, idx);
-    let moved2 = has2 && r2.apply(ctx, data, second_pos);
+    let moved1 = has1 && r1.apply(ctx, parent, idx);
+    let moved2 = has2 && r2.apply(ctx, parent, second_pos);
 
     if moved1 || moved2 {
         ctx.buffer.unsafe_to_break(idx, second_pos + 1);

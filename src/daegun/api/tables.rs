@@ -20,8 +20,8 @@ impl Font {
         Some(MathConstants {
             script_percent_scale_down: c.script_percent_scale_down as f64,
             script_script_percent_scale_down: c.script_script_percent_scale_down as f64,
-            delimited_sub_formula_min_height: s(c.delimited_sub_formula_min_height as i16),
-            display_operator_min_height: s(c.display_operator_min_height as i16),
+            delimited_sub_formula_min_height: f64::from(c.delimited_sub_formula_min_height) * scale,
+            display_operator_min_height: f64::from(c.display_operator_min_height) * scale,
             math_leading: s(c.math_leading),
             axis_height: s(c.axis_height),
             accent_base_height: s(c.accent_base_height),
@@ -83,17 +83,19 @@ impl Font {
     }
 
     pub fn math_top_accent_attachment(&self, gid: u16) -> f64 {
-        self.cache.math_top_accent_attachment(gid) as f64
+        self.cache.math_top_accent_attachment(gid)
     }
 
     pub fn math_is_extended_shape(&self, gid: u16) -> bool {
         crate::daecore::daetype::math_table::math_is_extended_shape(&self.cache.table_map, gid)
     }
 
-    pub fn math_kern(&self, gid: u16, corner: MathKernCorner, height: f64) -> f64 {
+    // The kern at a height: None for one that is not a number.
+    pub fn math_kern(&self, gid: u16, corner: MathKernCorner, height: f64) -> Option<f64> {
+        if !height.is_finite() { return None; }
         let scale = self.cache.scale_factor();
-        let design_height = (height / scale).round() as i16;
-        crate::daecore::daetype::math_table::math_kern(&self.cache.table_map, gid, corner, design_height) as f64 * scale
+        let kern = crate::daecore::daetype::math_table::math_kern(&self.cache.table_map, gid, corner, height / scale);
+        Some(f64::from(kern) * scale)
     }
 
     pub fn math_glyph_variants(&self, gid: u16, vertical: bool) -> Option<MathGlyphConstruction> {
@@ -125,8 +127,27 @@ impl Font {
         Some(StatInfo { axes, values, elided_fallback_name })
     }
 
-    pub fn base_info(&self, script_tag: &str, vertical: bool) -> Option<BaseScriptInfo> {
-        crate::daecore::daetype::base::base_script_info(&self.cache.table_map, script_tag, vertical)
+    // A script's baselines on one axis at a location, DFLT's when the script has none.
+    pub fn base_info(&self, script_tag: &str, vertical: bool, axes: &[(&str, f64)]) -> Option<BaseScriptInfo> {
+        let location = self.cache.compute_location_rs(&owned_axes(axes));
+        let table_map = &self.cache.table_map;
+        let mut info = crate::daecore::daetype::base::base_script_info(table_map, script_tag, vertical, &location)?;
+        let scale = self.cache.scale_factor();
+        info.baseline_coords.values_mut().for_each(|c| *c *= scale);
+        Some(info)
+    }
+
+    // The lowest and highest extent BASE gives a script on one axis at a location, for a language and a
+    // feature when given; each side None where the font gives none.
+    pub fn base_extents(
+        &self, script_tag: &str, language: Option<&str>, feature: Option<&str>, vertical: bool, axes: &[(&str, f64)],
+    ) -> Option<(Option<f64>, Option<f64>)> {
+        let location = self.cache.compute_location_rs(&owned_axes(axes));
+        let (min, max) = crate::daecore::daetype::base::base_min_max(
+            &self.cache.table_map, script_tag, language, feature, vertical, &location,
+        )?;
+        let scale = self.cache.scale_factor();
+        Some((min.map(|v| v * scale), max.map(|v| v * scale)))
     }
 
     pub fn base_is_glyph_free(&self) -> bool {

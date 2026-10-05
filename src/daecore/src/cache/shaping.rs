@@ -1,9 +1,8 @@
 use super::*;
 
 impl FontCache {
-    // Double-checked, because `build` is the caller's closure and must not run with the guard held:
-    // that is a deadlock under `threading` and an already-borrowed panic under `RefCell`. The wasted
-    // build when two callers race was going to happen anyway.
+    // Double-checked: `build` is the caller's closure and must not run under the guard, which would be a
+    // deadlock under `threading` and a borrow panic under `RefCell`. Racing callers may both build.
     pub(crate) fn subtable_indexes_cached(
         &self,
         table_index: usize,
@@ -147,10 +146,10 @@ impl FontCache {
         let run = Shared::new(crate::daecore::text::shape::shape_run_stated_with_options(
             self, axes, text, vertical, ctx.rtl, &opts,
         )?);
-        let cost = ShapeCache::cost(&key, &run);
-        if cost <= SHAPE_CACHE_ENTRY_MAX {
+        let (cost, budget) = (ShapeCache::cost(&key, &run), self.shape_budget.get());
+        if cost <= SHAPE_CACHE_ENTRY_MAX && cost <= budget {
             let mut cache = write(&self.shape_cache);
-            if cache.bytes + cost > self.shape_budget.get() {
+            if cache.bytes + cost > budget {
                 cache.runs.clear();
                 cache.bytes = 0;
             }
@@ -170,23 +169,22 @@ impl FontCache {
     }
 
     pub(crate) fn cmap_index(&self) -> Option<Shared<crate::daecore::daetype::format::index::SparseIndex>> {
-        read(&self.cmap_index).as_ref().and_then(|built| built.clone())
+        read(&self.cmap).index.clone().flatten()
     }
 
     pub fn glyph_id(&self, codepoint: u32) -> Option<u16> {
-        if let Some(built) = read(&self.cmap_index).as_ref() {
-            return match built {
-                Some(index) => Some(index.lookup(codepoint)).filter(|&g| g != 0),
-                None => crate::daecore::daetype::subsetter::cmap_glyph_id(self.table_map.get("cmap")?, codepoint)
-                    .and_then(|g| self.glyph_in_range(g)),
-            };
+        let cmap = self.table_map.get("cmap")?;
+        let mut state = write(&self.cmap);
+        if let Some(Some(index)) = &state.index {
+            return Some(index.lookup(codepoint)).filter(|&g| g != 0);
         }
-        crate::daecore::daetype::subsetter::cmap_glyph_id(self.table_map.get("cmap")?, codepoint)
-            .and_then(|g| self.glyph_in_range(g))
+        let gid = state.lookup.get_or_insert_with(|| crate::daecore::daetype::subsetter::CmapLookup::new(cmap)).glyph_id(cmap, codepoint)?;
+        drop(state);
+        self.glyph_in_range(gid)
     }
 
     pub(crate) fn warm_cmap_index(&self) {
-        if read(&self.cmap_index).is_some() {
+        if read(&self.cmap).index.is_some() {
             return;
         }
         let built = self.table_map.get("cmap").and_then(|cmap| {
@@ -194,7 +192,7 @@ impl FontCache {
             entries.retain(|&(_, g)| self.glyph_in_range(g).is_some());
             self.build_index(&entries, 0).map(Shared::new)
         });
-        *write(&self.cmap_index) = Some(built);
+        write(&self.cmap).index = Some(built);
     }
 
     pub fn variation_glyph_id(&self, base: u32, selector: u32) -> Option<u16> {

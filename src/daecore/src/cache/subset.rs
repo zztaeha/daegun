@@ -2,120 +2,29 @@ use crate::daecore::daetype::subsetter::GlyphSet;
 use super::*;
 use crate::daecore::daetype::TableBytes;
 
-// Declared once because `subset_text_rs`'s CFF branch and `subset_cff_flavored` must strip exactly
-// the same set; they carried identical copies seventy lines apart.
+// Tables a CFF subset leaves out or rebuilds: variations, color, and DSIG, which signs the source's bytes.
 const STRIP_FOR_CFF_SUBSET: &[&str] = &[
-    "fvar", "gvar", "avar", "cvar", "HVAR", "VVAR", "MVAR", "STAT", "CFF2", "CFF ", "COLR", "CPAL",
+    "fvar", "gvar", "avar", "cvar", "HVAR", "VVAR", "MVAR", "STAT", "CFF2", "CFF ", "COLR", "CPAL", "DSIG",
 ];
 
 fn n_source(source: &BTreeMap<String, TableBytes>) -> u16 {
     source.get("maxp").and_then(|m| read_u16_be(m, 4)).unwrap_or(0)
 }
 
-fn closure_loop<'a>(
-    table: impl Fn(&str) -> Option<&'a [u8]>,
-    num_glyphs: u16,
-    requested: &[u16],
-    // `reach` owns insertion rather than returning ids, which is what preserves a real difference:
-    // `active_gids_into` filters against numGlyphs and the CFF walk deliberately does not, since a
-    // caller may name a gid this font lacks and expect it ignored rather than reinterpreted.
-    mut reach: impl FnMut(&[u16], &mut GlyphSet),
-) -> Result<GlyphSet, String> {
-    let mut active = GlyphSet::new();
-    let seed: Vec<u16> = core::iter::once(0).chain(requested.iter().copied()).collect();
-    reach(&seed, &mut active);
-
-    const MAX_CLOSURE_PASSES: usize = 64;
-    let mut steps = 0usize;
-    loop {
-        steps += 1;
-        if steps > MAX_CLOSURE_PASSES {
-            return Err("subset: glyph closure did not converge within its pass budget".into());
-        }
-        let mut new_gids: Vec<u16> = Vec::new();
-        if let Some(colr) = table("COLR") {
-            new_gids.extend(crate::daecore::daetype::subsetter::colr::colr_closure(colr, &active));
-        }
-        if let Some(gsub) = table("GSUB") {
-            new_gids.extend(crate::daecore::daetype::subsetter::gsub_closure(gsub, &active));
-        }
-        if let Some(math) = table("MATH") {
-            new_gids.extend(crate::daecore::daetype::subsetter::math_closure(math, &active));
-        }
-        if let Some(morx) = table("morx") {
-            new_gids.extend(crate::daecore::daetype::subsetter::morx_closure(morx, &active, num_glyphs));
-        }
-        new_gids.retain(|g| !active.contains(g));
-        if new_gids.is_empty() { break; }
-        reach(&new_gids, &mut active);
-    }
-    Ok(active)
-}
-
 pub fn cff_color_closure(
-    cff: &[u8], source: &BTreeMap<String, TableBytes>, requested: &[u16],
+    cff: &[u8], outlines: Option<&crate::daecore::daetype::outline::CffOutlines>, source: &BTreeMap<String, TableBytes>, requested: &[u16],
 ) -> Result<GlyphSet, String> {
-    let closure_inputs = crate::daecore::daetype::subsetter::cff_charstrings_for_closure(cff).ok();
-    closure_loop(
+    crate::daecore::daetype::subsetter::closure_loop(
         |tag| source.get(tag).map(|t| t.as_slice()),
         n_source(source),
         requested,
         |gids, set| {
-            let mut frontier: Vec<u16> = gids.iter().copied().filter(|&g| set.insert(g)).collect();
-            if let Some((charstrings, charset_off)) = &closure_inputs {
-                while !frontier.is_empty() {
-                    let found = crate::daecore::daetype::subsetter::seac_component_gids(
-                        charstrings, &frontier, cff, *charset_off, None,
-                    );
-                    frontier = found.into_iter().filter(|&c| set.insert(c)).collect();
-                }
+            let frontier: Vec<u16> = gids.iter().copied().filter(|&g| set.insert(g)).collect();
+            if let Some(outlines) = outlines {
+                crate::daecore::daetype::subsetter::close_over_seacs(outlines, cff, frontier, set);
             }
         },
     )
-}
-
-pub fn glyf_closure(ttf: &[u8], requested: &[u16]) -> Result<GlyphSet, String> {
-    use crate::daecore::daetype::subsetter::{parse_loca, parse_ttf_dir, slice_table};
-
-    let dir = parse_ttf_dir(ttf);
-    let table = |tag: &str| slice_table(ttf, &dir, tag);
-
-    let head = table("head").ok_or("subset: missing head")?;
-    let maxp = table("maxp").ok_or("subset: missing maxp")?;
-    let loca_fmt = read_i16_be(head, 50).ok_or("subset: head table truncated")?;
-    let num_glyphs = read_u16_be(maxp, 4).ok_or("subset: maxp table truncated")? as usize;
-    if num_glyphs == 0 {
-        return Err("subset: maxp reports zero glyphs".into());
-    }
-
-    let outlines = match (table("glyf"), table("loca")) {
-        (Some(glyf), Some(loca)) => Some((glyf, parse_loca(loca, loca_fmt, num_glyphs))),
-        (None, None) => None,
-        (Some(_), None) => return Err("subset: font has glyf but no loca".into()),
-        (None, Some(_)) => return Err("subset: font has loca but no glyf".into()),
-    };
-
-    closure_loop(table, num_glyphs as u16, requested, |gids, set| match &outlines {
-        Some((glyf, loca)) => {
-            crate::daecore::daetype::subsetter::active_gids_into(gids, glyf, loca, num_glyphs, set);
-        }
-        None => set.extend(gids.iter().copied().filter(|&g| (g as usize) < num_glyphs)),
-    })
-}
-
-fn display_tables(mappings: &[(u32, u16)], family: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let cmap = crate::daecore::daetype::subsetter::build_unicode_cmap(mappings);
-    if cmap.is_empty() {
-        return Err(format!(
-            "subset_text: {} distinct codepoints exceed what a format 4 cmap with one segment each can address",
-            mappings.len()
-        ));
-    }
-    let name = crate::daecore::daetype::subsetter::build_name_table(family);
-    if name.is_empty() {
-        return Err("subset_text: family name too long for a uint16-addressed name table".into());
-    }
-    Ok((cmap, name))
 }
 
 fn identity_gid_map_for(active: &GlyphSet) -> Vec<u16> {
@@ -123,35 +32,39 @@ fn identity_gid_map_for(active: &GlyphSet) -> Vec<u16> {
     (0..=max_active).collect()
 }
 
+// `text` is the text's mappings and sequences in source glyph ids, which the subset's cmap holds in
+// place of the source's; a subset of them may also be compacted.
 pub fn subset_cff_flavored(
     source: &BTreeMap<String, TableBytes>,
     cff: &[u8],
     gids: &[u16],
-    display: Option<(&[(u32, u16)], &str)>,
+    text: Option<crate::daecore::daetype::subsetter::TextCmap>,
 ) -> Result<SubsetResult, String> {
     let colr = source.get("COLR").map(|t| t.as_slice());
-    let active = cff_color_closure(cff, source, gids)?;
+    let outlines = crate::daecore::daetype::outline::CffOutlines::parse(cff).ok();
+    let active = cff_color_closure(cff, outlines.as_ref(), source, gids)?;
     let closed: Vec<u16> = active.iter().collect();
     const RENUMBER_SAFE: &[&str] = &[
         "CFF ", "GDEF", "GSUB", "GPOS", "MATH", "JSTF", "VORG", "kern", "hdmx", "LTSH",
         "hmtx", "hhea", "vmtx", "vhea", "maxp", "cmap", "name", "post",
         "CBDT", "CBLC", "EBDT", "EBLC", "sbix", "prop", "kerx", "just", "morx", "lcar", "opbd", "ankr", "bsln", "fmtx", "bdat", "bloc", "Zapf", "EBSC", "xref",
         "feat", "trak", "fdsc", "ltag",
-        "head", "OS/2", "gasp", "DSIG", "meta", "PCLT", "VDMX", "MERG", "hsty", "cvt ", "fpgm", "prep",
+        "head", "OS/2", "MERG",
     ];
 
     let recognized = |t: &str| {
         RENUMBER_SAFE.contains(&t)
+            || crate::daecore::daetype::subsetter::GLYPH_FREE_TABLES.contains(&t)
             || STRIP_FOR_CFF_SUBSET.contains(&t)
             || (t == "BASE" && source.get("BASE").is_some_and(|b| crate::daecore::daetype::base::base_is_glyph_free(b)))
     };
-    let want_compact = display.is_some() && source.keys().all(|t| recognized(t));
-    let cff_result = if want_compact {
-        crate::daecore::daetype::subsetter::subset_cff_compacting(cff, &closed)?
-    } else {
-        crate::daecore::daetype::subsetter::subset_cff(cff, &closed)?
-    };
+    let want_compact = text.is_some() && source.keys().all(|t| recognized(t));
+    let cff_result = crate::daecore::daetype::subsetter::subset_cff_closed(cff, outlines.as_ref(), &closed, want_compact)?;
     let compacted = !cff_result.gid_map.is_empty();
+    // The closure keeps a gid past the CFF, as a cmap or GSUB entry can name; the subset holds none.
+    let limit = if compacted { cff_result.gid_map.len() } else { usize::from(n_source(source)) };
+    let closed: Vec<u16> = closed.into_iter().filter(|&g| usize::from(g) < limit).collect();
+    let active: GlyphSet = closed.iter().copied().collect();
     let gid_map = if compacted { cff_result.gid_map.clone() } else { identity_gid_map_for(&active) };
 
     let mut out_map: BTreeMap<String, TableBytes> = BTreeMap::new();
@@ -161,12 +74,13 @@ pub fn subset_cff_flavored(
         }
     }
 
-    let orig_gdef = source.get("GDEF").map(|t| t.as_slice());
-    let mark_filter_sets_survive = orig_gdef.is_some_and(crate::daecore::daetype::subsetter::has_mark_glyph_sets);
+    use crate::daecore::daetype::subsetter::{mark_glyph_set_count, subset_gdef, subset_gpos, subset_gsub};
+    let new_gdef = source.get("GDEF").and_then(|g| subset_gdef(g, &active, &gid_map));
+    let mark_sets = new_gdef.as_deref().map_or(0, mark_glyph_set_count);
     for (tag, rebuilt) in [
-        ("GDEF", orig_gdef.and_then(|g| crate::daecore::daetype::subsetter::subset_gdef(g, &active, &gid_map))),
-        ("GSUB", source.get("GSUB").and_then(|g| crate::daecore::daetype::subsetter::subset_gsub(g, &active, &gid_map, mark_filter_sets_survive))),
-        ("GPOS", source.get("GPOS").and_then(|g| crate::daecore::daetype::subsetter::subset_gpos(g, &active, &gid_map, mark_filter_sets_survive))),
+        ("GSUB", source.get("GSUB").and_then(|g| subset_gsub(g, &active, &gid_map, mark_sets))),
+        ("GPOS", source.get("GPOS").and_then(|g| subset_gpos(g, &active, &gid_map, mark_sets))),
+        ("GDEF", new_gdef),
     ] {
         if !source.contains_key(tag) { continue; }
         match rebuilt {
@@ -180,6 +94,8 @@ pub fn subset_cff_flavored(
     out_map.insert("CFF ".to_string(), (cff_result.ttf).into());
 
     if compacted {
+        // MERG's class definitions name glyph ids; without it, glyphs are always merged.
+        out_map.remove("MERG");
         let n_active = closed.len();
         for (mtx_tag, hea_tag) in [("hmtx", "hhea"), ("vmtx", "vhea")] {
             let (Some(mtx), Some(hea)) = (source.get(mtx_tag), source.get(hea_tag)) else { continue };
@@ -211,10 +127,6 @@ pub fn subset_cff_flavored(
             ("ankr", source.get("ankr").and_then(|d| crate::daecore::daetype::subsetter::subset_ankr(d, &active, &gid_map, n_source(source)))),
             ("bsln", source.get("bsln").and_then(|d| crate::daecore::daetype::subsetter::subset_bsln(d, &active, &gid_map, n_source(source)))),
             ("fmtx", source.get("fmtx").and_then(|d| crate::daecore::daetype::subsetter::subset_fmtx(d, &active, &gid_map))),
-            ("EBSC", source.get("EBSC").and_then(|e| {
-                let surviving = source.get("EBLC").map(|b| crate::daecore::daetype::subsetter::strike_sizes(b)).unwrap_or_default();
-                crate::daecore::daetype::subsetter::subset_ebsc(e, &surviving)
-            })),
             ("Zapf", source.get("Zapf").and_then(|d| {
                 crate::daecore::daetype::subsetter::subset_zapf(d, n_source(source) as usize, &closed, &active, &gid_map)
             })),
@@ -239,14 +151,23 @@ pub fn subset_cff_flavored(
                 out_map.insert(data_tag.to_string(), (d).into());
             }
         }
+        if let Some(e) = source.get("EBSC") {
+            out_map.remove("EBSC");
+            let surviving = out_map.get("EBLC").map(|b| crate::daecore::daetype::subsetter::strike_sizes(b)).unwrap_or_default();
+            if let Some(new_ebsc) = crate::daecore::daetype::subsetter::subset_ebsc(e, &surviving) {
+                out_map.insert("EBSC".to_string(), new_ebsc.into());
+            }
+        }
         if let Some(x) = source.get("xref") {
-            let kerx_stable = match (source.get("kerx"), out_map.get("kerx")) {
-                (Some(before), Some(after)) => read_u32_be(before, 4) == read_u32_be(after, 4),
-                (None, None) => true,
-                _ => false,
+            use crate::daecore::daetype::subsetter::subtable_counts;
+            let stable = |tag: &[u8]| {
+                let name = core::str::from_utf8(tag).unwrap_or_default();
+                subtable_counts(tag, source.get(name).map(|t| t.as_slice()))
+                    == subtable_counts(tag, out_map.get(name).map(|t| t.as_slice()))
             };
+            let new_xref = crate::daecore::daetype::subsetter::subset_xref(x, stable);
             out_map.remove("xref");
-            if let Some(new_xref) = crate::daecore::daetype::subsetter::subset_xref(x, |tag| tag != b"kerx" || kerx_stable) {
+            if let Some(new_xref) = new_xref {
                 out_map.insert("xref".to_string(), (new_xref).into());
             }
         }
@@ -264,20 +185,20 @@ pub fn subset_cff_flavored(
                 out_map.insert("CPAL".to_string(), cpal.clone());
             }
         }
-    if let Some((mappings, family)) = display {
-        let remapped: Vec<(u32, u16)>;
-        let mappings = if compacted {
-            remapped = mappings.iter()
-                .map(|&(cp, g)| (cp, gid_map.get(g as usize).copied().unwrap_or(0)))
-                .collect();
-            &remapped[..]
-        } else {
-            mappings
-        };
-        let (cmap, name) = display_tables(mappings, family)?;
-        out_map.insert("cmap".to_string(), (cmap).into());
-        out_map.insert("name".to_string(), (name).into());
-    }
+    use crate::daecore::daetype::subsetter::{display_tables, kept_cmap, remap_text};
+    let new_gid = |g: u16| if active.contains(&g) { gid_map.get(usize::from(g)).copied() } else { None };
+    let source_cmap = source.get("cmap").map(|t| t.as_slice());
+    let (mappings, sequences) = match text {
+        Some(text) => remap_text(text, new_gid),
+        None => source_cmap.map(|c| kept_cmap(c, new_gid)).unwrap_or_default(),
+    };
+    let os2 = source.get("OS/2").map(|t| t.as_slice());
+    let (cmap, name, new_os2) = display_tables(
+        source_cmap, &mappings, &sequences, source.get("name").map(|t| t.as_slice()), os2, |tag| out_map.get(tag).map(|t| t.as_slice()),
+    );
+    out_map.insert("cmap".to_string(), cmap.into());
+    out_map.insert("name".to_string(), name.into());
+    if let Some(os2) = new_os2 { out_map.insert("OS/2".to_string(), os2.into()); }
 
     Ok(SubsetResult {
         ttf: crate::daecore::daetype::decoder::build_ttf(&out_map),
@@ -288,8 +209,7 @@ pub fn subset_cff_flavored(
 impl FontCache {
     pub fn subset_font_rs(&self, axis_values: &[(String, f64)], gids: &[u16]) -> Result<SubsetResult, String> {
         if self.table_map.contains_key("CFF2") {
-            let instanced_bytes = self.get_or_instance(axis_values);
-            let instanced_map = crate::daecore::daetype::decoder::extract_ttf_tables(&instanced_bytes)?;
+            let instanced_map = crate::daecore::daetype::decoder::extract_ttf_tables_shared(self.get_or_instance(axis_values))?;
             let cff = instanced_map.get("CFF ").ok_or("missing CFF")?.clone();
             return subset_cff_flavored(&instanced_map, &cff, gids, None);
         }
@@ -310,54 +230,116 @@ impl FontCache {
             set.iter().filter(|&g| g < num_glyphs).collect()
         };
         if self.table_map.contains_key("CFF2") {
-            let instanced = self.get_or_instance(axis_values);
-            let instanced_map = crate::daecore::daetype::decoder::extract_ttf_tables(&instanced)?;
+            let instanced_map = crate::daecore::daetype::decoder::extract_ttf_tables_shared(self.get_or_instance(axis_values))?;
             let cff = instanced_map.get("CFF ").ok_or("missing CFF")?.clone();
-            let closure = cff_color_closure(&cff, &instanced_map, gids)?;
+            let closure = cff_color_closure(&cff, crate::daecore::daetype::outline::CffOutlines::parse(&cff).ok().as_ref(), &instanced_map, gids)?;
             return Ok(bounded(n_source(&instanced_map), closure));
         }
         if let Some(cff) = self.table_map.get("CFF ") {
-            let closure = cff_color_closure(cff, &self.table_map, gids)?;
+            let closure = cff_color_closure(cff, self.cff_outlines().as_deref(), &self.table_map, gids)?;
             return Ok(bounded(n_source(&self.table_map), closure));
         }
         let ttf = self.get_or_instance(axis_values);
-        Ok(bounded(n_source(&self.table_map), glyf_closure(&ttf, gids)?))
+        Ok(bounded(n_source(&self.table_map), crate::daecore::daetype::subsetter::glyf_closure(&ttf, gids)?))
     }
 
     pub fn subset_text_rs(&self, axis_values: &[(String, f64)], text: &str) -> Result<SubsetResult, String> {
+        use crate::daecore::daetype::subsetter::{cmap_variation_glyph_id, is_variation_selector, CmapLookup, UvsLookup};
         let instanced = self.get_or_instance(axis_values);
-        let instanced_map = crate::daecore::daetype::decoder::extract_ttf_tables(&instanced)?;
+        let instanced_map = crate::daecore::daetype::decoder::extract_ttf_tables_shared(Shared::clone(&instanced))?;
         let cmap = instanced_map.get("cmap").ok_or("subset_text: font has no cmap")?;
+        let lookup = CmapLookup::new(cmap);
 
+        // Each character's glyph, and each base and selector's: its own glyph joins the subset, and
+        // the sequence its format 14 entry.
         let mut seen: alloc::collections::BTreeMap<u32, u16> = alloc::collections::BTreeMap::new();
-        for ch in text.chars() {
-            let cp = ch as u32;
-            if seen.contains_key(&cp) { continue; }
-            if let Some(gid) = crate::daecore::daetype::subsetter::cmap_glyph_id(cmap, cp) { seen.insert(cp, gid); }
+        let mut sequences: Vec<crate::daecore::daetype::subsetter::Sequence> = Vec::new();
+        let mut chars = text.chars().map(u32::from).peekable();
+        while let Some(cp) = chars.next() {
+            if let alloc::collections::btree_map::Entry::Vacant(slot) = seen.entry(cp)
+                && let Some(gid) = lookup.glyph_id(cmap, cp) {
+                    slot.insert(gid);
+                }
+            let Some(&vs) = chars.peek().filter(|&&vs| is_variation_selector(vs) && !is_variation_selector(cp)) else { continue };
+            match cmap_variation_glyph_id(cmap, cp, vs) {
+                Some(UvsLookup::Explicit(gid)) => sequences.push((vs, cp, Some(gid))),
+                Some(UvsLookup::UseDefault) => sequences.push((vs, cp, None)),
+                None => {}
+            }
         }
-        let gids: Vec<u16> = seen.values().copied().collect();
-        let family = crate::daecore::daetype::decoder::read_font_family_name(&instanced_map).unwrap_or_else(|| "DaegunSubset".to_string());
+        let gids: Vec<u16> = seen.values().copied().chain(sequences.iter().filter_map(|s| s.2)).collect();
+        let mappings: Vec<(u32, u16)> = seen.into_iter().collect();
+        let text_cmap = crate::daecore::daetype::subsetter::TextCmap { mappings: &mappings, sequences: &sequences };
 
         if !instanced_map.contains_key("CFF2") && !instanced_map.contains_key("CFF ") {
-            let result = crate::daecore::daetype::subsetter::subset_ttf(&instanced, &gids)?;
-            let mappings: Vec<(u32, u16)> = seen.iter()
-                .filter_map(|(&cp, &orig_gid)| Some((cp, *result.gid_map.get(orig_gid as usize)?)))
-                .collect();
-            let mut out_map = crate::daecore::daetype::decoder::extract_ttf_tables(&result.ttf)?;
-            let (cmap, name) = display_tables(&mappings, &family)?;
-            out_map.insert("cmap".to_string(), (cmap).into());
-            out_map.insert("name".to_string(), (name).into());
-            return Ok(SubsetResult { ttf: crate::daecore::daetype::decoder::build_ttf(&out_map), gid_map: result.gid_map });
+            return crate::daecore::daetype::subsetter::subset_ttf_with(&instanced, &gids, Some(text_cmap));
         }
-
-        let cff = if instanced_map.contains_key("CFF2") {
-            let dir = crate::daecore::daetype::subsetter::parse_ttf_dir(&instanced);
-            crate::daecore::daetype::subsetter::slice_table(&instanced, &dir, "CFF ")
-                .ok_or("CFF2 instancing produced no CFF table")?.to_vec()
+        let cff = instanced_map.get("CFF ").cloned().ok_or(if instanced_map.contains_key("CFF2") {
+            "CFF2 instancing produced no CFF table"
         } else {
-            instanced_map.get("CFF ").ok_or("subset_text: font has neither CFF2 nor CFF")?.to_owned_vec()
-        };
-        let mappings: Vec<(u32, u16)> = seen.into_iter().collect();
-        subset_cff_flavored(&instanced_map, &cff, &gids, Some((&mappings, &family)))
+            "subset_text: font has neither CFF2 nor CFF"
+        })?;
+        subset_cff_flavored(&instanced_map, &cff, &gids, Some(text_cmap))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A gid past the CFF, as a cmap or GSUB entry can name, survives the closure but not the compacting
+    // CFF subset; maxp and the metrics must count only the glyphs the new CFF holds.
+    #[test]
+    fn a_compacted_cff_subset_counts_only_the_glyphs_it_keeps() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/test-fonts/stix-two-math/STIX2Math.otf");
+        let bytes = std::fs::read(path).expect("STIX is a fixture");
+        let source = crate::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("STIX parses");
+        let cff = source.get("CFF ").expect("STIX is CFF").to_owned_vec();
+        let out = subset_cff_flavored(&source, &cff, &[36, 6_000], Some(crate::daecore::daetype::subsetter::TextCmap { mappings: &[(65, 36)], sequences: &[] })).expect("a subset");
+        let tables = crate::daecore::daetype::decoder::extract_ttf_tables(&out.ttf).expect("the subset parses");
+        let kept = crate::daecore::daetype::outline::CffOutlines::parse(tables.get("CFF ").expect("CFF"))
+            .expect("the subset CFF parses").num_glyphs();
+        let maxp = read_u16_be(tables.get("maxp").expect("maxp"), 4).expect("numGlyphs");
+        assert_eq!(usize::from(maxp), kept, "maxp counts {maxp} glyphs, the CFF holds {kept}");
+        let metrics = read_u16_be(tables.get("hhea").expect("hhea"), 34).expect("numberOfHMetrics");
+        assert_eq!(usize::from(metrics), kept, "hhea counts {metrics} metrics, the CFF holds {kept} glyphs");
+    }
+
+    fn u16s(words: &[u16]) -> Vec<u8> {
+        words.iter().flat_map(|w| w.to_be_bytes()).collect()
+    }
+
+    // STIX plus a kern and a VORG naming glyph 6,000, past its glyphs, beside 36 and 37; a DSIG and a
+    // MERG; and an EBSC scaling from a strike that holds no glyph, so the subset keeps none of it.
+    #[test]
+    fn a_compacted_cff_subset_keeps_or_drops_each_glyph_table_as_it_should() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/test-fonts/stix-two-math/STIX2Math.otf");
+        let bytes = std::fs::read(path).expect("STIX is a fixture");
+        let mut source = crate::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("STIX parses");
+        let mut strike = vec![0u8; 48];
+        strike[44..46].copy_from_slice(&[12, 12]);
+        let mut scale = vec![0u8; 28];
+        scale[24..28].copy_from_slice(&[24, 24, 12, 12]);
+        for (tag, table) in [
+            ("kern", u16s(&[0, 1, 0, 26, 0x0001, 2, 12, 1, 0, 36, 37, 0xFFCE, 36, 6_000, 0xFFC4])),
+            ("VORG", u16s(&[1, 0, 880, 2, 36, 900, 6_000, 910])),
+            ("DSIG", u16s(&[0, 1, 0, 0])),
+            ("MERG", u16s(&[0, 0, 0, 0])),
+            ("EBLC", [u16s(&[2, 0, 0, 1]), strike].concat()),
+            ("EBDT", u16s(&[2, 0])),
+            ("EBSC", [u16s(&[2, 0, 0, 1]), scale].concat()),
+        ] {
+            source.insert(tag.to_string(), table.into());
+        }
+        let cff = source.get("CFF ").expect("STIX is CFF").to_owned_vec();
+        let text = crate::daecore::daetype::subsetter::TextCmap { mappings: &[(65, 36)], sequences: &[] };
+        let out = subset_cff_flavored(&source, &cff, &[36, 37, 6_000], Some(text)).expect("a subset");
+        let tables = crate::daecore::daetype::decoder::extract_ttf_tables(&out.ttf).expect("the subset parses");
+        let new = |g| out.new_gid(g).expect("kept");
+        assert_eq!(tables.get("kern").map(|t| t.to_owned_vec()), Some(u16s(&[0, 1, 0, 20, 0x0001, 1, 6, 0, 0, new(36), new(37), 0xFFCE])));
+        assert_eq!(tables.get("VORG").map(|t| t.to_owned_vec()), Some(u16s(&[1, 0, 880, 1, new(36), 900])));
+        for tag in ["DSIG", "MERG", "EBLC", "EBSC"] {
+            assert!(!tables.contains_key(tag), "{tag} was kept");
+        }
     }
 }

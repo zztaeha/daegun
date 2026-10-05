@@ -93,7 +93,7 @@ fn glyph_bounds_are_tight_and_instanced() {
     assert!(f.glyph_bounds(space, &[]).is_none(), "the space glyph produced a box");
     assert!(
         f.glyph_bounds(0, &[]).is_some(),
-        ".notdef has no outline, so the doc's example is right after all — check the fixture",
+        ".notdef has no outline, so the doc's example is right after all – check the fixture",
     );
 
     let v = font(INTER);
@@ -266,6 +266,120 @@ fn the_variation_store_resolves_the_advance_delta_the_engine_applies() {
     assert!(moved >= 4, "only {moved} of {checked} advances varied, so the store went unexercised");
 }
 
+// The spec ignores an axis whose region is backwards or crosses zero; fontTools 4.63 gives 1 for each
+// of these at every location.
+#[test]
+fn a_malformed_region_ignores_its_axis() {
+    use daegun::format::{ItemVariationStore, RegionAxis};
+    let region = |start, peak, end| vec![RegionAxis { start, peak, end }];
+    let store = ItemVariationStore {
+        regions:    vec![region(-1.0, 1.0, 1.0), region(0.5, 0.25, 1.0), region(0.0, 1.0, 0.5)],
+        ivd_data:   Vec::new(),
+        axis_count: 1,
+    };
+    for at in [0.0, 0.25, 0.75] {
+        let scalars = daegun::format::precompute_region_scalars(&store, &[at]);
+        assert_eq!(scalars, [1.0; 3], "at {at}");
+    }
+}
+
+// Every region index and delta of the store, as fontTools 4.63.0 reads it. Only this font and a fixture
+// copy set the long-words flag: subtables 2, 6–12 and 22–27, with 6–12 also holding 16-bit deltas.
+#[test]
+fn a_long_word_variation_store_decodes_to_the_values_fonttools_reads() {
+    const EXPECTED: &[(&[usize], &[&[i32]])] = &[
+        (&[0, 1], &[&[-8192, 8192], &[0, 8192]]),
+        (&[2, 3], &[&[-8192, 8192], &[-8191, 0]]),
+        (&[42], &[&[46875], &[48241], &[49151]]),
+        (&[77, 78], &[&[-500, 500]]),
+        (&[79, 80], &[&[-500, 500], &[500, -500]]),
+        (&[81, 82], &[&[-16384, 0], &[0, -16384]]),
+        (&[5, 4], &[&[32768, -32768]]),
+        (&[7, 6], &[&[32768, -32768]]),
+        (&[9, 8], &[&[32768, -32768]]),
+        (&[11, 10], &[&[32768, -32768]]),
+        (&[37, 36], &[&[32768, -32768]]),
+        (&[39, 38], &[&[32768, -32768]]),
+        (&[41, 40], &[&[32768, -32768]]),
+        (&[12, 13, 83], &[&[-200, 200, 0], &[0, 0, -16384]]),
+        (&[14, 15, 16, 17], &[&[-200, 200, 0, 0], &[0, 0, -32768, 32767]]),
+        (&[18, 19, 20, 21], &[&[-32768, 32767, 0, 0], &[0, 0, -1000, 1000]]),
+        (&[22, 23, 24, 25], &[&[-1000, 1000, 0, 0], &[0, 0, -1000, 1000]]),
+        (&[26, 27, 28, 29], &[&[-1000, 1000, 0, 0], &[0, 0, -1000, 1000]]),
+        (&[30, 31, 32, 33], &[&[-1000, 1000, 0, 0], &[0, 0, -1000, 1000]]),
+        (&[34, 35, 43, 44], &[&[-1000, 1000, 0, 0], &[0, 0, -500, 500]]),
+        (&[45, 46, 47, 48], &[&[-500, 500, 0, 0], &[0, 0, -8192, 8192]]),
+        (&[49, 50, 51, 52], &[&[-8192, 8192, 0, 0], &[0, 0, -500, 500]]),
+        (&[55, 56], &[&[-131072, 131072]]),
+        (&[57, 58], &[&[-131072, 131072]]),
+        (&[59, 60], &[&[-131072, 131072]]),
+        (&[61, 62], &[&[-131072, 131072]]),
+        (&[63, 64], &[&[-32768000, 32768000]]),
+        (&[65, 66], &[&[-32768000, 32768000]]),
+        (&[53, 54, 67, 68], &[&[-500, 500, 0, 0], &[0, 0, -500, 500]]),
+        (&[69, 70, 71, 72], &[&[-500, 500, 0, 0], &[0, 0, -500, 500]]),
+        (&[73, 74, 75, 76], &[&[-500, 500, 0, 0], &[0, 0, -500, 500]]),
+    ];
+
+    let f = font("colr-v1-test-glyphs/test_glyphs_variable.ttf");
+    let colr = f.table("COLR").expect("the variable COLR fixture carries COLR");
+    let ivs_off = daegun::bytes::read_u32_be(colr, 30).expect("COLR v1 header truncated") as usize;
+    let store =
+        daegun::format::parse_item_variation_store(colr, ivs_off).expect("the store does not parse");
+
+    assert_eq!(store.regions.len(), 84, "region count");
+    assert_eq!(store.ivd_data.len(), EXPECTED.len(), "ItemVariationData count");
+    for (i, (ivd, (regions, rows))) in store.ivd_data.iter().zip(EXPECTED).enumerate() {
+        assert_eq!(ivd.region_indices, *regions, "subtable {i}: region indices");
+        assert_eq!(ivd.rows(), rows.len(), "subtable {i}: row count");
+        for (r, want) in rows.iter().enumerate() {
+            assert_eq!(ivd.row(r), Some(*want), "subtable {i}, row {r}");
+        }
+    }
+}
+
+// IVD offsets may repeat, and each copy is held: 64 offsets at one IVD of 65,535 regions would hold
+// 50 MB from 197 KB. A store holds about 32 times the bytes from its start, or a few megabytes when small.
+#[test]
+fn a_variation_store_cannot_hold_far_more_than_its_bytes() {
+    let store = |copies: usize, items: usize, regions: usize| {
+        let ivd = 8 + copies * 4 + 4;
+        let mut buf = vec![0u8; ivd + 6 + regions * 2 + items * regions];
+        daegun::bytes::write_u16_be(&mut buf, 0, 1);
+        daegun::bytes::write_u32_be(&mut buf, 2, (8 + copies * 4) as u32);
+        daegun::bytes::write_u16_be(&mut buf, 6, copies as u16);
+        for i in 0..copies {
+            daegun::bytes::write_u32_be(&mut buf, 8 + i * 4, ivd as u32);
+        }
+        daegun::bytes::write_u16_be(&mut buf, ivd, items as u16);
+        daegun::bytes::write_u16_be(&mut buf, ivd + 4, regions as u16);
+        buf
+    };
+    let one = daegun::format::parse_item_variation_store(&store(1, 1, 65_535), 0).expect("one wide IVD parses");
+    assert_eq!(one.ivd_data[0].row(0).map(<[i32]>::len), Some(65_535), "the wide IVD lost its row");
+    assert!(
+        daegun::format::parse_item_variation_store(&store(64, 1, 65_535), 0).is_err(),
+        "64 offsets at one wide IVD were all held",
+    );
+    // Callers pass the whole table, so the same store after 10 MiB of other data must still decline.
+    let mut table = vec![0u8; 10 << 20];
+    table.extend(store(64, 1, 65_535));
+    assert!(
+        daegun::format::parse_item_variation_store(&table, 10 << 20).is_err(),
+        "the bytes before the store paid for its copies",
+    );
+    // A row of no regions costs no bytes, so only the row budget bounds 640 copies of 65,535 of them.
+    assert!(daegun::format::parse_item_variation_store(&store(1, 65_535, 0), 0).is_ok(), "one tall IVD failed");
+    assert!(
+        daegun::format::parse_item_variation_store(&store(640, 65_535, 0), 0).is_err(),
+        "640 offsets at one tall IVD of empty rows were all held",
+    );
+    // The base comes from the caller, from C as a size_t, so an offset near the top must decline.
+    for base in [usize::MAX, usize::MAX - 1, usize::MAX - 7] {
+        assert!(daegun::format::parse_item_variation_store(&[0u8; 64], base).is_err(), "base {base:#x} parsed");
+    }
+}
+
 #[test]
 fn ot_round_breaks_ties_toward_positive_infinity() {
     for (v, want) in [(0.5, 1), (1.5, 2), (2.5, 3), (-0.5, 0), (-1.5, -1), (-2.5, -2)] {
@@ -418,6 +532,11 @@ fn feature_variations_selects_by_axis_range() {
     assert_eq!(table.substitute(1, 3), None, "record 1 declares no substitution table");
 
     assert!(daegun::format::FeatureVariations::parse(&[0u8; 100]).is_none());
+    // `at` can come from C as any size_t, and every offset is added to it.
+    for at in [usize::MAX, usize::MAX - 1, usize::MAX - 7] {
+        let far = daegun::format::FeatureVariations::at(&t, at);
+        assert_eq!((far.find(&[]), far.substitute(0, 0)), (None, None), "at {at:#x} answered");
+    }
     let mut null = t.clone();
     null[10..14].copy_from_slice(&0u32.to_be_bytes());
     assert!(daegun::format::FeatureVariations::parse(&null).is_none());
@@ -429,7 +548,7 @@ fn base_is_glyph_free_answers_for_the_font_that_has_one() {
     assert!(serif.has_table("BASE"), "SourceSerif4Variable lost its BASE; pick another fixture");
     let free = serif.base_is_glyph_free();
     assert!(
-        serif.base_info("latn", false).is_some(),
+        serif.base_info("latn", false, &[]).is_some(),
         "BASE does not describe the Latin script, so nothing here is being read",
     );
     assert!(free, "SourceSerif4Variable's BASE names a glyph, which would be a first for a text face");
@@ -594,9 +713,9 @@ fn cff_hints_report_the_declared_stems() {
         .find(|(_, h)| !h.stems.is_empty())
         .expect("no STIX2Math glyph declares a stem, which is not a hinted CFF font");
 
+    // Not min <= max: an edge hint keeps its negative width, as the test below pins.
     for s in &hints.stems {
-        assert!(s.min <= s.max, "glyph {gid} declares a stem from {} to {}", s.min, s.max);
-        assert!(s.min.is_finite() && s.max.is_finite());
+        assert!(s.min.is_finite() && s.max.is_finite(), "glyph {gid} declares a stem from {} to {}", s.min, s.max);
     }
     for (at, mask) in &hints.masks {
         assert!(*at <= 100_000, "a hintmask at point {at}");
@@ -606,6 +725,37 @@ fn cff_hints_report_the_declared_stems() {
     let g = font(GARAMOND);
     assert!(!g.has_table("CFF "), "EBGaramond gained a CFF table; pick another fixture");
     assert!(g.cff_hints(g.glyph_id('H' as u32).expect("H")).is_none());
+
+    // A CFF2 font's stems are its default instance's, as the CFF hinter reads them.
+    let serif = font("source-serif/SourceSerif4Variable-Roman.otf");
+    let h = serif.cff_hints(serif.glyph_id('H' as u32).expect("H")).expect("a CFF2 font gave no hints");
+    assert!(!h.stems.is_empty(), "Source Serif's H declares no stems");
+}
+
+// Stem edges as fontTools 4.63.0 decodes them from the charstrings: within each stem operator the pairs
+// run on from the previous edge, and an edge hint keeps its negative width, as A's (662, 642) does.
+#[test]
+fn cff_stems_decode_to_the_edges_fonttools_reads() {
+    type Stem = (f32, f32, bool);
+    const EXPECTED: &[(char, u16, &[Stem])] = &[
+        ('H', 10, &[(0.0, 30.0, false), (318.0, 357.0, false), (627.0, 657.0, false), (133.0, 225.0, true),
+            (553.0, 644.0, true)]),
+        ('O', 17, &[(-12.0, 30.0, false), (627.0, 669.0, false), (51.0, 156.0, true), (583.0, 688.0, true)]),
+        ('x', 279, &[(0.0, 29.0, false), (444.0, 473.0, false), (445.0, 473.0, false), (-2.0, 165.0, true),
+            (11.0, 226.0, true), (273.0, 482.0, true), (300.0, 465.0, true), (341.0, 465.0, true)]),
+        ('B', 4, &[(0.0, 30.0, false), (0.0, 37.0, false), (320.0, 362.0, false), (618.0, 657.0, false),
+            (627.0, 657.0, false), (133.0, 225.0, true), (452.0, 551.0, true), (478.0, 583.0, true)]),
+        ('A', 3, &[(0.0, 30.0, false), (219.0, 259.0, false), (662.0, 642.0, false), (3.0, 146.0, true),
+            (3.0, 213.0, true), (3.0, 714.0, true)]),
+    ];
+
+    let f = font(STIX);
+    for &(ch, gid, want) in EXPECTED {
+        assert_eq!(f.glyph_id(ch as u32), Some(gid), "{ch} maps to a different glyph than fontTools named");
+        let hints = f.cff_hints(gid).unwrap_or_else(|| panic!("{ch} has no CFF hints"));
+        let got: Vec<Stem> = hints.stems.iter().map(|s| (s.min, s.max, s.vertical)).collect();
+        assert_eq!(got, want, "{ch}: stems");
+    }
 }
 
 #[test]
@@ -679,6 +829,10 @@ fn the_aat_sentinels_drive_a_state_table() {
     let body = &chain[sub_at + 12..sub_at + sub_len];
 
     let table = StateTable::parse(body, 2, f.num_glyphs()).expect("the state table parses");
+    // `extra_words` comes from C as any size_t, and an entry's stride is 4 + 2 * extra_words bytes.
+    for words in [usize::MAX, 1 << 63, usize::MAX / 2] {
+        assert!(StateTable::parse(body, words, f.num_glyphs()).is_none(), "{words} extra words were accepted");
+    }
     assert_eq!(table.class(0xFFFF), class::DELETED_GLYPH);
     let reachable = (0..f.num_glyphs())
         .filter(|&g| table.class(g) > class::DELETED_GLYPH)
@@ -686,8 +840,10 @@ fn the_aat_sentinels_drive_a_state_table() {
         .count();
     assert!(reachable > 0, "no glyph's class has an entry in the start state");
 
-    let classes = Lookup::parse(&body[16..], f.num_glyphs());
-    assert!(classes.is_none_or(|l| l.entries().len() <= usize::from(f.num_glyphs())));
+    let class_table = u32::from_be_bytes(body[4..8].try_into().unwrap()) as usize;
+    let classes = Lookup::parse(&body[class_table..], f.num_glyphs()).expect("the class table parses").entries();
+    assert!(!classes.is_empty() && classes.len() <= usize::from(f.num_glyphs()));
+    assert!(classes.iter().all(|&(g, c)| table.class(g) == c), "the class lookup disagrees with the state table");
 
     assert_eq!(daegun::format::ankr_version(&[0, 0, 0, 1]), Some(0));
     assert_eq!(daegun::format::ankr_version(&[0]), None);
@@ -889,7 +1045,7 @@ fn the_closure_handles_the_edges() {
 }
 
 #[test]
-fn an_out_of_range_request_is_ignored_by_both_flavours() {
+fn an_out_of_range_request_is_ignored_by_both_flavors() {
     for (face, ch) in [(GARAMOND, 'H'), (STIX, 'x'), (INTER, 'H')] {
         let f = font(face);
         let gid = f.glyph_id(ch as u32).unwrap_or_else(|| panic!("{face} has no {ch}"));
@@ -1160,51 +1316,6 @@ fn a_run_says_where_it_may_be_cut() {
 }
 
 #[test]
-fn a_cached_glyph_reports_the_metrics_it_first_reported() {
-    let f = font(GARAMOND);
-    let gid = f.glyph_id('H' as u32).expect("EBGaramond has H");
-
-    for px in [12.0f32, 32.0, 96.0] {
-        let first = f.rasterize_glyph(gid, px, &[]).unwrap_or_else(|| panic!("{px}px render"));
-        let second = f.rasterize_glyph(gid, px, &[]).unwrap_or_else(|| panic!("{px}px re-render"));
-
-        assert_eq!(
-            first.metrics.bounds, second.metrics.bounds,
-            "{px}px: the cached render reports different sub-pixel bounds",
-        );
-        assert!(
-            second.metrics.bounds.width > 0.0 && second.metrics.bounds.height > 0.0,
-            "{px}px: an H has no sub-pixel extent on the cached path: {:?}",
-            second.metrics.bounds,
-        );
-        assert!(
-            first.metrics.bounds.width <= first.metrics.width as f32
-                && first.metrics.bounds.width > first.metrics.width as f32 - 2.0,
-            "{px}px: the sub-pixel width {} does not sit inside the pixel width {}",
-            first.metrics.bounds.width,
-            first.metrics.width,
-        );
-
-        assert_eq!(first.metrics.xmin, second.metrics.xmin);
-        assert_eq!(first.metrics.ymin, second.metrics.ymin);
-        assert_eq!(first.metrics.width, second.metrics.width);
-        assert_eq!(first.metrics.height, second.metrics.height);
-        assert!((first.metrics.advance_width - second.metrics.advance_width).abs() < 0.01);
-        assert!((first.metrics.advance_height - second.metrics.advance_height).abs() < 0.01);
-        assert_eq!(first.bitmap, second.bitmap, "{px}px: the cached bitmap differs");
-    }
-
-    let g = font(GARAMOND);
-    g.set_glyph_cache_bytes(0);
-    let uncached = g.rasterize_glyph(gid, 32.0, &[]).expect("uncached render");
-    let cached = f.rasterize_glyph(gid, 32.0, &[]).expect("cached render");
-    assert_eq!(
-        uncached.metrics.bounds, cached.metrics.bounds,
-        "the cached and uncached paths disagree about the sub-pixel bounds",
-    );
-}
-
-#[test]
 fn advance_widths_is_the_glyph_metric_and_not_the_shaped_width() {
     let f = font(GARAMOND);
     assert_eq!(f.upm(), 1000, "EBGaramond's em changed; the exactness below depends on it");
@@ -1296,9 +1407,9 @@ fn the_types_a_caller_debugs_with_can_be_debugged() {
         "an axis debug-prints without naming its tag, which is the only part a reader needs",
     );
 
-    let opts = daegun::RasterOptions::default().with_layout(daegun::SubpixelLayout::grayscale());
+    let opts = daegun::OutlineOptions::default().with_oblique(0.25);
     let shown = format!("{opts:?}");
-    assert!(shown.contains("gamma") && shown.contains("hinting"), "RasterOptions hid its fields");
+    assert!(shown.contains("oblique") && shown.contains("hinting"), "OutlineOptions hid its fields");
 
     let gray = format!("{:?}", daegun::SubpixelLayout::grayscale());
     let rgb = format!("{:?}", daegun::SubpixelLayout::horizontal(daegun::StripeOrder::Rgb));
@@ -1500,6 +1611,125 @@ fn subset_glyph_ids_are_readable_whatever_the_outline_format() {
     assert_ne!(sub.new_gid(high), Some(high), "the glyf subset did not compact its glyph ids");
 }
 
+// CFF2 with no fvar is a valid static font. Made by dropping a variable font's fvar, its charstrings
+// still blend, so it has to draw and subset exactly as that font's default.
+#[test]
+fn a_static_cff2_font_is_its_default_instance() {
+    let variable = font(SOURCE_SERIF);
+    let tables: std::collections::BTreeMap<String, std::borrow::Cow<[u8]>> = variable
+        .table_tags()
+        .into_iter()
+        .filter(|&tag| tag != "fvar")
+        .map(|tag| (tag.to_string(), std::borrow::Cow::Borrowed(variable.table(tag).expect("listed"))))
+        .collect();
+    let f = Font::from_vec(daegun::build_font(&tables)).expect("the static font parses");
+    assert!(f.has_table("CFF2") && !f.is_variable(), "the fixture did not become a static CFF2 font");
+
+    let gids: Vec<u16> = "Hamburg".chars().filter_map(|c| f.glyph_id(c as u32)).collect();
+    assert!(gids.len() >= 5, "the static font did not map the test text");
+    for &g in &gids {
+        let (mut got, mut want) = (daegun::Path::default(), daegun::Path::default());
+        f.outline_glyph_instanced(g, &[], &mut got).expect("a static CFF2 glyph draws");
+        variable.outline_glyph_instanced(g, &[], &mut want).expect("the variable glyph draws");
+        assert_eq!(got, want, "gid {g} is not the variable font's default");
+    }
+
+    let sub = f.subset(&gids, &[]).expect("a static CFF2 font subsets");
+    let out = Font::from_bytes(&sub.ttf).expect("the subset reopens");
+    for &old in &gids {
+        let new = sub.new_gid(old).unwrap_or_else(|| panic!("requested gid {old} was dropped"));
+        assert_eq!(f.glyph_bounds(old, &[]), out.glyph_bounds(new, &[]), "gid {old} changed in the subset");
+    }
+    assert_eq!(
+        f.glyph_closure(&gids, &[]).expect("a static CFF2 closure"),
+        variable.glyph_closure(&gids, &[]).expect("a variable CFF2 closure"),
+    );
+    f.subset_text("Hamburg", &[]).expect("a static CFF2 font subsets by text");
+
+    // Drawing and subsetting convert to CFF inside; a static font asked for its instance is itself.
+    let instance = f.instance_tables(&[]).expect("an answer");
+    assert!(instance.contains_key("CFF2") && !instance.contains_key("CFF "), "the static font came back converted");
+    assert_eq!(f.instance(&[]), daegun::build_font(&tables), "instance() is not the font as stored");
+}
+
+// A .notdef built from another glyph keeps that glyph in a subset, as the closure says it must.
+#[test]
+fn a_composite_notdef_keeps_its_components() {
+    let base = font("test-fixtures/hinted.ttf");
+    let (a, f) = (base.glyph_id('A' as u32).expect("A"), base.glyph_id('F' as u32).expect("F"));
+    let mut notdef: Vec<u8> = Vec::new();
+    for v in [-1i16, 0, 0, 300, 700, 0x0003, f as i16, 0, 0] {
+        notdef.extend(v.to_be_bytes());
+    }
+    let font = crate::prepared::hinted_with(0, &notdef);
+    assert!(closure_of(&font, &[a]).contains(&f), "the closure lost .notdef's component");
+    let sub = font.subset(&[a], &[]).expect("subsets");
+    assert!(sub.new_gid(f).is_some(), "the subset dropped .notdef's component");
+}
+
+// An fvar whose header claims axes that do not parse (an axis record 10 bytes long, not 20) leaves the
+// font static to the instancer, and so it comes back as stored too, CFF2 and fvar both.
+#[test]
+fn a_cff2_font_whose_axes_do_not_parse_is_its_own_instance() {
+    let variable = font(SOURCE_SERIF);
+    let mut tables: std::collections::BTreeMap<String, Vec<u8>> = variable
+        .table_tags()
+        .into_iter()
+        .map(|tag| (tag.to_string(), variable.table(tag).expect("listed").to_vec()))
+        .collect();
+    daegun::bytes::write_u16_be(tables.get_mut("fvar").expect("fvar"), 10, 10);
+    let f = Font::from_vec(daegun::build_font(&tables)).expect("the patched font parses");
+    assert!(f.is_variable() && f.axes().is_empty(), "the fixture is not a variable font with unreadable axes");
+    let instance = f.instance_tables(&[("wght", 900.0)]).expect("an answer");
+    assert!(instance.contains_key("CFF2") && instance.contains_key("fvar"), "the font came back converted");
+    assert_eq!(f.instance(&[("wght", 900.0)]), daegun::build_font(&tables), "instance() is not the font as stored");
+
+    // And to draw, hint and subset it is its default instance, as a font with no fvar is.
+    let gids: Vec<u16> = "Hamburg".chars().filter_map(|c| f.glyph_id(c as u32)).collect();
+    for &g in &gids {
+        let (mut got, mut want) = (daegun::Path::default(), daegun::Path::default());
+        f.outline_glyph(g, &mut got).expect("the glyph draws");
+        variable.outline_glyph(g, &mut want).expect("the variable glyph draws");
+        assert_eq!(got, want, "gid {g} is not the variable font's default");
+    }
+    assert!(f.hinted_glyph(gids[0], 16.4, &[], daegun::HintMode::Auto).is_some(), "the glyph did not hint");
+    f.subset(&gids, &[]).expect("the font subsets");
+}
+
+// Both outline calls draw CFF2 through its CFF conversion. The default instance, written out as CFF
+// and opened as a font of its own, is a second route to the same outline.
+#[test]
+fn outline_glyph_draws_a_cff2_font_as_its_default() {
+    for rel in [SOURCE_SERIF, "source-han-sans/SourceHanSansJP-VF.otf"] {
+        let f = font(rel);
+        let defaults: Vec<(String, f64)> = f.axes().iter().map(|a| (a.tag.clone(), a.default)).collect();
+        let at: Vec<(&str, f64)> = defaults.iter().map(|(t, v)| (t.as_str(), *v)).collect();
+        let cff = Font::from_bytes(&f.instance(&at)).expect("the instance reopens");
+        assert!(cff.has_table("CFF ") && !cff.has_table("CFF2"), "{rel}: the instance is not CFF");
+        let mut drawn = 0;
+        for gid in 1..40 {
+            let (mut got, mut want) = (daegun::Path::default(), daegun::Path::default());
+            assert_eq!(f.outline_glyph(gid, &mut got), cff.outline_glyph(gid, &mut want), "{rel} gid {gid}");
+            assert_eq!(got, want, "{rel} gid {gid}: outline_glyph is not the default instance's outline");
+            drawn += usize::from(!got.is_empty());
+        }
+        assert!(drawn > 30, "{rel}: only {drawn} of 39 glyphs drew anything");
+    }
+}
+
+// CFF2 allows 513 operands to an operator and Type 2 only 48, so the conversion writes a longer one as
+// several. Source Han Sans has operators past 48 from gid 1024 on: those and a sample of the rest draw.
+#[test]
+fn a_cff2_font_with_long_operators_draws_every_glyph() {
+    let f = font("source-han-sans/SourceHanSansJP-VF.otf");
+    let gids: Vec<u16> = (1024..1040).chain([2233]).chain((0..f.num_glyphs()).step_by(97)).collect();
+    let lost: Vec<u16> = gids
+        .into_iter()
+        .filter(|&g| f.outline_glyph(g, &mut daegun::Path::default()).is_none())
+        .collect();
+    assert!(lost.is_empty(), "{} glyphs did not draw: {lost:?}", lost.len());
+}
+
 #[test]
 fn a_glyph_the_font_does_not_have_is_declined_the_same_way_everywhere() {
     for rel in [GARAMOND, STIX, "bungee-tint/BungeeTint-Regular.ttf"] {
@@ -1517,9 +1747,14 @@ fn a_glyph_the_font_does_not_have_is_declined_the_same_way_everywhere() {
             assert!(f.glyph_bounds(gid, &[]).is_none(), "{rel}: glyph_bounds({gid})");
             assert!(f.glyph_name(gid).is_none(), "{rel}: glyph_name({gid})");
             assert!(f.vertical_origin(gid, &[]).is_none(), "{rel}: vertical_origin({gid})");
-            assert!(f.rasterize_glyph(gid, 16.0, &[]).is_none(), "{rel}: rasterize_glyph({gid})");
+            assert_eq!(f.glyph_quads(gid, &[]), Err(daegun::QuadError::NoOutline), "{rel}: glyph_quads({gid})");
+            let mut sink = daegun::Path::default();
+            let opts = daegun::OutlineOptions::default();
+            assert!(f.prepared_outline(gid, 16.0, &[], &opts, &mut sink).is_none(), "{rel}: prepared_outline({gid})");
+            assert!(sink.is_empty(), "{rel}: prepared_outline({gid}) drew before declining");
+            assert!(f.colr_scene(gid, &[], 0).is_none(), "{rel}: colr_scene({gid})");
             assert!(f.hinted_glyph(gid, 16.0, &[], daegun::HintMode::Auto).is_none(), "{rel}: hinted");
-            assert!(f.ligature_carets(gid, &[]).is_empty(), "{rel}: ligature_carets({gid})");
+            assert!(f.ligature_carets(gid, &[], false).is_empty(), "{rel}: ligature_carets({gid})");
             assert!(f.colr_layers(gid).is_none(), "{rel}: colr_layers({gid})");
             assert!(f.colr_v1_paint(gid, &[], 0).is_none(), "{rel}: colr_v1_paint({gid})");
             assert!(f.math_glyph_variants(gid, true).is_none(), "{rel}: math_glyph_variants({gid})");
@@ -1626,6 +1861,9 @@ fn instance_tables_answers_exactly_as_instance_does() {
     fvar[8..10].copy_from_slice(&0u16.to_be_bytes());
     let broken = Font::from_bytes(&daegun::build_font(&tables)).expect("still parses");
     assert!(broken.has_table("fvar") && broken.axes().is_empty(), "the fvar edit did not take");
+    // An fvar of no axes still parses, so the instancer instances it, as 1.1.7 did: its variation tables go.
+    let instanced = broken.instance_tables(&[]).expect("always answers");
+    assert!(!instanced.contains_key("fvar") && !instanced.contains_key("gvar"), "an fvar of no axes came back as stored");
 
     for probe in [&broken, &f] {
         let at: Vec<(&str, f64)> = Vec::new();
@@ -2117,7 +2355,7 @@ fn an_incomplete_run_reports_itself() {
 }
 
 #[test]
-fn the_subpixel_layout_bound_is_published_and_the_gpu_inherits_it() {
+fn the_subpixel_layout_bound_is_published() {
     let ok = daegun::SubpixelLayout::from_weights(
         (daegun::MAX_OVERSAMPLE, 1), (1, 1), (0, 0), [&[1.0], &[1.0], &[1.0]],
     );
@@ -2127,19 +2365,23 @@ fn the_subpixel_layout_bound_is_published_and_the_gpu_inherits_it() {
         (daegun::MAX_OVERSAMPLE + 1, 1), (1, 1), (0, 0), [&[1.0], &[1.0], &[1.0]],
     );
     assert!(over.is_none(), "one sample past the published maximum was accepted");
+    let over_y = daegun::SubpixelLayout::from_weights(
+        (1, daegun::MAX_OVERSAMPLE + 1), (1, 1), (0, 0), [&[1.0], &[1.0], &[1.0]],
+    );
+    assert!(over_y.is_none(), "one sample past the published maximum was accepted on y");
+    for bad in [f32::NAN, f32::INFINITY] {
+        let weight = daegun::SubpixelLayout::from_weights((1, 1), (1, 1), (0, 0), [&[bad], &[1.0], &[1.0]]);
+        assert!(weight.is_none(), "a weight of {bad} was accepted");
+    }
 
     assert!(
         daegun::SubpixelLayout::from_weights((0, 1), (1, 1), (0, 0), [&[1.0], &[1.0], &[1.0]]).is_none(),
         "an oversample of zero was accepted",
     );
-
-    let via_gpu = daegun::SubpixelParams::from_layout(&daegun::SubpixelLayout::horizontal(
-        daegun::StripeOrder::Rgb,
-    ));
-    assert!(
-        via_gpu.oversample.iter().all(|&o| o <= u32::from(daegun::MAX_OVERSAMPLE)),
-        "the GPU path oversamples past the layout bound it is built from: {:?}", via_gpu.oversample,
-    );
+    for taps in [(0, 0), (0, 5), (5, 0)] {
+        let none: [&[f32]; 3] = [&[], &[], &[]];
+        assert!(daegun::SubpixelLayout::from_weights((1, 1), taps, (0, 0), none).is_none(), "{taps:?} taps were accepted");
+    }
 
     for layout in [
         daegun::SubpixelLayout::grayscale(),
@@ -2169,6 +2411,7 @@ fn a_gradient_can_be_sampled_without_engine_internals() {
         daegun::paint::lower(
             &graph,
             daegun::paint::IDENTITY,
+            f.colr_clip_box(gid, &[]),
             &mut outline,
             daegun::paint::Rgba::default(),
             &mut scene,
@@ -2195,7 +2438,7 @@ fn a_gradient_can_be_sampled_without_engine_internals() {
 }
 
 #[test]
-fn the_widest_cpu_layout_survives_the_gpu_upload() {
+fn the_widest_layout_fits_the_table() {
     let taps = u8::try_from(daegun::MAX_SUBPIXEL_TAPS).expect("the tap bound fits a u8");
     let need = usize::from(taps) * usize::from(taps);
     let weights: Vec<f32> = core::iter::repeat_n(1.0 / need as f32, need).collect();
@@ -2208,28 +2451,27 @@ fn the_widest_cpu_layout_survives_the_gpu_upload() {
     ).expect("the widest layout the table is sized for was refused");
 
     assert_eq!(layout.taps(), (taps, taps), "the layout did not keep its taps");
+    for c in 0..3 {
+        assert_eq!(layout.weights(c).map(<[f32]>::len), Some(need), "channel {c} lost weights");
+        assert_eq!(layout.weights(c).and_then(<[f32]>::last), Some(&weights[need - 1]), "channel {c} lost its last weight");
+    }
 
-    let params = daegun::SubpixelParams::from_layout(&layout);
-    assert_eq!(
-        params.taps, [u32::from(taps), u32::from(taps)],
-        "the GPU upload truncated a layout the CPU accepted",
-    );
-    assert!(
-        params.taps.iter().all(|&t| t <= daegun::MAX_SUBPIXEL_TAPS),
-        "the CPU built a layout past the GPU's tap limit: {:?}", params.taps,
-    );
-    assert!(
-        need <= daegun::MAX_SUBPIXEL_WEIGHTS,
-        "the CPU's widest filter needs {need} weights and the GPU channel holds {}",
-        daegun::MAX_SUBPIXEL_WEIGHTS,
-    );
-
+    // As many weights as its taps want, so only the tap bound can refuse it.
+    let wider: Vec<f32> = vec![1.0 / f32::from(taps + 1); usize::from(taps) + 1];
     assert!(
         daegun::SubpixelLayout::from_weights(
             (daegun::MAX_OVERSAMPLE, 1), (taps + 1, 1), (0, 0),
-            [&weights, &weights, &weights],
+            [&wider, &wider, &wider],
         ).is_none(),
         "a filter wider than the table was accepted",
+    );
+    let taller: Vec<f32> = vec![1.0 / f32::from(taps * (taps + 1)); usize::from(taps) * usize::from(taps + 1)];
+    assert!(
+        daegun::SubpixelLayout::from_weights(
+            (1, daegun::MAX_OVERSAMPLE), (taps, taps + 1), (0, 0),
+            [&taller, &taller, &taller],
+        ).is_none(),
+        "a filter taller than the table was accepted",
     );
 }
 
@@ -2269,8 +2511,8 @@ fn no_two_subpixel_layouts_share_an_identity() {
         for (nb, b) in layouts.iter().skip(i + 1) {
             assert_ne!(
                 a.key(), b.key(),
-                "'{na}' and '{nb}' share the key {:#x}; the cache cannot tell them apart, so one \
-                 returns the other's bitmaps",
+                "'{na}' and '{nb}' share the key {:#x}, so a cache keyed on it serves one the \
+                 other's bitmaps",
                 a.key(),
             );
         }
@@ -2298,10 +2540,10 @@ fn a_caller_can_tell_an_empty_gradient_from_a_collapsed_one() {
 
     let empty = Ramp::new(&grad(Vec::new()), &daegun::paint::IDENTITY);
     let collapsed = Ramp::new(&grad(two.clone()), &[0.0; 6]);
-    assert!(matches!(empty, Ramp::Flat(None)), "an empty stop list was not flat-nothing");
-    assert!(matches!(collapsed, Ramp::Flat(None)), "a singular transform was not flat-nothing");
-    assert_eq!(empty.at(1.0, 1.0), None);
-    assert_eq!(collapsed.at(1.0, 1.0), None);
+    for x in [-50.0, 0.0, 1.0, 5.0, 9.5, 60.0] {
+        assert_eq!(empty.at(x, 1.0), None, "an empty stop list painted at {x}");
+        assert_eq!(collapsed.at(x, 1.0), None, "a singular transform painted at {x}");
+    }
 
     assert!(matches!(resolve_stops(Vec::new()), Stops::Nothing), "an empty list was not Nothing");
     assert!(
@@ -2312,6 +2554,114 @@ fn a_caller_can_tell_an_empty_gradient_from_a_collapsed_one() {
         matches!(resolve_stops(vec![two[0]]), Stops::Solid(c) if c == two[0].color),
         "one stop was not reported as a solid fill",
     );
+}
+
+// COLR defines a color line over its own stops, so repeat and reflect cycle over them: test_glyphs.ttf's
+// lines run red to blue from x 100 to 900, with stops at 0.2 and 0.8, 0 and 1.5, and 0.5 and 1.5. The
+// colors are the spec's blend in linear light, worked in f64 for each point's place on its line.
+#[test]
+fn a_color_line_repeats_over_its_own_stops() {
+    let f = font("colr-v1-test-glyphs/test_glyphs.ttf");
+    let points = [(9u16, 0.05, [137u8, 0, 224]), (9, 0.95, [224, 0, 137]), (10, 0.5, [213, 0, 156]), (11, 0.9, [203, 0, 170])];
+    for (gid, t, want) in points {
+        let scene = f.colr_scene(gid, &[], 0).expect("a color glyph");
+        let ramp = scene.ops().iter().find_map(|op| match op {
+            daegun::paint::Op::Fill { paint: daegun::paint::Paint::Gradient(g), transform, .. } => {
+                Some(daegun::paint::gradient::Ramp::new(g, transform))
+            }
+            _ => None,
+        });
+        let c = ramp.expect("a gradient fill").at(100.0 + 800.0 * t - 0.5, 249.5).expect("a color");
+        let got = [c.r, c.g, c.b];
+        assert!(got.iter().zip(want).all(|(&a, b)| a.abs_diff(b) <= 2), "gid {gid} at t {t}: {got:?}, not {want:?}");
+    }
+}
+
+// One color line twice, over 0..1 and over 0.5..1.5 of geometry stretched to match: each kind samples
+// alike under every extend, the stretched radial starting at a radius below zero.
+#[test]
+fn a_color_line_off_0_to_1_samples_as_its_stretched_geometry() {
+    use daegun::paint::{gradient::Ramp, Extend, Gradient, GradientKind, Rgba, Stop, IDENTITY};
+    let stops = |a: f32, b: f32| {
+        vec![Stop { offset: a, color: Rgba::opaque(255, 0, 0) }, Stop { offset: b, color: Rgba::opaque(0, 0, 255) }]
+    };
+    let pairs = [
+        (GradientKind::Linear { x0: 10.0, y0: 0.0, x1: 110.0, y1: 0.0 },
+         GradientKind::Linear { x0: -40.0, y0: 0.0, x1: 60.0, y1: 0.0 }),
+        (GradientKind::Radial { x0: 0.0, y0: 0.0, r0: 10.0, x1: 40.0, y1: 0.0, r1: 50.0 },
+         GradientKind::Radial { x0: -20.0, y0: 0.0, r0: -10.0, x1: 20.0, y1: 0.0, r1: 30.0 }),
+        (GradientKind::Sweep { cx: 0.0, cy: 0.0, start_angle: 30.0, end_angle: 120.0 },
+         GradientKind::Sweep { cx: 0.0, cy: 0.0, start_angle: -15.0, end_angle: 75.0 }),
+    ];
+    for (plain, stretched) in pairs {
+        for extend in [Extend::Pad, Extend::Repeat, Extend::Reflect] {
+            let ramp = |kind, stops| Ramp::new(&Gradient { kind, stops, extend, transform: IDENTITY }, &IDENTITY);
+            let (a, b) = (ramp(plain, stops(0.0, 1.0)), ramp(stretched, stops(0.5, 1.5)));
+            for i in -20..20 {
+                for j in -20..20 {
+                    let (x, y) = (f64::from(i) * 7.3, f64::from(j) * 5.9);
+                    let (p, q) = (a.at(x, y), b.at(x, y));
+                    let close = match (p, q) {
+                        (Some(p), Some(q)) => [p.r.abs_diff(q.r), p.g.abs_diff(q.g), p.b.abs_diff(q.b)].iter().all(|&d| d <= 1),
+                        (p, q) => p == q,
+                    };
+                    assert!(close, "{plain:?} {extend:?} at ({x}, {y}): {p:?} against {q:?}");
+                }
+            }
+        }
+    }
+}
+
+// A static CFF2 font has no axes, so naming one when subsetting leaves its style as stored: here a
+// face that is not Regular stays so.
+#[test]
+fn a_static_cff2_subset_keeps_its_style() {
+    let f = font("source-serif/SourceSerif4Variable-Roman.otf");
+    let mut tables: std::collections::BTreeMap<String, Vec<u8>> = f.table_tags().into_iter()
+        .filter(|t| *t != "fvar")
+        .map(|t| (t.to_string(), f.table(t).expect("listed").to_vec()))
+        .collect();
+    tables.get_mut("OS/2").expect("OS/2")[62..64].copy_from_slice(&[0, 0]);
+    let stat = Font::from_vec(daegun::build_font(&tables)).expect("the static font parses");
+    let gid = stat.glyph_id('H' as u32).expect("H");
+    let subset = stat.subset(&[gid], &[("wght", 600.0)]).expect("a subset");
+    let os2 = Font::from_vec(subset.ttf).expect("the subset parses").table("OS/2").expect("OS/2").to_vec();
+    assert_eq!(os2[62..64], [0, 0], "naming an axis the font lacks rewrote fsSelection");
+}
+
+// A hard edge, every stop at one offset, past 0..1 on either side: pad still switches colors there.
+#[test]
+fn a_hard_edge_past_0_to_1_stays_where_its_stops_put_it() {
+    use daegun::paint::{gradient::Ramp, Extend, Gradient, GradientKind, Rgba, Stop, IDENTITY};
+    let (red, blue) = (Rgba::opaque(255, 0, 0), Rgba::opaque(0, 0, 255));
+    let line = GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 100.0, y1: 0.0 };
+    for (at, before, after) in [(1.5f32, 140.0, 160.0), (-0.5, -60.0, -40.0)] {
+        let stops = vec![Stop { offset: at, color: red }, Stop { offset: at, color: blue }];
+        let ramp = Ramp::new(&Gradient { kind: line, stops, extend: Extend::Pad, transform: IDENTITY }, &IDENTITY);
+        assert_eq!(ramp.at(before - 0.5, 0.0), Some(red), "an edge at {at}: blue before it");
+        assert_eq!(ramp.at(after - 0.5, 0.0), Some(blue), "an edge at {at}: red past it");
+    }
+}
+
+// A ramp takes the scene's space to the device, as daegun_color_scene_ramp does, and applies the
+// gradient's own transform first: a line from 0 to 10, doubled, is halfway along at 10, not past its end.
+#[test]
+fn a_ramp_applies_the_gradients_own_transform() {
+    use daegun::paint::{Extend, Gradient, GradientKind, Rgba, Stop, IDENTITY};
+    use daegun::paint::gradient::{Interpolation, Ramp};
+
+    let stops = vec![
+        Stop { offset: 0.0, color: Rgba::opaque(0, 0, 0) },
+        Stop { offset: 1.0, color: Rgba::opaque(200, 200, 200) },
+    ];
+    let g = Gradient {
+        kind: GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 10.0, y1: 0.0 },
+        stops,
+        extend: Extend::Pad,
+        transform: [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+    };
+    let at = Ramp::with_interpolation(&g, &IDENTITY, Interpolation::Srgb).at(9.5, 0.0).expect("a color");
+    assert!((90..=110).contains(&at.r), "halfway along the doubled line sampled {}, not about 100", at.r);
 }
 
 #[test]
@@ -2376,13 +2726,17 @@ fn fading_a_color_by_nothing_meaningful_leaves_it_alone() {
 }
 
 #[test]
-fn padding_covers_the_filter_reach_and_reaches_the_bitmap() {
+fn padding_covers_the_filter_reach() {
     use daegun::{StripeOrder::{Bgr, Rgb}, SubpixelLayout};
 
+    // A window can reach before its pixel and past it, and the pad has to cover both.
     let covers = |l: &SubpixelLayout| {
-        let ((px, py), (ox, oy), (rx, ry)) = (l.pad(), l.oversample(), l.origin());
-        px * usize::from(ox) >= usize::from(rx.unsigned_abs())
-            && py * usize::from(oy) >= usize::from(ry.unsigned_abs())
+        let ((px, py), (ox, oy), (rx, ry), (tx, ty)) = (l.pad(), l.oversample(), l.origin(), l.taps());
+        let fits = |pad: usize, o: u8, r: i8, t: u8| {
+            let reach = (-isize::from(r)).max(isize::from(r) + isize::from(t) - isize::from(o)).max(0);
+            (pad * usize::from(o)) as isize >= reach
+        };
+        fits(px, ox, rx, tx) && fits(py, oy, ry, ty)
     };
     let presets = [
         ("grayscale", SubpixelLayout::grayscale()),
@@ -2401,10 +2755,17 @@ fn padding_covers_the_filter_reach_and_reaches_the_bitmap() {
     assert_eq!(SubpixelLayout::vertical(Rgb).pad(), (0, 1), "vertical padding is not (0, 1)");
     assert_eq!(SubpixelLayout::unfiltered(Rgb, true).pad(), (0, 0), "unfiltered asked for padding");
 
+    let three = [0.25f32, 0.5, 0.25];
+    let ahead = SubpixelLayout::from_weights((1, 1), (3, 1), (0, 0), [&three, &three, &three]).expect("3 taps");
+    assert!(covers(&ahead) && ahead.pad() == (2, 0), "a window 2 samples past its pixel padded {:?}", ahead.pad());
+    let four = [0.25f32; 4];
+    let wide = SubpixelLayout::from_weights((3, 1), (4, 1), (0, 0), [&four, &four, &four]).expect("4 taps");
+    assert!(covers(&wide) && wide.pad() == (1, 0), "a window a sample past its pixel padded {:?}", wide.pad());
+
     let wide = [0.1f32; 12];
     let l = SubpixelLayout::from_weights((2, 1), (6, 2), (-5, 0), [&wide, &wide, &wide])
         .expect("a six-tap filter within the bounds was refused");
-    assert_eq!(l.pad(), (3, 0), "a filter reaching 2.5 pixels did not round up to 3");
+    assert_eq!(l.pad(), (3, 1), "a filter reaching 2.5 pixels across and one down did not pad (3, 1)");
     assert!(covers(&l), "the caller-supplied layout's padding does not cover its reach");
 
     assert!(SubpixelLayout::grayscale().is_grayscale(), "grayscale did not report itself grayscale");
@@ -2413,24 +2774,6 @@ fn padding_covers_the_filter_reach_and_reaches_the_bitmap() {
         assert_eq!(l.channels(), 3, "{name} did not resolve three channels");
     }
     assert!(!l.is_grayscale(), "a from_weights layout reported itself grayscale");
-
-    let f = font(GARAMOND);
-    let gid = f.glyph_id('B' as u32).expect("B");
-    let go = |l| f.rasterize_glyph_with(gid, 16.0, &[], &daegun::RasterOptions::default().with_layout(l))
-        .expect("B rasterised");
-    let gray = go(SubpixelLayout::grayscale());
-    let rgb = go(SubpixelLayout::horizontal(Rgb));
-    let vert = go(SubpixelLayout::vertical(Rgb));
-    assert_eq!(
-        rgb.metrics.width, gray.metrics.width + 2,
-        "a horizontally filtered glyph was not two pixels wider than the grayscale one",
-    );
-    assert_eq!(rgb.metrics.height, gray.metrics.height, "a horizontal filter changed the height");
-    assert_eq!(
-        vert.metrics.height, gray.metrics.height + 2,
-        "a vertically filtered glyph was not two pixels taller than the grayscale one",
-    );
-    assert_eq!(vert.metrics.width, gray.metrics.width, "a vertical filter changed the width");
 }
 
 #[test]
@@ -2499,6 +2842,8 @@ fn the_raw_tier_can_outline_a_glyph_from_the_bytes_it_is_given() {
         "loca did not parse to one offset per glyph plus the end sentinel",
     );
     assert!(offsets.windows(2).all(|w| w[0] <= w[1]), "loca offsets are not monotone");
+    // maxp counts glyphs in a u16, so a larger count is not a font's and must not size the answer.
+    assert_eq!(daegun::parse_loca(loca, fmt, usize::MAX).len(), 65_536, "loca sized itself from usize::MAX");
 
     let mut compared = 0;
     for ch in ['B', 'o', 'x', 'A', 'g', 'W'] {
@@ -2587,7 +2932,7 @@ fn a_guillemet_after_an_arabic_word_takes_the_arabic_form_without_flipping() {
     );
     assert!(
         holder.run.glyphs.contains(&arabic_form[0]),
-        "the guillemet took {:?}, not the Arabic form {:?} — the itemized script did not reach the \
+        "the guillemet took {:?}, not the Arabic form {:?} – the itemized script did not reach the \
          run that reaches the caller",
         holder.run.glyphs, arabic_form,
     );
@@ -2626,7 +2971,7 @@ fn a_seeded_script_does_not_override_the_resolved_level() {
 }
 
 #[test]
-fn a_replayed_outline_gives_the_gpu_the_same_curves_as_a_decode() {
+fn a_replayed_outline_gives_the_same_quads_as_a_decode() {
     let faces = [
         "eb-garamond/EBGaramond.ttf",
         "inter/InterVariable.ttf",
@@ -2638,13 +2983,13 @@ fn a_replayed_outline_gives_the_gpu_the_same_curves_as_a_decode() {
         let f = font(rel);
         let n = f.num_glyphs().min(300);
         for gid in 0..n {
-            let mut direct = daegun::daerizer::daegpu::collector(f.upm() as f32);
+            let mut direct = daegun::QuadraticPen::new(f32::from(f.upm()));
             if f.outline_glyph_instanced(gid, &[], &mut direct).is_none() {
                 continue;
             }
             let mut path = daegun::Path::default();
             f.outline_glyph_instanced(gid, &[], &mut path).expect("the second decode disagreed");
-            let mut replayed = daegun::daerizer::daegpu::collector(f.upm() as f32);
+            let mut replayed = daegun::QuadraticPen::new(f32::from(f.upm()));
             path.replay(None, &mut replayed);
 
             match (direct.finish(), replayed.finish()) {
@@ -2661,27 +3006,4 @@ fn a_replayed_outline_gives_the_gpu_the_same_curves_as_a_decode() {
         }
     }
     assert!(compared > 1000, "only {compared} glyphs were compared, so this proves little");
-}
-
-#[test]
-fn prewarming_does_not_change_what_the_gpu_path_builds() {
-    let path = format!("{}/{}", crate::FONTS, "eb-garamond/EBGaramond.ttf");
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing: {path} ({e})"));
-    let gids: Vec<u16> = (1..120u16).collect();
-
-    let cold = Font::from_bytes(&bytes).expect("parsed");
-    let mut cold_batch = daegun::daerizer::daegpu::GpuBatch::new();
-    let cold_slots: Vec<_> = gids.iter().map(|&g| cold.gpu_glyph(&mut cold_batch, g, &[]).ok()).collect();
-
-    let warm = Font::from_bytes(&bytes).expect("parsed");
-    let added = warm.prewarm(gids.iter().copied(), &[]);
-    assert!(added > 50, "the fixture prewarmed only {added} outlines, so this proves little");
-    let mut warm_batch = daegun::daerizer::daegpu::GpuBatch::new();
-    let warm_slots: Vec<_> = gids.iter().map(|&g| warm.gpu_glyph(&mut warm_batch, g, &[]).ok()).collect();
-
-    assert_eq!(cold_slots, warm_slots, "prewarming changed which glyphs the batch accepted or where");
-    assert_eq!(cold_batch.curves(), warm_batch.curves(), "prewarming changed the curve data");
-    assert_eq!(cold_batch.bands(), warm_batch.bands(), "prewarming changed the band structure");
-    assert_eq!(cold_batch.band_curves(), warm_batch.band_curves(), "prewarming changed band membership");
-    assert_eq!(cold_batch.hulls(), warm_batch.hulls(), "prewarming changed the drawn polygons");
 }

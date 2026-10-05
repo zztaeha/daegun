@@ -10,7 +10,7 @@
 
 // A codepoint's Indic category and position, behind a three-stage trie.
 //
-// One descent answers both. They were two values in one sorted range list, bisected
+// One descent answers both, where two values in one sorted range list would be bisected
 // eleven deep, once per character.
 #[derive(Clone, Copy)]
 pub(crate) struct IndicCategoryRecord {

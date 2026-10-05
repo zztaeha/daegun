@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use super::f26dot6::{self, F2DOT14_ONE};
+use super::f26dot6::{self, F2DOT14_ONE, ONE};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum HintMode {
@@ -12,8 +12,10 @@ pub enum HintMode {
 }
 
 impl HintMode {
-    pub(crate) fn moves_x(self) -> bool {
-        matches!(self, HintMode::Classic)
+    // Classic runs bytecode as FreeType's v35 interpreter does; Subpixel and Auto as its v40, which
+    // keeps a font that has not opted out from moving points along x.
+    pub(crate) fn is_v40(self) -> bool {
+        !matches!(self, HintMode::Classic)
     }
 
     pub(crate) fn runs_bytecode(self) -> bool {
@@ -25,6 +27,7 @@ impl HintMode {
     }
 }
 
+// A 2.14 unit vector.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Vector {
     pub x: i32,
@@ -44,53 +47,72 @@ pub(crate) enum RoundState {
     DownToGrid,
     UpToGrid,
     Off,
-    Super { period: i32, phase: i32, threshold: i32, gray45: bool },
+    Super { period: i32, phase: i32, threshold: i32 },
+    Super45 { period: i32, phase: i32, threshold: i32 },
 }
 
 impl RoundState {
-    pub(crate) fn apply(self, distance: i32) -> i32 {
-        use RoundState::*;
+    // SROUND and S45ROUND's selector: period, phase and threshold, worked in 2.14 and kept in 26.6.
+    pub(crate) fn sround(selector: i32, grid_period: i32, gray45: bool) -> RoundState {
+        let period = match selector & 0xC0 {
+            0x00 => grid_period / 2,
+            0x80 => grid_period * 2,
+            _ => grid_period,
+        };
+        let phase = match selector & 0x30 {
+            0x00 => 0,
+            0x10 => period / 4,
+            0x20 => period / 2,
+            _ => period * 3 / 4,
+        };
+        let threshold = match selector & 0x0F {
+            0 => period - 1,
+            t => (t - 4) * period / 8,
+        };
+        let (period, phase, threshold) = (period >> 8, phase >> 8, threshold >> 8);
+        if gray45 {
+            RoundState::Super45 { period, phase, threshold }
+        } else {
+            RoundState::Super { period, phase, threshold }
+        }
+    }
+
+    // A distance rounded away from or toward zero by magnitude, as FreeType's Round_* functions do
+    // with no engine compensation; a positive distance never rounds negative or the reverse.
+    pub(crate) fn apply(self, d: i32) -> i32 {
+        let magnitude = |f: &dyn Fn(i32) -> i32| {
+            if d >= 0 { f(d).max(0) } else { f(d.saturating_neg()).saturating_neg().min(0) }
+        };
         match self {
-            Off => distance,
-            ToGrid => f26dot6::round_to_grid(distance),
-            ToHalfGrid => f26dot6::round_to_half_grid(distance),
-            DownToGrid => {
-                if distance >= 0 {
-                    f26dot6::floor_pixel(distance)
+            RoundState::Off => d,
+            RoundState::ToGrid => magnitude(&|v| v.saturating_add(ONE / 2) & !(ONE - 1)),
+            RoundState::ToHalfGrid => {
+                if d >= 0 {
+                    f26dot6::floor_pixel(d).saturating_add(ONE / 2)
                 } else {
-                    f26dot6::floor_pixel(distance.saturating_neg()).saturating_neg()
+                    f26dot6::floor_pixel(d.saturating_neg()).saturating_add(ONE / 2).saturating_neg()
                 }
             }
-            UpToGrid => {
-                if distance >= 0 {
-                    f26dot6::ceil_pixel(distance)
-                } else {
-                    f26dot6::ceil_pixel(distance.saturating_neg()).saturating_neg()
-                }
+            RoundState::ToDoubleGrid => magnitude(&|v| v.saturating_add(ONE / 4) & !(ONE / 2 - 1)),
+            RoundState::DownToGrid => magnitude(&f26dot6::floor_pixel),
+            RoundState::UpToGrid => magnitude(&f26dot6::ceil_pixel),
+            RoundState::Super { period, phase, threshold } => {
+                super_round(d, phase, |v| v.saturating_add(threshold - phase) & period.saturating_neg())
             }
-            ToDoubleGrid => {
-                let half = f26dot6::ONE / 2;
-                if distance >= 0 {
-                    distance.saturating_add(half / 2) & !(half - 1)
-                } else {
-                    (distance.saturating_neg().saturating_add(half / 2) & !(half - 1)).saturating_neg()
-                }
-            }
-            Super { period, phase, threshold, gray45 } => {
-                if period <= 0 { return distance; }
-                let neg = distance < 0;
-                let d = if neg { distance.saturating_neg() } else { distance };
-                let mut r = d.saturating_add(threshold).saturating_sub(phase);
-                r = if gray45 {
-                    (r / period).saturating_mul(period)
-                } else {
-                    r & period.saturating_neg()
-                };
-                if r < 0 { r = 0; }
-                r = r.saturating_add(phase);
-                if neg { r.saturating_neg() } else { r }
+            RoundState::Super45 { period, phase, threshold } => {
+                super_round(d, phase, |v| v.saturating_add(threshold - phase) / period.max(1) * period)
             }
         }
+    }
+}
+
+fn super_round(d: i32, phase: i32, snap: impl Fn(i32) -> i32) -> i32 {
+    if d >= 0 {
+        let v = snap(d).saturating_add(phase);
+        if v < 0 { phase } else { v }
+    } else {
+        let v = snap(d.saturating_neg()).saturating_neg().saturating_sub(phase);
+        if v > 0 { phase.saturating_neg() } else { v }
     }
 }
 
@@ -111,12 +133,10 @@ pub(crate) struct GraphicsState {
     pub control_value_cut_in: i32,
     pub single_width_cut_in: i32,
     pub single_width_value: i32,
-    pub auto_flip: bool,
     pub delta_base: i32,
     pub delta_shift: i32,
-    pub instruct_control: i32,
-    pub scan_control: bool,
-    pub scan_type: i32,
+    pub auto_flip: bool,
+    pub instruct_control: u8,
 }
 
 impl Default for GraphicsState {
@@ -125,52 +145,96 @@ impl Default for GraphicsState {
             projection: Vector::X_AXIS,
             dual_projection: Vector::X_AXIS,
             freedom: Vector::X_AXIS,
-            rp0: 0, rp1: 0, rp2: 0,
-            zp0: 1, zp1: 1, zp2: 1,
+            rp0: 0,
+            rp1: 0,
+            rp2: 0,
+            zp0: 1,
+            zp1: 1,
+            zp2: 1,
             round_state: RoundState::ToGrid,
             loop_count: 1,
-            minimum_distance: f26dot6::ONE,
+            minimum_distance: ONE,
             control_value_cut_in: 68,
             single_width_cut_in: 0,
             single_width_value: 0,
-            auto_flip: true,
             delta_base: 9,
             delta_shift: 3,
+            auto_flip: true,
             instruct_control: 0,
-            scan_control: false,
-            scan_type: 0,
         }
     }
 }
 
-#[derive(Clone, Default)]
+impl GraphicsState {
+    // What every glyph program starts from: the defaults, with the fields the CVT program may set,
+    // the ones FreeType carries over from it.
+    pub(crate) fn retained(&self) -> GraphicsState {
+        GraphicsState {
+            minimum_distance: self.minimum_distance,
+            control_value_cut_in: self.control_value_cut_in,
+            single_width_cut_in: self.single_width_cut_in,
+            single_width_value: self.single_width_value,
+            delta_base: self.delta_base,
+            delta_shift: self.delta_shift,
+            auto_flip: self.auto_flip,
+            instruct_control: self.instruct_control,
+            ..GraphicsState::default()
+        }
+    }
+}
+
+// Points current, original and unscaled. For a glyph `orus` is in font units, for the composite
+// pass the assembled 26.6 points; the twilight zone has none.
+#[derive(Default)]
 pub(crate) struct Zone {
-    pub current_x: Vec<i32>,
-    pub current_y: Vec<i32>,
-    pub original_x: Vec<i32>,
-    pub original_y: Vec<i32>,
+    pub cur_x: Vec<i32>,
+    pub cur_y: Vec<i32>,
+    pub org_x: Vec<i32>,
+    pub org_y: Vec<i32>,
+    pub orus_x: Vec<i32>,
+    pub orus_y: Vec<i32>,
     pub flags: Vec<u8>,
     pub contour_ends: Vec<usize>,
 }
 
-pub const FLAG_ON_CURVE: u8 = 0x01;
-pub(crate) const FLAG_TOUCHED_X: u8 = 0x02;
-pub(crate) const FLAG_TOUCHED_Y: u8 = 0x04;
-
-impl Zone {
-    pub(crate) fn with_capacity(n: usize) -> Zone {
-        Zone {
-            current_x: alloc::vec![0; n],
-            current_y: alloc::vec![0; n],
-            original_x: alloc::vec![0; n],
-            original_y: alloc::vec![0; n],
-            flags: alloc::vec![0; n],
-            contour_ends: Vec::new(),
-        }
+impl Clone for Zone {
+    fn clone(&self) -> Zone {
+        let mut zone = Zone::default();
+        zone.clone_from(self);
+        zone
     }
 
-    pub(crate) fn reset_zeroed(&mut self, n: usize) {
-        for v in [&mut self.current_x, &mut self.current_y, &mut self.original_x, &mut self.original_y] {
+    // Field by field into the buffers already held: the twilight zone is restored before every
+    // glyph, and the derived form allocated all eight vectors each time.
+    fn clone_from(&mut self, source: &Zone) {
+        let Zone { cur_x, cur_y, org_x, org_y, orus_x, orus_y, flags, contour_ends } = source;
+        self.cur_x.clone_from(cur_x);
+        self.cur_y.clone_from(cur_y);
+        self.org_x.clone_from(org_x);
+        self.org_y.clone_from(org_y);
+        self.orus_x.clone_from(orus_x);
+        self.orus_y.clone_from(orus_y);
+        self.flags.clone_from(flags);
+        self.contour_ends.clone_from(contour_ends);
+    }
+}
+
+pub const FLAG_ON_CURVE: u8 = 0x01;
+// A cubic control point in a hinted CFF outline, FreeType's FT_CURVE_TAG_CUBIC; every other control
+// is a quadratic one.
+pub const FLAG_CUBIC: u8 = 0x02;
+pub(crate) const FLAG_TOUCHED_X: u8 = 0x08;
+pub(crate) const FLAG_TOUCHED_Y: u8 = 0x10;
+
+impl Zone {
+    pub(crate) fn with_len(n: usize) -> Zone {
+        let mut z = Zone::default();
+        z.reset(n);
+        z
+    }
+
+    pub(crate) fn reset(&mut self, n: usize) {
+        for v in [&mut self.cur_x, &mut self.cur_y, &mut self.org_x, &mut self.org_y, &mut self.orus_x, &mut self.orus_y] {
             v.clear();
             v.resize(n, 0);
         }
@@ -180,39 +244,6 @@ impl Zone {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.current_x.len()
-    }
-
-    pub(crate) fn move_point(&mut self, gs: &GraphicsState, index: usize, distance: i32, moves_x: bool) {
-        if index >= self.len() { return; }
-        let (fx, fy) = (gs.freedom.x, gs.freedom.y);
-        let denom = f26dot6::mul_f2dot14(gs.projection.x, fx)
-            .saturating_add(f26dot6::mul_f2dot14(gs.projection.y, fy));
-        if denom == 0 { return; }
-
-        if fx != 0 {
-            let dx = f26dot6::clamp_i32(distance as i64 * fx as i64 / denom as i64);
-            if moves_x {
-                self.current_x[index] = self.current_x[index].saturating_add(dx);
-            }
-            self.flags[index] |= FLAG_TOUCHED_X;
-        }
-        if fy != 0 {
-            let dy = f26dot6::clamp_i32(distance as i64 * fy as i64 / denom as i64);
-            self.current_y[index] = self.current_y[index].saturating_add(dy);
-            self.flags[index] |= FLAG_TOUCHED_Y;
-        }
-    }
-
-    pub(crate) fn project(&self, gs: &GraphicsState, index: usize) -> i32 {
-        if index >= self.len() { return 0; }
-        f26dot6::mul_f2dot14(self.current_x[index], gs.projection.x)
-            .saturating_add(f26dot6::mul_f2dot14(self.current_y[index], gs.projection.y))
-    }
-
-    pub(crate) fn dual_project(&self, gs: &GraphicsState, index: usize) -> i32 {
-        if index >= self.len() { return 0; }
-        f26dot6::mul_f2dot14(self.original_x[index], gs.dual_projection.x)
-            .saturating_add(f26dot6::mul_f2dot14(self.original_y[index], gs.dual_projection.y))
+        self.cur_x.len()
     }
 }

@@ -10,3 +10,5 @@ mod float_accuracy;
 mod daemath;
 
 mod disasm;
+
+mod srgb;

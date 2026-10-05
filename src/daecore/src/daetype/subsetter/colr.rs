@@ -1,9 +1,11 @@
 use crate::daecore::daetype::subsetter::GlyphSet;
 use alloc::vec::Vec;
-use super::super::decoder::{read_offset24, read_u16_be, read_u32_be, write_offset24, write_u16_be, write_u32_be};
+use super::super::decoder::{read_offset24, read_u16_be, read_u32_be, write_u16_be};
 use super::super::colr_v0::{colr_v0_header, colr_v0_base_glyphs};
-use super::super::colr_v1::{paint_layout, PaintBudget};
+use super::super::colr_v1::paint_layout;
+use super::super::colr_v1::write::{assemble, rebuild};
 use super::otl::remap_gid;
+use super::subset_budget;
 
 const MAX_BASE_GLYPHS: usize = 65536;
 
@@ -14,115 +16,87 @@ pub fn colr_closure(colr: &[u8], active: &GlyphSet) -> Vec<u16> {
     found
 }
 
+// Base glyphs may share layers, so their ranges are merged and each layer is read once.
 fn colr_v0_closure(colr: &[u8], active: &GlyphSet, found: &mut Vec<u16>) {
     let Some((_, _, layers_off, n_layer_records)) = colr_v0_header(colr) else { return };
-    for (gid, first, n) in colr_v0_base_glyphs(colr) {
-        if !active.contains(&gid) { continue; }
-        for i in 0..n.min(65536) {
-            let idx = first + i;
-            if idx >= n_layer_records { break; }
+    let mut ranges: Vec<(usize, usize)> = colr_v0_base_glyphs(colr)
+        .into_iter()
+        .filter(|(gid, ..)| active.contains(gid))
+        .map(|(_, first, n)| (first, first.saturating_add(n).min(n_layer_records)))
+        .filter(|(start, end)| start < end)
+        .collect();
+    ranges.sort_unstable();
+    let mut next = 0;
+    for (start, end) in ranges {
+        for idx in start.max(next)..end {
             if let Some(layer_gid) = read_u16_be(colr, layers_off + idx * 4) {
                 found.push(layer_gid);
+            }
+        }
+        next = next.max(end);
+    }
+}
+
+// Every paint the kept base glyphs reach, each read once however many glyphs share it, so the walk
+// is linear in the table and needs no budget.
+fn colr_v1_closure(colr: &[u8], active: &GlyphSet, found: &mut Vec<u16>) {
+    if colr.len() < 34 || read_u16_be(colr, 0) != Some(1) { return; }
+    let Some(list) = read_u32_be(colr, 14).filter(|&v| v != 0).map(|v| v as usize) else { return };
+    let layer_list = read_u32_be(colr, 18).filter(|&v| v != 0).map(|v| v as usize);
+    let Some(count) = read_u32_be(colr, list) else { return };
+
+    let mut stack: Vec<usize> = (0..(count as usize).min(MAX_BASE_GLYPHS))
+        .filter_map(|i| {
+            let rec = list.checked_add(4 + i * 6)?;
+            active.contains(&read_u16_be(colr, rec)?).then_some(())?;
+            list.checked_add(read_u32_be(colr, rec + 2)? as usize)
+        })
+        .collect();
+    let mut seen = alloc::vec![0u64; colr.len().div_ceil(64)];
+    while let Some(off) = stack.pop() {
+        let Some(word) = seen.get_mut(off >> 6) else { continue };
+        if *word & (1 << (off & 63)) != 0 { continue; }
+        *word |= 1 << (off & 63);
+        let Some(layout) = colr.get(off).and_then(|&f| paint_layout(f)) else { continue };
+        for &pos in layout.glyph_ids {
+            found.extend(read_u16_be(colr, off + pos));
+        }
+        if colr[off] == 1 {
+            let (Some(n), Some(first), Some(layers)) = (colr.get(off + 1), read_u32_be(colr, off + 2), layer_list) else { continue };
+            let total = read_u32_be(colr, layers).unwrap_or(0) as usize;
+            let end = (first as usize).saturating_add(usize::from(*n)).min(total);
+            for idx in first as usize..end {
+                stack.extend(read_u32_be(colr, layers + 4 + idx * 4).and_then(|rel| layers.checked_add(rel as usize)));
+            }
+        } else {
+            for &pos in layout.children {
+                stack.extend(read_offset24(colr, off + pos).and_then(|rel| off.checked_add(rel)));
             }
         }
     }
 }
 
-fn colr_v1_closure(colr: &[u8], active: &GlyphSet, found: &mut Vec<u16>) {
-    if colr.len() < 34 { return; }
-    if read_u16_be(colr, 0) != Some(1) { return; }
-    let base_glyph_list_off = match read_u32_be(colr, 14) {
-        Some(v) if v != 0 => v as usize,
-        _ => return,
-    };
-    let layer_list_raw = read_u32_be(colr, 18).unwrap_or(0);
-    let layer_list_off = if layer_list_raw == 0 { None } else { Some(layer_list_raw as usize) };
-
-    let Some(num_records) = read_u32_be(colr, base_glyph_list_off) else { return };
-    let mut budget = PaintBudget::new();
-    for i in 0..(num_records as usize).min(MAX_BASE_GLYPHS) {
-        let rec = base_glyph_list_off + 4 + i * 6;
-        let (Some(gid), Some(paint_rel)) = (read_u16_be(colr, rec), read_u32_be(colr, rec + 2)) else { continue };
-        if !active.contains(&gid) { continue; }
-        walk_paint_closure(colr, base_glyph_list_off + paint_rel as usize, layer_list_off, found, &mut budget);
-    }
-}
-
-fn walk_paint_closure(colr: &[u8], off: usize, layer_list_off: Option<usize>, found: &mut Vec<u16>, budget: &mut PaintBudget) {
-    if !budget.enter() { return; }
-    walk_paint_closure_inner(colr, off, layer_list_off, found, budget);
-    budget.leave();
-}
-
-fn walk_paint_closure_inner(colr: &[u8], off: usize, layer_list_off: Option<usize>, found: &mut Vec<u16>, budget: &mut PaintBudget) {
-    let Some(format) = colr.get(off).copied() else { return };
-    let Some(layout) = paint_layout(format) else { return };
-
-    for &pos in layout.glyph_ids {
-        if let Some(glyph_id) = read_u16_be(colr, off + pos) { found.push(glyph_id); }
-    }
-
-    if format == 1 {
-        let Some(num_layers) = colr.get(off + 1).copied() else { return };
-        let Some(first_layer_index) = read_u32_be(colr, off + 2) else { return };
-        let Some(layer_list_off) = layer_list_off else { return };
-        let Some(num_layers_total) = read_u32_be(colr, layer_list_off) else { return };
-        for i in 0..(num_layers as usize).min(256) {
-            let idx = first_layer_index as usize + i;
-            if idx >= num_layers_total as usize { return; }
-            let Some(rel) = read_u32_be(colr, layer_list_off + 4 + idx * 4) else { return };
-            walk_paint_closure(colr, layer_list_off + rel as usize, Some(layer_list_off), found, budget);
-        }
-        return;
-    }
-
-    for &pos in layout.children {
-        if let Some(child_off) = read_offset24(colr, off + pos) {
-            walk_paint_closure(colr, off + child_off, layer_list_off, found, budget);
-        }
-    }
-}
-
+// The kept base glyphs under their new IDs, v1 through the instancer's writer. A subset has no fvar,
+// so it is the default master, and the variation data stays behind with the axes.
 pub fn subset_colr(colr: &[u8], active: &GlyphSet, gid_map: &[u16]) -> Option<Vec<u8>> {
     let has_v0 = colr_v0_header(colr).is_some_and(|(n, ..)| n > 0);
     let is_v1 = colr.len() >= 34 && read_u16_be(colr, 0) == Some(1);
     let v1_present = is_v1 && read_u32_be(colr, 14).unwrap_or(0) != 0;
     if !has_v0 && !v1_present { return None; }
 
-    let mut out = colr.to_vec();
+    let v0 = if has_v0 { rebuild_v0(colr, active, gid_map) } else { None };
+    let keep = |g: u16| remap_gid(active, gid_map, g);
+    let remap = |g: u16| gid_map.get(usize::from(g)).copied().unwrap_or(g);
+    let v1 = if v1_present { rebuild(colr, &keep, &remap, None, subset_budget(colr.len())) } else { None };
+    if v0.is_none() && v1.is_none() { return None; }
 
-    let mut new_v0: Option<(usize, usize, usize, usize)> = None;
-    if has_v0 {
-        new_v0 = rebuild_v0(colr, &mut out, active, gid_map);
-    }
-
-    let mut new_v1_off: Option<usize> = None;
-    if v1_present {
-        new_v1_off = rebuild_v1(colr, &mut out, active, gid_map);
-    }
-
-    if new_v0.is_none() && new_v1_off.is_none() { return None; }
-
-    if let Some((base_off, base_count, layers_off, layers_count)) = new_v0 {
-        write_u16_be(&mut out, 2, base_count as u16);
-        write_u32_be(&mut out, 4, base_off as u32);
-        write_u32_be(&mut out, 8, layers_off as u32);
-        write_u16_be(&mut out, 12, layers_count as u16);
-    } else if has_v0 {
-        write_u16_be(&mut out, 2, 0);
-        write_u32_be(&mut out, 4, 0);
-        write_u32_be(&mut out, 8, 0);
-        write_u16_be(&mut out, 12, 0);
-    }
-    if is_v1 {
-        write_u32_be(&mut out, 14, new_v1_off.unwrap_or(0) as u32);
-        if colr.len() >= 26 { write_u32_be(&mut out, 22, 0); }
-    }
-
-    Some(out)
+    let v0 = v0.as_ref().map(|(base, n, layers, m)| (base.as_slice(), *n, layers.as_slice(), *m));
+    assemble(if is_v1 { 1 } else { 0 }, v0, v1)
 }
 
-fn rebuild_v0(colr: &[u8], out: &mut Vec<u8>, active: &GlyphSet, gid_map: &[u16]) -> Option<(usize, usize, usize, usize)> {
+// Base records and layer records for the kept glyphs. A range several base glyphs name is written
+// once, and a table past u16 counts is not written.
+fn rebuild_v0(colr: &[u8], active: &GlyphSet, gid_map: &[u16]) -> Option<(Vec<u8>, u16, Vec<u8>, u16)> {
     let (_, _, orig_layers_off, orig_n_layers) = colr_v0_header(colr)?;
     let mut survivors: Vec<(u16, usize, usize)> = colr_v0_base_glyphs(colr).into_iter()
         .filter_map(|(gid, first, n)| remap_gid(active, gid_map, gid).map(|ng| (ng, first, n)))
@@ -130,223 +104,102 @@ fn rebuild_v0(colr: &[u8], out: &mut Vec<u8>, active: &GlyphSet, gid_map: &[u16]
     if survivors.is_empty() { return None; }
     survivors.sort_unstable_by_key(|&(gid, _, _)| gid);
 
-    let layers_off = out.len();
-    let mut base_records: Vec<(u16, u16, u16)> = Vec::with_capacity(survivors.len());
-    let mut layer_count = 0usize;
+    let mut layers: Vec<u8> = Vec::new();
+    let mut base_records: Vec<u8> = Vec::with_capacity(survivors.len() * 6);
+    let mut written: alloc::collections::BTreeMap<(usize, usize), (u16, u16)> = alloc::collections::BTreeMap::new();
     for &(gid, first, n) in &survivors {
-        let new_first = layer_count;
-        let mut actual_n = 0usize;
-        for i in 0..n.min(65536) {
-            let idx = first + i;
-            if idx >= orig_n_layers { break; }
-            let rec = orig_layers_off + idx * 4;
-            let (Some(orig_gid), Some(pal)) = (read_u16_be(colr, rec), read_u16_be(colr, rec + 2)) else { break };
-            let new_gid = remap_gid(active, gid_map, orig_gid).unwrap_or(orig_gid);
-            let mut lrec = [0u8; 4];
-            write_u16_be(&mut lrec, 0, new_gid);
-            write_u16_be(&mut lrec, 2, pal);
-            out.extend_from_slice(&lrec);
-            layer_count += 1;
-            actual_n += 1;
-        }
-        base_records.push((gid, new_first as u16, actual_n as u16));
-    }
-
-    let base_off = out.len();
-    for (gid, first, n) in &base_records {
-        let mut rec = [0u8; 6];
-        write_u16_be(&mut rec, 0, *gid);
-        write_u16_be(&mut rec, 2, *first);
-        write_u16_be(&mut rec, 4, *n);
-        out.extend_from_slice(&rec);
-    }
-
-    Some((base_off, base_records.len(), layers_off, layer_count))
-}
-
-fn rebuild_v1(colr: &[u8], out: &mut Vec<u8>, active: &GlyphSet, gid_map: &[u16]) -> Option<usize> {
-    let base_glyph_list_off = match read_u32_be(colr, 14) {
-        Some(v) if v != 0 => v as usize,
-        _ => return None,
-    };
-    let layer_list_raw = read_u32_be(colr, 18).unwrap_or(0);
-    let layer_list_off = if layer_list_raw == 0 { None } else { Some(layer_list_raw as usize) };
-    let num_records = read_u32_be(colr, base_glyph_list_off)?;
-
-    let mut survivors: Vec<(u16, usize)> = Vec::new();
-    for i in 0..(num_records as usize).min(MAX_BASE_GLYPHS) {
-        let rec = base_glyph_list_off + 4 + i * 6;
-        let (Some(gid), Some(paint_rel)) = (read_u16_be(colr, rec), read_u32_be(colr, rec + 2)) else { continue };
-        let Some(new_gid) = remap_gid(active, gid_map, gid) else { continue };
-        survivors.push((new_gid, base_glyph_list_off + paint_rel as usize));
-    }
-    if survivors.is_empty() { return None; }
-    survivors.sort_unstable_by_key(|&(gid, _)| gid);
-
-    let mut builder = ColrV1Builder { colr, gid_map, layer_entries: Vec::new() };
-    let mut budget = PaintBudget::new();
-    let mut built: Vec<(u16, Vec<u8>)> = Vec::with_capacity(survivors.len());
-    for (new_gid, paint_off) in &survivors {
-        let blob = builder.rebuild_paint(*paint_off, layer_list_off, &mut budget)?;
-        built.push((*new_gid, blob));
-    }
-
-    let base_glyph_list_start = out.len();
-    write_u32_be_push(out, built.len() as u32);
-    let records_start = out.len();
-    out.extend(core::iter::repeat_n(0u8, built.len() * 6));
-    let mut tail: Vec<u8> = Vec::new();
-    for (i, (new_gid, blob)) in built.iter().enumerate() {
-        let rec = records_start + i * 6;
-        write_u16_be(out, rec, *new_gid);
-        let rel = (out.len() - base_glyph_list_start) + tail.len();
-        write_u32_be(out, rec + 2, rel as u32);
-        tail.extend_from_slice(blob);
-    }
-    out.extend_from_slice(&tail);
-
-    if !builder.layer_entries.is_empty() {
-        let layer_list_start = out.len();
-        write_u32_be_push(out, builder.layer_entries.len() as u32);
-        let entries_start = out.len();
-        out.extend(core::iter::repeat_n(0u8, builder.layer_entries.len() * 4));
-        let mut ltail: Vec<u8> = Vec::new();
-        for (i, entry) in builder.layer_entries.iter().enumerate() {
-            let rel = (out.len() - layer_list_start) + ltail.len();
-            write_u32_be(out, entries_start + i * 4, rel as u32);
-            ltail.extend_from_slice(entry);
-        }
-        out.extend_from_slice(&ltail);
-        write_u32_be(out, 18, layer_list_start as u32);
-    }
-
-    Some(base_glyph_list_start)
-}
-
-fn write_u32_be_push(out: &mut Vec<u8>, v: u32) {
-    out.extend_from_slice(&v.to_be_bytes());
-}
-
-struct ColrV1Builder<'a> {
-    colr: &'a [u8],
-    gid_map: &'a [u16],
-    layer_entries: Vec<Vec<u8>>,
-}
-
-impl ColrV1Builder<'_> {
-    fn rebuild_paint(&mut self, off: usize, layer_list_off: Option<usize>, budget: &mut PaintBudget) -> Option<Vec<u8>> {
-        if !budget.enter() { return None; }
-        let result = self.rebuild_paint_inner(off, layer_list_off, budget);
-        budget.leave();
-        result
-    }
-
-    fn place_child(&mut self, header: &[u8], tail: &mut Vec<u8>, target: usize, layer_list_off: Option<usize>, budget: &mut PaintBudget) -> Option<usize> {
-        let built = self.rebuild_paint(target, layer_list_off, budget)?;
-        let rel = header.len() + tail.len();
-        tail.extend_from_slice(&built);
-        Some(rel)
-    }
-
-    fn place_verbatim(&self, header: &[u8], tail: &mut Vec<u8>, target: usize, len: usize) -> Option<usize> {
-        let bytes = self.colr.get(target..target + len)?;
-        let rel = header.len() + tail.len();
-        tail.extend_from_slice(bytes);
-        Some(rel)
-    }
-
-    fn rebuild_paint_inner(&mut self, off: usize, layer_list_off: Option<usize>, budget: &mut PaintBudget) -> Option<Vec<u8>> {
-        let colr = self.colr;
-        let format = *colr.get(off)?;
-        match format {
-            1 => {
-                let num_layers = *colr.get(off + 1)? as usize;
-                let first_layer_index = read_u32_be(colr, off + 2)? as usize;
-                let layer_list_off = layer_list_off?;
-                let num_layers_total = read_u32_be(colr, layer_list_off)? as usize;
-                let new_first = self.layer_entries.len();
-                for i in 0..num_layers.min(256) {
-                    let idx = first_layer_index + i;
-                    if idx >= num_layers_total { return None; }
-                    let entry_off = layer_list_off + 4 + idx * 4;
-                    let rel = read_u32_be(colr, entry_off)? as usize;
-                    let built = self.rebuild_paint(layer_list_off + rel, Some(layer_list_off), budget)?;
-                    self.layer_entries.push(built);
+        let record = match written.get(&(first, n)) {
+            Some(&record) => record,
+            None => {
+                let new_first = layers.len() / 4;
+                let mut actual_n = 0usize;
+                for idx in first..first.saturating_add(n).min(orig_n_layers) {
+                    let rec = orig_layers_off + idx * 4;
+                    let (Some(orig_gid), Some(pal)) = (read_u16_be(colr, rec), read_u16_be(colr, rec + 2)) else { break };
+                    let mut lrec = [0u8; 4];
+                    write_u16_be(&mut lrec, 0, remap_gid(active, gid_map, orig_gid).unwrap_or(orig_gid));
+                    write_u16_be(&mut lrec, 2, pal);
+                    layers.extend_from_slice(&lrec);
+                    actual_n += 1;
                 }
-                let mut out = vec![0u8; 6];
-                out[0] = 1;
-                out[1] = num_layers as u8;
-                write_u32_be(&mut out, 2, new_first as u32);
-                Some(out)
-            }
-            2 => Some(colr.get(off..off + 5)?.to_vec()),
-            3 => Some(colr.get(off..off + 9)?.to_vec()),
-            4 | 5 => self.rebuild_gradient(off, if format == 5 { 20 } else { 16 }, format == 5),
-            6 | 7 => self.rebuild_gradient(off, if format == 7 { 20 } else { 16 }, format == 7),
-            8 | 9 => self.rebuild_gradient(off, if format == 9 { 16 } else { 12 }, format == 9),
-            10 => {
-                let mut out = self.rebuild_with_children(off, format, layer_list_off, budget)?;
-                if let Some(g) = read_u16_be(colr, off + 4) {
-                    write_u16_be(&mut out, 4, remap_gid_raw(self.gid_map, g));
+                if layers.len() / 4 > usize::from(u16::MAX) {
+                    return None;
                 }
-                Some(out)
+                let record = (new_first as u16, actual_n as u16);
+                written.insert((first, n), record);
+                record
             }
-            11 => {
-                let mut header = colr.get(off..off + 3)?.to_vec();
-                let g = read_u16_be(colr, off + 1)?;
-                write_u16_be(&mut header, 1, remap_gid_raw(self.gid_map, g));
-                Some(header)
-            }
-            12 | 13 => {
-                let transform_len = if format == 13 { 28 } else { 24 };
-                let mut header = colr.get(off..off + 7)?.to_vec();
-                let mut tail = Vec::new();
-                let child_target = off + read_offset24(colr, off + 1)?;
-                let child_rel = self.place_child(&header, &mut tail, child_target, layer_list_off, budget)?;
-                write_offset24(&mut header, 1, child_rel);
-                let transform_target = off + read_offset24(colr, off + 4)?;
-                let transform_rel = self.place_verbatim(&header, &mut tail, transform_target, transform_len)?;
-                write_offset24(&mut header, 4, transform_rel);
-                header.extend(tail);
-                Some(header)
-            }
-            14..=32 => self.rebuild_with_children(off, format, layer_list_off, budget),
-            _ => None,
+        };
+        base_records.extend([gid, record.0, record.1].map(u16::to_be_bytes).concat());
+    }
+    let (n, m) = (survivors.len() as u16, (layers.len() / 4) as u16);
+    Some((base_records, n, layers, m))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // COLR v0 whose base glyphs 1 to `bases` all name the same 40,000 layers of glyph `bases + 1`.
+    fn shared(bases: u16) -> (Vec<u8>, GlyphSet, Vec<u16>) {
+        const LAYERS: u16 = 40_000;
+        let records = 14 + 6 * usize::from(bases);
+        let mut colr = [0u16, bases].map(u16::to_be_bytes).concat();
+        colr.extend(14u32.to_be_bytes());
+        colr.extend((records as u32).to_be_bytes());
+        colr.extend(LAYERS.to_be_bytes());
+        for gid in 1..=bases {
+            colr.extend([gid, 0, LAYERS].map(u16::to_be_bytes).concat());
+        }
+        for _ in 0..LAYERS {
+            colr.extend([bases + 1, 0].map(u16::to_be_bytes).concat());
+        }
+        let mut active = GlyphSet::new();
+        (0..=bases + 1).for_each(|g| { active.insert(g); });
+        (colr, active, (0..=bases + 1).collect())
+    }
+
+    #[test]
+    fn shared_layers_are_written_once() {
+        let (colr, active, gid_map) = shared(2);
+        let out = subset_colr(&colr, &active, &gid_map).expect("a subset COLR");
+        assert_eq!(read_u16_be(&out, 12), Some(40_000), "the layer count");
+        let base = read_u32_be(&out, 4).expect("base records") as usize;
+        for i in 0..2 {
+            let (first, n) = (read_u16_be(&out, base + 6 * i + 2), read_u16_be(&out, base + 6 * i + 4));
+            assert_eq!((first, n), (Some(0), Some(40_000)), "base glyph {i} lost its layers");
         }
     }
 
-    fn rebuild_with_children(&mut self, off: usize, format: u8, layer_list_off: Option<usize>, budget: &mut PaintBudget) -> Option<Vec<u8>> {
-        let layout = paint_layout(format)?;
-        let mut header = self.colr.get(off..off + layout.inline_len)?.to_vec();
-        let mut tail = Vec::new();
-        for &pos in layout.children {
-            let target = off + read_offset24(self.colr, off + pos)?;
-            let rel = self.place_child(&header, &mut tail, target, layer_list_off, budget)?;
-            write_offset24(&mut header, pos, rel);
-        }
-        header.extend(tail);
-        Some(header)
+    #[test]
+    fn layers_past_u16_drop_v0_rather_than_wrap() {
+        let (mut colr, active, gid_map) = shared(2);
+        colr[22..26].copy_from_slice(&[0, 1, 0x9C, 0x3F]);
+        let out = subset_colr(&colr, &active, &gid_map);
+        assert_eq!(out.map(|t| read_u16_be(&t, 12)), None, "79,999 layers were written as a u16 count");
     }
 
-    fn rebuild_gradient(&mut self, off: usize, inline_len: usize, is_var: bool) -> Option<Vec<u8>> {
-        let colr = self.colr;
-        let mut header = colr.get(off..off + inline_len)?.to_vec();
-        let mut tail = Vec::new();
-        let cl_target = off + read_offset24(colr, off + 1)?;
-        let cl_len = color_line_len(colr, cl_target, is_var)?;
-        let rel = self.place_verbatim(&header, &mut tail, cl_target, cl_len)?;
-        write_offset24(&mut header, 1, rel);
-        header.extend(tail);
-        Some(header)
+    // 2,000 glyphs sharing 60 layers walk 242,000 paints between them, past one budget of 100,000 for
+    // the whole subset: each paint is read once, and written once.
+    #[test]
+    fn a_shared_graph_subsets_whole() {
+        let colr = super::super::super::colr_v1::testing::shared_layers(2000, 60, false);
+        let mut active = GlyphSet::new();
+        (0..=2000u16).for_each(|g| { active.insert(g); });
+        let found = colr_closure(&colr, &active);
+        assert!((1000..1060).all(|g| found.contains(&g)), "the closure lost layer glyphs");
+        (1000..1060u16).for_each(|g| { active.insert(g); });
+        let gid_map: Vec<u16> = (0..=2000).collect();
+        let out = subset_colr(&colr, &active, &gid_map).expect("a subset COLR");
+        let list = read_u32_be(&out, 14).expect("a BaseGlyphList") as usize;
+        assert_eq!(read_u32_be(&out, list), Some(2000));
+        assert!(out.len() < colr.len() + 2000 * 6, "the shared layers were written more than once");
     }
-}
 
-fn remap_gid_raw(gid_map: &[u16], orig: u16) -> u16 {
-    gid_map.get(orig as usize).copied().unwrap_or(orig)
-}
-
-fn color_line_len(colr: &[u8], off: usize, is_var: bool) -> Option<usize> {
-    let num_stops = read_u16_be(colr, off + 1)? as usize;
-    let stop_size = if is_var { 10 } else { 6 };
-    Some(3 + num_stops * stop_size)
+    #[test]
+    fn the_v0_closure_reads_each_layer_once() {
+        let (colr, active, _) = shared(200);
+        let found = colr_closure(&colr, &active);
+        assert!(found.len() <= 40_000, "200 glyphs sharing 40,000 layers found {}", found.len());
+    }
 }

@@ -104,7 +104,7 @@ fn substitute(face: &Face, plan: &ShapePlan, buffer: &mut Buffer, target_directi
     } else {
         // Deliberately ungated by `plan.apply_gsub`: the table is optional and the walk is not. A
         // shaper's pauses – Indic's reordering, the syllabic dotted circle – are stages of the
-        // *plan*, and skipping the walk left a broken cluster in a GSUB-less font.
+        // *plan*, and skipping the walk would leave a broken cluster in a GSUB-less font.
         let data = face.table("GSUB");
         let table = data.and_then(LayoutTable::parse);
         run_lookups(face, plan, buffer, table.as_ref(), TableIndex::Gsub);
@@ -136,7 +136,7 @@ fn position(face: &Face, plan: &ShapePlan, buffer: &mut Buffer) {
         run_lookups(face, plan, buffer, table.as_ref(), TableIndex::Gpos);
     // `kerx` runs only when GPOS does not. The two flags being set together is not the same as both
     // running: the plan sets `apply_kerx` whenever GPOS has no kerning of its own, and running both
-    // kerns pairs GPOS deliberately left alone – Hiragino is the case that showed it.
+    // kerns pairs GPOS deliberately leaves alone, as in Hiragino.
     } else if plan.apply_kerx {
         kerx::apply(face, buffer, plan.kern_mask, plan.kern_mask != 0);
     }

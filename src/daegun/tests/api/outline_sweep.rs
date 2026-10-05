@@ -79,54 +79,17 @@ fn sweep_cff_hinted() {
     let gid = font.glyph_id('A' as u32).expect("A");
 
     for hinting in [daegun::HintMode::None, daegun::HintMode::Auto] {
-        let opts = daegun::RasterOptions::default().with_hinting(hinting);
+        let opts = daegun::OutlineOptions::default().with_hinting(hinting);
         let mut samples = Vec::with_capacity(300);
         for i in 0..300 {
             let px = 16.0 + i as f32 * 0.01;
+            let mut path = daegun::Path::default();
             let t = Instant::now();
-            let r = font.rasterize_glyph_with(gid, px, &[], &opts);
+            let r = font.prepared_outline(gid, px, &[], &opts, &mut path);
             samples.push(t.elapsed());
-            assert!(r.is_some(), "rasterize returned None, so the bench measured nothing");
-            core::hint::black_box(&r);
+            assert!(r.is_some() && !path.is_empty(), "prepared_outline drew nothing, so the bench measured nothing");
+            core::hint::black_box(&path);
         }
-        report(&format!("sweep_cff_hinted {hinting:?}"), "STIX2Math 'A', cache always missing", &mut samples);
+        report(&format!("sweep_cff_hinted {hinting:?}"), "STIX2Math 'A', prepared_outline, hinted at a new size each time", &mut samples);
     }
-}
-
-#[test]
-#[ignore]
-fn sweep_rasterize_face() {
-    let path = format!("{}/eb-garamond/EBGaramond.ttf", crate::FONTS);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    let font = Font::from_bytes(&bytes).unwrap_or_else(|e| panic!("{path} did not parse: {e}"));
-    let n = font.num_glyphs().min(600);
-    let opts = daegun::RasterOptions::default();
-
-    let mut samples = Vec::with_capacity(40);
-    let mut proof = 0usize;
-    for round in 0..60 {
-        let px = 16.0 + round as f32 * 0.01;
-        let t = Instant::now();
-        let mut drawn = 0usize;
-        for gid in 0..n {
-            if let Some(r) = font.rasterize_glyph_with(gid, px, &[], &opts) {
-                drawn += r.bitmap.len();
-            }
-        }
-        let e = t.elapsed();
-        proof += drawn;
-        core::hint::black_box(drawn);
-        if round >= 20 {
-            samples.push(e);
-        }
-    }
-    assert!(proof > 0, "the sweep rasterized nothing");
-    samples.sort();
-    let m = samples[samples.len() / 2];
-    report(
-        "sweep_rasterize_face",
-        &format!("{n} glyphs at ~16px through rasterize_glyph_with, whole face per sample"),
-        &mut samples,
-    );
-    let _ = m;
 }

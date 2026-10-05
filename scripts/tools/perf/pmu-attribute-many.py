@@ -24,13 +24,13 @@ def one(d):
 def main():
     dirs = sys.argv[1:]
     if len(dirs) < 2:
-        sys.exit("give at least two recordings — one run proves nothing, which is the point")
+        sys.exit("give at least two recordings – one run proves nothing, which is the point")
 
     totals, runs = [], []
     for d in dirs:
         t, s = one(d)
         if t is None:
-            print(f"  ({d}: no output — a failed recording?)", file=sys.stderr)
+            print(f"  ({d}: no output – a failed recording?)", file=sys.stderr)
             continue
         totals.append(t)
         runs.append(s)
@@ -50,7 +50,7 @@ def main():
     for med, mn, mx, n in rows[:24]:
         steady = mn > 0 and mx <= mn * 2
         print(f"{med:7.1f}% {mn:6.1f}–{mx:5.1f}%  {'*' if steady else ' '} {n}")
-    print("\n  * present in every run and within a factor of two — the only rows worth a hypothesis.")
+    print("\n  * present in every run and within a factor of two – the only rows worth a hypothesis.")
 
 if __name__ == "__main__":
     main()

@@ -1,59 +1,30 @@
 use super::*;
 
 pub fn subset_ttf(ttf: &[u8], requested: &[u16]) -> Result<SubsetResult, String> {
+    subset_ttf_with(ttf, requested, None)
+}
+
+// The cmap holds `text`'s mappings and sequences, in the source's glyph ids, where given, and
+// otherwise every mapping of the source's whose glyph the subset keeps.
+pub(crate) fn subset_ttf_with(
+    ttf: &[u8], requested: &[u16], text: Option<TextCmap>,
+) -> Result<SubsetResult, String> {
     let dir = parse_ttf_dir(ttf);
-
-    let head    = slice_table(ttf, &dir, "head").ok_or("subset: missing head")?;
-    let maxp    = slice_table(ttf, &dir, "maxp").ok_or("subset: missing maxp")?;
-    let loca_fmt   = read_i16_be(head, 50).ok_or("subset: head table truncated")?;
-    let num_glyphs = read_u16_be(maxp, 4).ok_or("subset: maxp table truncated")? as usize;
-    if num_glyphs == 0 { return Err("subset: maxp reports zero glyphs".into()); }
-
-    let outlines: Option<(&[u8], Vec<usize>)> =
-        match (slice_table(ttf, &dir, "glyf"), slice_table(ttf, &dir, "loca")) {
-            (Some(glyf), Some(loca_sl)) => Some((glyf, parse_loca(loca_sl, loca_fmt, num_glyphs))),
-            (None, None) => None,
-            (Some(_), None) => return Err("subset: font has glyf but no loca".into()),
-            (None, Some(_)) => return Err("subset: font has loca but no glyf".into()),
-        };
-    let closure_into = |req: &[u16], outlines: &Option<(&[u8], Vec<usize>)>, set: &mut GlyphSet| match outlines {
-        Some((glyf, loca_offs)) => active_gids_into(req, glyf, loca_offs, num_glyphs, set),
-        None => set.extend(req.iter().copied().filter(|&g| (g as usize) < num_glyphs)),
-    };
-    let mut active = GlyphSet::new();
-    active.insert(0);
-    closure_into(requested, &outlines, &mut active);
-
-    let orig_gsub = slice_table(ttf, &dir, "GSUB");
+    // A subset carries no variations, so a variable font is subset at its default instance, with the
+    // variation data its other tables name resolved rather than left naming an fvar that is gone.
+    if slice_table(ttf, &dir, "fvar").is_some() {
+        let instanced = super::super::instancer::instance_font_from_map(&super::super::decoder::extract_ttf_tables(ttf)?, &[])?;
+        if slice_table(&instanced, &parse_ttf_dir(&instanced), "fvar").is_some() {
+            return Err("subset: the default instance kept its variations".into());
+        }
+        return subset_ttf_with(&instanced, requested, text);
+    }
+    let head = slice_table(ttf, &dir, "head").ok_or("subset: missing head")?;
+    let (num_glyphs, outlines) = closure::glyf_outlines(ttf, &dir)?;
+    let active = closure::glyf_closure_of(ttf, &dir, num_glyphs, &outlines, requested)?;
     let orig_colr = slice_table(ttf, &dir, "COLR");
     let orig_math = slice_table(ttf, &dir, "MATH");
     let orig_morx = slice_table(ttf, &dir, "morx");
-    if orig_gsub.is_some() || orig_colr.is_some() || orig_math.is_some() || orig_morx.is_some() {
-        const MAX_CLOSURE_PASSES: usize = 64;
-        let mut steps = 0usize;
-        loop {
-            steps += 1;
-            if steps > MAX_CLOSURE_PASSES {
-                return Err("subset: glyph closure did not converge within its pass budget".into());
-            }
-            let mut new_gids: Vec<u16> = Vec::new();
-            if let Some(gsub) = orig_gsub {
-                new_gids.extend(otl::gsub::gsub_closure(gsub, &active));
-            }
-            if let Some(colr) = orig_colr {
-                new_gids.extend(colr::colr_closure(colr, &active));
-            }
-            if let Some(m) = orig_math {
-                new_gids.extend(math::math_closure(m, &active));
-            }
-            if let Some(m) = orig_morx {
-                new_gids.extend(aat::morx::morx_closure(m, &active, num_glyphs as u16));
-            }
-            new_gids.retain(|g| !active.contains(g));
-            if new_gids.is_empty() { break; }
-            closure_into(&new_gids, &outlines, &mut active);
-        }
-    }
 
     let active_sorted: Vec<u16> = active.iter().collect();
     let n_active = active_sorted.len();
@@ -66,28 +37,31 @@ pub fn subset_ttf(ttf: &[u8], requested: &[u16]) -> Result<SubsetResult, String>
 
     let mut new_glyf: Vec<u8> = Vec::new();
     let mut new_loca = vec![0u32; n_active + 1];
+    // Glyph blocks run in glyph order, so a font copies at most its glyf; loca ranges that overlap copy
+    // the same bytes again and stop at the subset budget.
+    let budget = subset_budget(outlines.as_ref().map_or(0, |(glyf, _)| glyf.len()));
+    let mut copied = 0usize;
+    let offset = |len: usize| u32::try_from(len).map_err(|_| String::from("subset: glyf past 4 GB"));
 
     for (compact, &orig_gid) in active_sorted.iter().enumerate() {
         let Some((glyf, loca_offs)) = outlines.as_ref() else { break };
-        new_loca[compact] = new_glyf.len() as u32;
+        new_loca[compact] = offset(new_glyf.len())?;
         let (s, e) = (loca_offs[orig_gid as usize], loca_offs[orig_gid as usize + 1]);
         if s < e && e <= glyf.len() {
+            copied += e - s;
+            if copied > budget {
+                return Err("subset: glyf ranges past the subset budget".into());
+            }
             let glyph_start = new_glyf.len();
             new_glyf.extend_from_slice(&glyf[s..e]);
-            let is_compound = read_i16_be(&new_glyf, glyph_start) == Some(-1);
-            if is_compound {
+            if is_composite(&new_glyf, glyph_start) {
                 let glyph_end = new_glyf.len();
                 patch_compound_gids(&mut new_glyf, glyph_start, glyph_end, &gid_map);
             }
-            let mut align_steps = 0usize;
-            while !new_glyf.len().is_multiple_of(4) {
-                if align_steps >= 4 { break; }
-                align_steps += 1;
-                new_glyf.push(0);
-            }
+            new_glyf.resize(new_glyf.len().next_multiple_of(4), 0);
         }
     }
-    new_loca[n_active] = new_glyf.len() as u32;
+    new_loca[n_active] = offset(new_glyf.len())?;
 
     let use_short_loca = new_glyf.len() <= 0x1_FFFE;
     let new_loca_bytes = if use_short_loca {
@@ -107,26 +81,18 @@ pub fn subset_ttf(ttf: &[u8], requested: &[u16]) -> Result<SubsetResult, String>
     let mut new_head = head.to_vec();
     write_i16_be(&mut new_head, 50, if use_short_loca { 0 } else { 1 });
 
-    let (new_hmtx, new_hhea) = {
-        let orig_hmtx   = slice_table(ttf, &dir, "hmtx").unwrap_or(&[]);
-        let mut new_hhea = owned_table(ttf, &dir, "hhea").unwrap_or_default();
-        let orig_num_hm = if new_hhea.len() >= 36 { read_u16_be(&new_hhea, 34).unwrap_or(0) as usize } else { 0 };
-        let h = rebuild_metrics(orig_hmtx, orig_num_hm, &active_sorted);
-        if new_hhea.len() >= 36 { write_u16_be(&mut new_hhea, 34, n_active as u16); }
-        (h, new_hhea)
-    };
-
-    let vertical = {
-        match (slice_table(ttf, &dir, "vmtx"), owned_table(ttf, &dir, "vhea")) {
-            (Some(vmtx), Some(mut vhea)) if vhea.len() >= 36 => {
-                let orig_num_vm = read_u16_be(&vhea, 34).unwrap_or(0) as usize;
-                let v = rebuild_metrics(vmtx, orig_num_vm, &active_sorted);
-                write_u16_be(&mut vhea, 34, n_active as u16);
-                Some((v, vhea))
-            }
-            _ => None,
+    // Metrics are rebuilt only where the source has them and a header counting them.
+    let metrics = |mtx_tag: &str, hea_tag: &str| match (slice_table(ttf, &dir, mtx_tag), owned_table(ttf, &dir, hea_tag)) {
+        (Some(mtx), Some(mut hea)) if hea.len() >= 36 => {
+            let num_long = read_u16_be(&hea, 34).unwrap_or(0) as usize;
+            let m = rebuild_metrics(mtx, num_long, &active_sorted);
+            write_u16_be(&mut hea, 34, n_active as u16);
+            Some((m, hea))
         }
+        _ => None,
     };
+    let horizontal = metrics("hmtx", "hhea");
+    let vertical = metrics("vmtx", "vhea");
 
     let new_maxp = {
         let mut m = owned_table(ttf, &dir, "maxp").unwrap_or_default();
@@ -135,16 +101,20 @@ pub fn subset_ttf(ttf: &[u8], requested: &[u16]) -> Result<SubsetResult, String>
     };
 
     let mut tmap: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    if let Some(d) = owned_table(ttf, &dir, "OS/2") { tmap.insert("OS/2".to_string(), d); }
-    for tag in ["cvt ", "fpgm", "prep"] {
+    for &tag in GLYPH_FREE_TABLES {
         if let Some(d) = owned_table(ttf, &dir, tag) { tmap.insert(tag.to_string(), d); }
+    }
+    if let Some(base) = slice_table(ttf, &dir, "BASE").filter(|b| super::super::base::base_is_glyph_free(b)) {
+        tmap.insert("BASE".to_string(), base.to_vec());
     }
     if let Some(post) = owned_table(ttf, &dir, "post") {
         tmap.insert("post".to_string(), fix_post_table(post));
     }
     tmap.insert("maxp".to_string(), new_maxp);
-    tmap.insert("hmtx".to_string(), new_hmtx);
-    tmap.insert("hhea".to_string(), new_hhea);
+    if let Some((new_hmtx, new_hhea)) = horizontal {
+        tmap.insert("hmtx".to_string(), new_hmtx);
+        tmap.insert("hhea".to_string(), new_hhea);
+    }
     tmap.insert("head".to_string(), new_head);
     if outlines.is_some() {
         tmap.insert("glyf".to_string(), new_glyf);
@@ -170,18 +140,17 @@ pub fn subset_ttf(ttf: &[u8], requested: &[u16]) -> Result<SubsetResult, String>
         && let Some(remapped) = remap_vorg(vorg, &gid_map, &active) {
             tmap.insert("VORG".to_string(), remapped);
         }
-    let orig_gdef = slice_table(ttf, &dir, "GDEF");
-    let mark_filter_sets_survive = orig_gdef.is_some_and(otl::gdef::has_mark_glyph_sets);
-    if let Some(gdef) = orig_gdef
-        && let Some(new_gdef) = otl::gdef::subset_gdef(gdef, &active, &gid_map) {
-            tmap.insert("GDEF".to_string(), new_gdef);
-        }
+    let new_gdef = slice_table(ttf, &dir, "GDEF").and_then(|gdef| otl::gdef::subset_gdef(gdef, &active, &gid_map));
+    let mark_sets = new_gdef.as_deref().map_or(0, otl::gdef::mark_glyph_set_count);
+    if let Some(new_gdef) = new_gdef {
+        tmap.insert("GDEF".to_string(), new_gdef);
+    }
     if let Some(gsub) = slice_table(ttf, &dir, "GSUB")
-        && let Some(new_gsub) = otl::gsub::subset_gsub(gsub, &active, &gid_map, mark_filter_sets_survive) {
+        && let Some(new_gsub) = otl::gsub::subset_gsub(gsub, &active, &gid_map, mark_sets) {
             tmap.insert("GSUB".to_string(), new_gsub);
         }
     if let Some(gpos) = slice_table(ttf, &dir, "GPOS")
-        && let Some(new_gpos) = otl::gpos::subset_gpos(gpos, &active, &gid_map, mark_filter_sets_survive) {
+        && let Some(new_gpos) = otl::gpos::subset_gpos(gpos, &active, &gid_map, mark_sets) {
             tmap.insert("GPOS".to_string(), new_gpos);
         }
     if let Some(m) = orig_math
@@ -225,9 +194,6 @@ pub fn subset_ttf(ttf: &[u8], requested: &[u16]) -> Result<SubsetResult, String>
             tmap.insert("EBSC".to_string(), new_ebsc);
         }
     }
-    for tag in ["feat", "trak", "fdsc", "ltag"] {
-        if let Some(d) = owned_table(ttf, &dir, tag) { tmap.insert(tag.to_string(), d); }
-    }
     if let Some(m) = orig_morx
         && let Some(new_morx) = aat::morx::subset_morx(m, &active, &gid_map, num_glyphs as u16) {
             tmap.insert("morx".to_string(), new_morx);
@@ -241,12 +207,12 @@ pub fn subset_ttf(ttf: &[u8], requested: &[u16]) -> Result<SubsetResult, String>
             tmap.insert("kerx".to_string(), new_kerx);
         }
     if let Some(x) = slice_table(ttf, &dir, "xref") {
-        let kerx_stable = match (slice_table(ttf, &dir, "kerx"), tmap.get("kerx")) {
-            (Some(before), Some(after)) => read_u32_be(before, 4) == read_u32_be(after, 4),
-            (None, None) => true,
-            _ => false,
+        let stable = |tag: &[u8]| {
+            let name = core::str::from_utf8(tag).unwrap_or_default();
+            aat::descriptive::subtable_counts(tag, slice_table(ttf, &dir, name))
+                == aat::descriptive::subtable_counts(tag, tmap.get(name).map(Vec::as_slice))
         };
-        if let Some(new_xref) = aat::descriptive::subset_xref(x, |tag| tag != b"kerx" || kerx_stable) {
+        if let Some(new_xref) = aat::descriptive::subset_xref(x, stable) {
             tmap.insert("xref".to_string(), new_xref);
         }
     }
@@ -261,6 +227,18 @@ pub fn subset_ttf(ttf: &[u8], requested: &[u16]) -> Result<SubsetResult, String>
                 tmap.insert("CPAL".to_string(), cpal);
             }
         }
+
+    let new_gid = |g: u16| if active.contains(&g) { gid_map.get(usize::from(g)).copied() } else { None };
+    let source_cmap = slice_table(ttf, &dir, "cmap");
+    let (mappings, sequences) = match text {
+        Some(text) => remap_text(text, new_gid),
+        None => source_cmap.map(|c| kept_cmap(c, new_gid)).unwrap_or_default(),
+    };
+    let os2 = slice_table(ttf, &dir, "OS/2");
+    let (cmap, name, new_os2) = display_tables(source_cmap, &mappings, &sequences, slice_table(ttf, &dir, "name"), os2, |tag| tmap.get(tag).map(Vec::as_slice));
+    tmap.insert("cmap".to_string(), cmap);
+    tmap.insert("name".to_string(), name);
+    if let Some(os2) = new_os2.or_else(|| os2.map(<[u8]>::to_vec)) { tmap.insert("OS/2".to_string(), os2); }
 
     Ok(SubsetResult { ttf: build_ttf(&tmap), gid_map })
 }

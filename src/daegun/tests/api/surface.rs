@@ -9,6 +9,7 @@ fn font(rel: &str) -> Font {
 const GARAMOND: &str = "eb-garamond/EBGaramond.ttf";
 const STIX: &str = "stix-two-math/STIX2Math.otf";
 const TTC: &str = "test-fixtures/EBGaramond-InterVariable.ttc";
+const IRIANIS: &str = "Irianisadfstd/IrianisadfstdRegular.ttc";
 
 #[test]
 fn cmap_queries_agree_with_glyph_id() {
@@ -23,6 +24,20 @@ fn cmap_queries_agree_with_glyph_id() {
     }
     assert!(f.has_glyph('A' as u32), "EBGaramond should carry A");
     assert!(!f.has_glyph(0x000F_FFFD), "an unmapped codepoint reported as present");
+}
+
+// Irianis carries a Mac Roman format 6 beside its Unicode tables. Byte 0x80 there is Ä, so a C1
+// control must stay unmapped rather than draw as an accented letter.
+#[test]
+fn a_mac_table_does_not_map_c1_controls() {
+    let path = format!("{}/{}", crate::FONTS, IRIANIS);
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing: {path} ({e})"));
+    let f = Font::from_ttc(&bytes, 0).expect("Irianis opens");
+    for cp in 0x80..0xA0 {
+        assert_eq!(f.glyph_id(cp), None, "U+{cp:04X} mapped through the Mac table");
+    }
+    assert_eq!(f.glyph_id('Ä' as u32), Some(134));
+    assert!(f.coverage().iter().all(|&(cp, _)| !(0x80..0xA0).contains(&cp)), "coverage lists a C1 control");
 }
 
 #[test]
@@ -42,26 +57,6 @@ fn glyph_names_match_glyph_name_per_gid() {
         );
     }
     assert_eq!(f.glyph_name(0).as_deref(), Some(".notdef"), "gid 0 should be .notdef");
-}
-
-#[test]
-fn the_glyph_cache_fills_clears_and_is_bounded() {
-    let f = font(GARAMOND);
-    let gid = f.glyph_id('A' as u32).expect("A");
-    assert_eq!(f.glyph_cache_stats(), (0, 0), "a fresh font should hold nothing");
-
-    f.rasterize_glyph(gid, 24.0, &[]).expect("rasterizes");
-    let (n, bytes) = f.glyph_cache_stats();
-    assert_eq!(n, 1, "one rasterized glyph should be one entry");
-    assert!(bytes > 0, "an entry that occupies no bytes was not really cached");
-
-    f.clear_glyph_cache();
-    assert_eq!(f.glyph_cache_stats(), (0, 0), "clear_glyph_cache left something behind");
-
-    f.set_glyph_cache_bytes(8);
-    f.rasterize_glyph(gid, 24.0, &[]).expect("still rasterizes with a tiny budget");
-    let (_, bytes) = f.glyph_cache_stats();
-    assert!(bytes <= 8, "the cache held {bytes} bytes against a budget of 8");
 }
 
 #[test]
@@ -121,7 +116,7 @@ fn math_tables_answer_for_a_math_font() {
     ];
     for corner in corners {
         let k = f.math_kern(gid, corner, 500.0);
-        assert!(k.is_finite(), "math_kern returned a non-finite value for {corner:?}");
+        assert!(k.is_some_and(f64::is_finite), "math_kern returned no finite value for {corner:?}");
     }
 }
 
@@ -129,7 +124,7 @@ fn math_tables_answer_for_a_math_font() {
 fn metadata_tables_parse_or_declare_themselves_absent() {
     let f = font(GARAMOND);
 
-    if let Some(info) = f.base_info("latn", false) {
+    if let Some(info) = f.base_info("latn", false, &[]) {
         assert!(
             info.default_baseline_tag.is_none_or(|t| t.len() == 4)
                 && info.baseline_coords.iter().all(|(tag, _)| tag.len() == 4),
@@ -210,12 +205,10 @@ fn shape_justified_with_empty_lists_matches_plain_shaping() {
         shrinkage_disable_gsub: None,
         shrinkage_enable_gpos: None,
         shrinkage_disable_gpos: None,
-        shrinkage_jstf_max: None,
         extension_enable_gsub: None,
         extension_disable_gsub: None,
         extension_enable_gpos: None,
         extension_disable_gpos: None,
-        extension_jstf_max: None,
     };
 
     for shrink in [true, false] {
@@ -235,12 +228,10 @@ fn shape_justified_with_empty_lists_matches_plain_shaping() {
         shrinkage_enable_gsub: None,
         shrinkage_disable_gsub: None,
         shrinkage_enable_gpos: None,
-        shrinkage_jstf_max: None,
         extension_enable_gsub: None,
         extension_disable_gsub: None,
         extension_enable_gpos: None,
         extension_disable_gpos: Some((0..64).collect()),
-        extension_jstf_max: None,
     };
     let unkerned = f.shape_justified(text, &[], false, &no_gpos, true).expect("shapes");
     assert_eq!(unkerned.glyphs, plain.glyphs, "disabling GPOS changed which glyphs were selected");

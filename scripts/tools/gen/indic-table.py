@@ -201,7 +201,7 @@ def load_ranges(name):
     out = {}
     path = os.path.join(DATA, name)
     if not os.path.exists(path):
-        sys.exit("missing {} — see this file's docstring".format(path))
+        sys.exit("missing {} – see this file's docstring".format(path))
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.split("#", 1)[0].strip()
@@ -371,7 +371,7 @@ def emit(categories, positions):
             [CATEGORY_INDEX["X"], POSITION_INDEX["END"]],
             "// A codepoint's Indic category and position, behind a three-stage trie.\n"
             "//\n"
-            "// One descent answers both. They were two values in one sorted range list, bisected\n"
+            "// One descent answers both, where two values in one sorted range list would be bisected\n"
             "// eleven deep, once per character.\n",
         )
         print("  indic trie      {} records, {} mid blocks, {} leaf blocks".format(*stats))
@@ -382,7 +382,7 @@ def emit_vowel_constraints():
     path = os.path.join(DATA, "IndicShapingInvalidCluster.txt")
     if not os.path.exists(path):
         sys.exit(
-            "missing {} — fetch it from Microsoft's font-tools:\n"
+            "missing {} – fetch it from Microsoft's font-tools:\n"
             "  curl -sS -o {} \\\n"
             "    https://raw.githubusercontent.com/microsoft/font-tools/master/USE/"
             "IndicShapingInvalidCluster.txt".format(path, path)
@@ -415,7 +415,7 @@ def emit_vowel_constraints():
             f.write("    (0x{:04X}, 0x{:04X}),\n".format(a, b))
         f.write("];\n\n")
         f.write("// The same thing over three characters. Checked first, because a sequence that\n")
-        f.write("// matches here is not also the pair its first two characters form — and the circle\n")
+        f.write("// matches here is not also the pair its first two characters form – and the circle\n")
         f.write("// belongs before the last character rather than in the middle.\n")
         f.write("pub(crate) static INVALID_VOWEL_TRIPLES: &[(u32, u32, u32)] = &[\n")
         for a, b, c in triples:

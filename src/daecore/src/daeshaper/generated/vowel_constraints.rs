@@ -108,7 +108,7 @@ pub(crate) static INVALID_VOWEL_PAIRS: &[(u32, u32)] = &[
 ];
 
 // The same thing over three characters. Checked first, because a sequence that
-// matches here is not also the pair its first two characters form — and the circle
+// matches here is not also the pair its first two characters form – and the circle
 // belongs before the last character rather than in the middle.
 pub(crate) static INVALID_VOWEL_TRIPLES: &[(u32, u32, u32)] = &[
     (0x0930, 0x094D, 0x0907),

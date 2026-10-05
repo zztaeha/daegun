@@ -26,7 +26,7 @@ const WARMUP: usize = 60;
 fn pass<T: Copy>(input: &[T], f: impl Fn(T) -> f64) -> (Duration, f64) {
     let t = Instant::now();
     let mut acc = [0.0f64; 4];
-    for chunk in input.chunks_exact(4) {
+    for chunk in input.as_chunks::<4>().0 {
         acc[0] += f(chunk[0]);
         acc[1] += f(chunk[1]);
         acc[2] += f(chunk[2]);
@@ -157,7 +157,7 @@ fn trig_against_std() {
 #[ignore]
 fn daemath_baseline() {
     use daegun::daecore::daemachine::daemath::blend::{blend, composite, Rgb};
-    use daegun::daecore::daemachine::daemath::gradient::Ramp;
+    use daegun::daecore::daemachine::daemath::gradient::{Interpolation, Ramp};
     use daegun::daecore::daemachine::daemath::{Blend, Extend, Gradient, GradientKind, Rgba, Stop};
 
     let px = inputs_f64(N, 0.0, 1.0);
@@ -202,16 +202,19 @@ fn daemath_baseline() {
         Stop { offset: 0.5, color: Rgba::opaque(0, 255, 0) },
         Stop { offset: 1.0, color: Rgba::opaque(0, 0, 255) },
     ];
-    let ramp_of = |kind| {
+    let ramp_with = |kind, how| {
         let g = Gradient {
             kind,
             stops: stops.clone(),
             extend: Extend::Pad,
             transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         };
-        Ramp::new(&g, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+        Ramp::with_interpolation(&g, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], how)
     };
-    let linear = ramp_of(GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 100.0, y1: 100.0 });
+    let ramp_of = |kind| ramp_with(kind, Interpolation::LinearLight);
+    let line = GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 100.0, y1: 100.0 };
+    let linear = ramp_of(line);
+    let linear_srgb = ramp_with(line, Interpolation::Srgb);
     let radial = ramp_of(GradientKind::Radial { x0: 50.0, y0: 50.0, r0: 0.0, x1: 50.0, y1: 50.0, r1: 70.0 });
     let sweep = ramp_of(GradientKind::Sweep { cx: 50.0, cy: 50.0, start_angle: 0.0, end_angle: 360.0 });
 
@@ -221,6 +224,7 @@ fn daemath_baseline() {
     eprintln!("daemath_baseline – gradients, anchored on linear");
     ratio("gradient radial", &pts, "radial", |p| hit(&radial, p), "linear", |p| hit(&linear, p));
     ratio("gradient sweep", &pts, "sweep", |p| hit(&sweep, p), "linear", |p| hit(&linear, p));
+    ratio("gradient linear, sRGB", &pts, "srgb", |p| hit(&linear_srgb, p), "linear", |p| hit(&linear, p));
 }
 
 #[test]

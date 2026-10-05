@@ -74,19 +74,24 @@ impl Font {
             .map_or(0, |v| (v as f64 * self.cache.scale_factor()).round() as i32)
     }
 
-    pub fn ligature_carets(&self, gid: u16, axes: &[(&str, f64)]) -> Vec<f64> {
+    // A ligature's carets in the 1000-unit em, x or y by direction: one for each the font lists, in its
+    // increasing coordinate order, None where one cannot be resolved.
+    pub fn ligature_carets(&self, gid: u16, axes: &[(&str, f64)], vertical: bool) -> Vec<Option<f64>> {
         let Some(gdef) = self.cache.table_map.get("GDEF") else { return Vec::new() };
-        let location = self.cache.compute_location_rs(&owned_axes(axes));
-        let loca = self.cache.loca_offsets();
-        let glyf = self.cache.table_map.get("glyf");
-        let outline = match (glyf, &loca) {
-            (Some(g), Some(l)) => Some((g.as_slice(), l.as_slice())),
-            _ => None,
+        let owned = owned_axes(axes);
+        let location = self.cache.compute_location_rs(&owned);
+        // Format 2 names a point of the outline at the location.
+        let points = || {
+            let instanced = (location.iter().any(|&c| c != 0.0) && self.cache.table_map.contains_key("gvar"))
+                .then(|| self.cache.instanced_font_cache(&owned));
+            let source = instanced.as_deref().unwrap_or(&self.cache);
+            let (glyf, loca) = (source.table_map.get("glyf")?, source.loca_offsets()?);
+            crate::daecore::daetype::outline::glyph_points(glyf.as_slice(), loca.as_slice(), gid).ok()
         };
-        let scale = 1000.0 / self.cache.font_upm() as f64;
-        crate::daecore::daetype::lig_caret::ligature_carets(gdef, gid, outline, &location)
+        let scale = self.cache.scale_factor();
+        crate::daecore::daetype::lig_caret::ligature_carets(gdef, gid, points, &location, vertical, |at| self.cache.gdef_var_store(at))
             .into_iter()
-            .map(|v| v * scale)
+            .map(|c| c.map(|v| v * scale))
             .collect()
     }
 
@@ -119,24 +124,17 @@ impl Font {
             let next = counts.range(first + 1..).next().map(|(&k, _)| k).unwrap_or(n_chars);
             let span = next.saturating_sub(first);
             let (left, right) = (glyph_x[i], glyph_x[i + 1]);
-
+            out[first] = if rtl { right } else { left };
             if span <= 1 || covered > 1 {
-                out[first] = if rtl { right } else { left };
                 continue;
             }
 
-            let carets = self.ligature_carets(run.glyphs[i], axes);
-            for k in 0..span {
-                let at = first + k;
-                if at > n_chars { break; }
-                let offset = if k == 0 {
-                    0.0
-                } else if let Some(c) = carets.get(k - 1) {
-                    *c
-                } else {
-                    (right - left) * k as f64 / span as f64
-                };
-                out[at] = if rtl { right - offset } else { left + offset };
+            let gid = run.glyphs[i];
+            let carets = self.ligature_carets(gid, axes, vertical);
+            let top = if vertical { self.vertical_origin(gid, axes).map_or(0.0, f64::from) } else { 0.0 };
+            let edges = Edges { left, right, top, rtl, vertical };
+            for (k, at) in (1..span).zip(first + 1..=n_chars) {
+                out[at] = edges.boundary(k, span, &carets);
             }
         }
 
@@ -169,6 +167,7 @@ impl Font {
         crate::daecore::daetype::glyph_names::glyph_name(
             self.cache.table_map.get("post").map(|t| t.as_slice()),
             self.cache.cff().map(|t| t.as_slice()),
+            self.num_glyphs(),
             gid,
         )
     }
@@ -179,5 +178,68 @@ impl Font {
             self.cache.cff().map(|t| t.as_slice()),
             self.num_glyphs(),
         )
+    }
+}
+
+// A ligature glyph's place in a run, for finding where its components meet.
+struct Edges {
+    left: f64,
+    right: f64,
+    top: f64,
+    rtl: bool,
+    vertical: bool,
+}
+
+impl Edges {
+    // Where the k-th of `span` components ends: carets run up the glyph, so right to left or down a
+    // line that is the k-th caret from the end. A missing caret falls evenly between the edges.
+    fn boundary(&self, k: usize, span: usize, carets: &[Option<f64>]) -> f64 {
+        let index = if self.rtl || self.vertical { carets.len().checked_sub(k) } else { k.checked_sub(1) };
+        let even = (self.right - self.left) * k as f64 / span as f64;
+        match index.and_then(|j| carets.get(j).copied().flatten()) {
+            Some(c) if self.vertical => self.left + self.top - c,
+            Some(c) => self.left + c,
+            None if self.rtl => self.right - even,
+            None => self.left + even,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Edges;
+
+    fn boundaries(edges: &Edges, carets: &[Option<f64>]) -> [f64; 2] {
+        [1, 2].map(|k| edges.boundary(k, 3, carets))
+    }
+
+    const HORIZONTAL: Edges = Edges { left: 100.0, right: 1000.0, top: 0.0, rtl: false, vertical: false };
+
+    #[test]
+    fn left_to_right_components_end_at_the_carets_in_order() {
+        assert_eq!(boundaries(&HORIZONTAL, &[Some(300.0), Some(600.0)]), [400.0, 700.0]);
+    }
+
+    // The first component of right-to-left text is the glyph's rightmost, so it ends at the last caret,
+    // measured from the left edge as every caret is. Read from the right edge, both would come out mirrored.
+    #[test]
+    fn right_to_left_components_end_at_the_carets_from_the_right() {
+        let rtl = Edges { rtl: true, ..HORIZONTAL };
+        assert_eq!(boundaries(&rtl, &[Some(300.0), Some(600.0)]), [700.0, 400.0]);
+    }
+
+    // Down a vertical line from the glyph's top at 880 above its origin, the first boundary is the
+    // highest caret.
+    #[test]
+    fn vertical_components_end_down_from_the_top() {
+        let vertical = Edges { top: 880.0, vertical: true, ..HORIZONTAL };
+        assert_eq!(boundaries(&vertical, &[Some(300.0), Some(600.0)]), [380.0, 680.0]);
+    }
+
+    // A caret that cannot be resolved falls evenly between the edges; the rest keep their places.
+    #[test]
+    fn an_unresolved_caret_falls_evenly_and_the_rest_stay() {
+        assert_eq!(boundaries(&HORIZONTAL, &[None, Some(600.0)]), [400.0, 700.0]);
+        assert_eq!(boundaries(&HORIZONTAL, &[Some(250.0), None]), [350.0, 700.0]);
     }
 }

@@ -17,6 +17,16 @@ impl Font {
         crate::daecore::daetype::decoder::read_fvar_instances(&self.cache.table_map).unwrap_or_default()
     }
 
+    // Static to the instancer: an fvar it cannot read. One that reads, axes or none, is instanced.
+    pub(crate) fn is_static(&self) -> bool {
+        crate::daecore::daetype::decoder::parse_fvar_axes(&self.cache.table_map).is_err()
+    }
+
+    // As the advance reader has it: a vmtx with no vhea to count its entries gives every height as 0.
+    pub(crate) fn has_vertical_metrics(&self) -> bool {
+        crate::daecore::daetype::subsetter::metrics_of(&self.cache.table_map, "vmtx", "vhea").is_some()
+    }
+
     pub fn axes(&self) -> Vec<FvarAxis> {
         crate::daecore::daetype::decoder::parse_fvar_axes(&self.cache.table_map).unwrap_or_default()
     }
@@ -37,7 +47,11 @@ impl Font {
         self.cache.font_num_glyphs().unwrap_or(0)
     }
 
+    // A static font is its own instance, as in `instance_tables`.
     pub fn instance(&self, axes: &[(&str, f64)]) -> Vec<u8> {
+        if self.is_static() {
+            return crate::daecore::daetype::decoder::build_ttf(&self.cache.table_map);
+        }
         (*self.cache.get_or_instance(&owned_axes(axes))).clone()
     }
 
