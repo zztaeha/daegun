@@ -1,130 +1,53 @@
-# Myanmar syllables, from Microsoft's OpenType script development specification.
-#
-#   https://learn.microsoft.com/en-us/typography/script-development/myanmar
-#
-# That page publishes the cluster structure outright, under "Well-formed Clusters", as three
-# productions with a notation legend and a class table giving each class its codepoint ranges. This
-# grammar is those productions written in the notation gen-syllable-machines.py accepts.
-#
-# **The spec's classes are not one-to-one with the table's.** Three places differ, and each is a
-# choice src/daeshaper/script/indic_category.rs made for reasons of its own:
-#
-#   - The spec's C is consonants *and* independent vowels together. The table splits the independent
-#     vowels out as V, and gives the three letters that can begin a kinzi their own Ra.
-#   - The spec's DB (dot below) arrives as N, which is the table's name for a nukta-like sign.
-#   - The spec's MH covers both 103E and 1060; the table separates 1060 as ML.
-#
-# The spec's P, S, R, WJ, WS, O, D and D0 classes never reach here: they are folded to Placeholder or
-# X while the categories are assigned, so its "simple non-compounding cluster" production needs no
-# rule of its own – a lone Placeholder is already a base.
-#
-# Numbers match src/daeshaper/script/indic_category.rs, since the same table feeds this.
+# Myanmar syllables: the clusters of Microsoft's Myanmar script development specification ("Well-formed Clusters"),
+# with the spec's class names where the table's differ. Numbers are categories.py's.
 
 categories:
   X            = 0
   C            = 1
-  IV           = 2    # the spec's independent vowels, which the table keeps apart from C
-  DB           = 3    # dot below, which the table calls N
+  IV           = 2   # independent vowels, the table's V
+  DB           = 3   # dot below, the table's N
   H            = 4
   ZWNJ         = 5
   ZWJ          = 6
-  SM           = 8    # the spec's V: visarga and the Shan tones
-  A            = 9    # anusvara
-  GB           = 10   # generic base, which the table calls Placeholder
-  DOTTEDCIRCLE = 11
-  Ra           = 15   # 1004, 101B, 105A – the letters a kinzi can begin with
-  CS           = 18   # consonant-with-stacker; see the note on `prefix` below
-  VAbv         = 19
-  VBlw         = 20
-  VPre         = 21
-  VPst         = 22
-  VS           = 23   # variation selectors
-  MW           = 24   # medial wa, Shan wa
-  MY           = 25   # medial ya, Mon na, Mon ma
-  MR           = 26   # medial ra
-  MH           = 27   # medial ha
-  ML           = 28   # Mon medial la, which the spec counts under MH
-  PT           = 29   # Pwo and other tones
-  As           = 30   # asat
-  SMPst        = 34   # a syllable modifier written as a digit; see `non_myanmar_cluster` below
+  SM           = 8   # the spec's V: visarga and the Shan tones
+  A            = 9
+  GB           = 10  # generic bases and digits but zero, the table's Placeholder
+  DottedCircle = 11
+  Ra           = 12  # the letters a kinzi opens with
+  VS           = 19
+  VPre         = 20
+  VAbv         = 21
+  VBlw         = 22
+  VPst         = 23
+  As           = 28
+  MY           = 29
+  MR           = 30
+  MW           = 31
+  MH           = 32
+  ML           = 33  # Mon's medial la, which the spec counts with MH
+  PT           = 34
 
 definitions:
-  # The spec's `<C | IV | D | GB>`. Ra is a consonant when it is not opening a kinzi, and the dotted
-  # circle is one of the generic bases the spec lists (25CC), so both stand as bases.
-  base = C | IV | Ra | GB | DOTTEDCIRCLE
-
-  # CS is not in the Myanmar spec, and is **unreachable on real Myanmar text**: the table assigns it
-  # to three ranges only, all Kannada and Brahmi. The four machines share one category space, so it
-  # can still reach this one inside a run – and when it does it prefixes a cluster, as USE's
-  # `[<R | CS>]` does with the same class. It stands *instead of* a kinzi, never alongside one.
-  # What may be stacked under a base: the spec's `<C | IV>`.
-  stack = C | IV | Ra
-
-  joiner = ZWJ | ZWNJ
-
-  # The spec's K, "a special sequence of three characters": <1004 | 101B | 105A>, 103A, 1039.
+  # The spec's <C | IV>; Ra is one where it opens no kinzi.
+  letter = C | IV | Ra
+  # The spec's K, "a special sequence of three characters".
   kinzi = Ra As H
-
-  # The spec's MH, which the table has split in two.
-  # The spec's MH is {103E, 1060} with one permitted per cluster; the table splits 1060 out as ML,
-  # so "one MH" becomes "MH, or ML, or MH then ML" once the pair can be told apart.
-  mh = MH ML? | ML
-
-  # `(H <C | IV> [VS])*` – zero or more stacked consonants or full vowel forms.
-  stacked = (H stack VS?)*
-
-  # `(As)* [MY [As]] [MR] [<MW [As] | [MW] MH [As]>]`
-  medials = As* (MY As?)? MR? ((MW As?) | (MW? mh As?))?
-
-  # `(VPre)* (VAbv)* (VBlw)* (A)* [DB [As]]`, with one addition the spec does not state: **each**
-  # pre-base vowel may carry its own variation selector, exactly as a base may. The spec attaches VS
-  # only to a base, but a pre-base vowel is the one sign Myanmar reorders to the front of its
-  # cluster, so it is where a selector written there lands.
-  vowels = (VPre VS?)* VAbv* VBlw* A* (DB As?)?
-
-  # `(VPst [MH] (As)* (VAbv)* (A)* [DB [As]])*`
-  post_vowels = (VPst mh? As* VAbv* A* (DB As?)?)*
-
-  # `(PT < [A] [DB] [As] | [As] [A] >)*`, with two corrections the observed behavior forces.
-  #
-  # The spec page renders repeats as `(X)` where the original had a superscript asterisk – its prose
-  # gives the counts, and several were restored above the same way. The anusvara here is one of them:
-  # `PT A A` is one cluster, so `[A]` is a repeat, not an option.
-  #
-  # The disjunction's second branch, `[As] [A]`, is not reachable: `PT As A` breaks between the asat
-  # and the anusvara. So a Pwo tone takes any number of anusvara, then at most one dot below, then at
-  # most one asat – which is the first branch, and nothing else.
-  #
-  # A visarga or Shan tone is the same kind of thing and sits in the same repeat, so the two
-  # interleave: `visarga` then a Pwo tone is one cluster. Written as two separate runs – the tones,
-  # then the modifiers – a tone after a modifier would fall out of the cluster and take a dotted circle.
-  tone_group = sm | (PT A* DB? As?)
-
-  # The spec's V, which the table splits in two: the ordinary marks, and the digit-shaped ones the
-  # `non_myanmar_cluster` production below picks out. Inside a cluster they behave alike.
-  sm = SM | SMPst
-
-  # Everything a base may be followed by, shared by a whole cluster and by a broken one.
-  tail = stacked medials vowels post_vowels tone_group* joiner?
+  # (H <C | IV> [VS])*
+  stacked = (H letter VS?)*
+  # (As)* [MY [As]] [MR] [<MW [As] | [MW] MH [As]>]
+  medials = As* (MY As?)? MR? (MW As? | MW? (MH | ML) As?)?
+  # (VPre)* (VAbv)* (VBlw)* (A)* [DB [As]], then (VPst [MH] (As)* (VAbv)* (A)* [DB [As]])*. A selector may follow
+  # a pre-base vowel too: Unicode standardizes the vowel sign e's dotted form as 1031 FE00.
+  vowels = (VPre VS?)* VAbv* VBlw* A* (DB As?)? (VPst (MH | ML)? As* VAbv* A* (DB As?)?)*
+  # (PT < [A] [DB] [As] | [As] [A] >)* (V)* [J]
+  tones = (PT (A? DB? As? | As? A?))* SM* (ZWJ | ZWNJ)?
 
 syllables:
-  # Order is priority: where two match the same length, the first listed wins.
-  #
-  # The spec's "cluster terminating in Halant" and "complex cluster" are one production here, because
-  # they share everything up to the point where one ends in a halant and the other carries on.
-  consonant_syllable  = (CS | kinzi)? base VS? (stacked H | tail)
-  # Not in the spec, and forced by it: a joiner that reaches the shaper attached to nothing still has
-  # to become a cluster rather than stall the scan.
-  joiner_cluster      = joiner
-  # A lone digit-shaped syllable modifier is a cluster, not a broken one: it is not a mark and has
-  # nothing to attach to, so putting a dotted circle in front of it would invent a base for
-  # something that never wanted one. Listed above `broken_cluster`, which also matches it, and one
-  # character long either way – so the order is what decides it.
-  non_myanmar_cluster = SMPst
-  # The spec requires this without naming it – "the engine verifies that the run consists of valid
-  # clusters and inserts a placeholder glyph (U+25CC) wherever combining marks occur without a valid
-  # base". This is that case: everything a cluster may carry, with nothing to hang it on. It takes
-  # the halant-terminated shape too, since the spec's second production ends in a bare halant and a
-  # broken cluster is that same cluster missing only its base.
-  broken_cluster      = kinzi? VS? (stacked H | tail)
+  # The spec's cluster ending in a halant and its complex cluster, alike up to the halant; the dotted circle is one
+  # of its generic bases.
+  consonant_syllable  = kinzi? (letter | GB | DottedCircle) VS? stacked (H | medials vowels tones)
+  # A joiner on its own is no combining mark, so it is a cluster as the spec's simple ones are.
+  non_myanmar_cluster = ZWJ | ZWNJ
+  # Combining marks with no base, which the spec has a dotted circle carry.
+  broken_cluster      = kinzi? VS? stacked (H | medials vowels tones)
   non_myanmar_cluster = any

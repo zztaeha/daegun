@@ -1,36 +1,40 @@
-use alloc::string::String;
 use alloc::collections::BTreeMap;
-use super::super::decoder::{read_u16_be, read_u32_be, read_i16_be, write_u16_be, write_i16_be};
-use super::super::format::ivs::{parse_item_variation_store, compute_ivs_delta_f64, precompute_region_scalars};
-use super::super::format::round::ot_round;
-use crate::daecore::daetype::TableBytes;
+use super::super::decoder::{bump_i16, bump_u16, midpoint_search, read_i16_be, read_u16_be, read_u32_be};
+use super::super::format::ivs::{round_fixed, store_delta, store_scalars, ItemVariationStore};
+use crate::daecore::daetype::Tables;
+use crate::daecore::Error;
 
-pub fn mvar_deltas(
-    table_map: &BTreeMap<String, TableBytes>,
+// Each tag's delta, its record found by `midpoint_search`, so a record out of order varies nothing and a repeated
+// tag takes the record that search meets first.
+fn mvar_deltas(
+    table_map: &Tables,
     location:  &[f64],
-) -> Result<BTreeMap<[u8; 4], i32>, String> {
+) -> Result<BTreeMap<[u8; 4], i64>, Error> {
     let mut out = BTreeMap::new();
     let mvar = match table_map.get("MVAR") { Some(m) => m, None => return Ok(out) };
 
-    let value_record_size  = read_u16_be(mvar, 6).ok_or("MVAR: header truncated")? as usize;
-    let value_record_count = read_u16_be(mvar, 8).ok_or("MVAR: header truncated")? as usize;
-    let ivs_off            = read_u16_be(mvar, 10).ok_or("MVAR: header truncated")? as usize;
-    if ivs_off == 0 || value_record_count == 0 { return Ok(out); }
-    if value_record_size < 8 { return Err("MVAR: valueRecordSize too small".into()); }
+    if read_u16_be(mvar, 0).ok_or(Error::malformed("MVAR: header truncated"))? != 1 {
+        return Err(Error::unsupported("MVAR: major version not 1"));
+    }
+    let size    = read_u16_be(mvar, 6).ok_or(Error::malformed("MVAR: header truncated"))? as usize;
+    let count   = read_u16_be(mvar, 8).ok_or(Error::malformed("MVAR: header truncated"))? as usize;
+    let ivs_off = read_u16_be(mvar, 10).ok_or(Error::malformed("MVAR: header truncated"))? as usize;
+    if size < 8 { return Err(Error::malformed("MVAR: valueRecordSize too small")); }
+    if 12 + count * size > mvar.len() { return Err(Error::malformed("MVAR: value records truncated")); }
+    if ivs_off == 0 { return Ok(out); }
 
-    let store = parse_item_variation_store(mvar, ivs_off)?;
-    let region_scalars = precompute_region_scalars(&store, location);
-
-    let records_base = 12usize;
-    for r in 0..value_record_count {
-        let rec = records_base + r * value_record_size;
-        let tag   = read_u32_be(mvar, rec).ok_or("MVAR: value record truncated")?;
-        let outer = read_u16_be(mvar, rec + 4).ok_or("MVAR: value record truncated")? as usize;
-        let inner = read_u16_be(mvar, rec + 6).ok_or("MVAR: value record truncated")? as usize;
-        let delta = ot_round(compute_ivs_delta_f64(&store, outer, inner, &region_scalars));
-        if delta != 0 {
-            out.insert(tag.to_be_bytes(), delta);
-        }
+    let store = ItemVariationStore::parse(mvar, ivs_off)?;
+    let region_scalars = store_scalars(&store, location);
+    let tag_at = |i: usize| read_u32_be(mvar, 12 + i * size);
+    for i in 0..count {
+        let tag = tag_at(i).ok_or(Error::malformed("MVAR: value record truncated"))?;
+        if out.contains_key(&tag.to_be_bytes()) { continue; }
+        let delta = midpoint_search(count, |j| tag_at(j).map(|t| tag.cmp(&t))).map_or(0, |found| {
+            let rec = 12 + found * size;
+            let [outer, inner] = [4, 6].map(|at| read_u16_be(mvar, rec + at).map_or(0, usize::from));
+            store_delta(&store, outer, inner, &region_scalars)
+        });
+        out.insert(tag.to_be_bytes(), delta);
     }
     Ok(out)
 }
@@ -45,15 +49,15 @@ pub(crate) struct MvarTargets<'a> {
 }
 
 pub(crate) fn apply_mvar(
-    table_map: &BTreeMap<String, TableBytes>,
+    table_map: &Tables,
     t:         MvarTargets,
     location:  &[f64],
-) -> Result<(), String> {
+) -> Result<(), Error> {
     for (tag, delta) in mvar_deltas(table_map, location)? {
         let (buf, off, unsigned): (&mut [u8], usize, bool) = match &tag {
-            b"hasc" => { bump(&mut *t.hhea, 4, delta, false); (&mut *t.os2, 68, false) }
-            b"hdsc" => { bump(&mut *t.hhea, 6, delta, false); (&mut *t.os2, 70, false) }
-            b"hlgp" => { bump(&mut *t.hhea, 8, delta, false); (&mut *t.os2, 72, false) }
+            b"hasc" => { vary(t.hhea, 4, false, delta); (&mut *t.os2, 68, false) }
+            b"hdsc" => { vary(t.hhea, 6, false, delta); (&mut *t.os2, 70, false) }
+            b"hlgp" => { vary(t.hhea, 8, false, delta); (&mut *t.os2, 72, false) }
             b"hcla" => (&mut *t.os2, 74, true),
             b"hcld" => (&mut *t.os2, 76, true),
             b"hcrs" => (&mut *t.hhea, 18, false),
@@ -87,50 +91,21 @@ pub(crate) fn apply_mvar(
             }
             _ => continue,
         };
-        bump(buf, off, delta, unsigned);
+        vary(buf, off, unsigned, delta);
     }
     Ok(())
 }
 
-fn bump(buf: &mut [u8], off: usize, delta: i32, unsigned: bool) {
-    if off + 2 > buf.len() { return; }
-    if unsigned {
-        let v = read_u16_be(buf, off).unwrap_or(0) as i32;
-        write_u16_be(buf, off, v.saturating_add(delta).clamp(0, 65535) as u16);
-    } else {
-        let v = read_i16_be(buf, off).unwrap_or(0) as i32;
-        write_i16_be(buf, off, v.saturating_add(delta).clamp(-32768, 32767) as i16);
+// A field moved by its 16.16 delta, rounded once.
+fn vary(buf: &mut [u8], off: usize, unsigned: bool, delta: i64) {
+    let read = if unsigned { read_u16_be(buf, off).map(i32::from) } else { read_i16_be(buf, off).map(i32::from) };
+    if read.is_none() {
+        return;
     }
+    let by = round_fixed(delta);
+    if unsigned { bump_u16(buf, off, by) } else { bump_i16(buf, off, by) }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-    use alloc::vec::Vec;
-
-    // An MVAR whose gsp0, hcrs and vasc records move by 5, -7 and 9 at the axis's maximum.
-    fn mvar() -> Vec<u8> {
-        let mut t = vec![0, 1, 0, 0, 0, 0, 0, 8, 0, 3, 0, 36];
-        for (tag, inner) in [(b"gsp0", 0u8), (b"hcrs", 1), (b"vasc", 2)] {
-            t.extend(tag);
-            t.extend([0, 0, 0, inner]);
-        }
-        t.extend([0, 1, 0, 0, 0, 12, 0, 1, 0, 0, 0, 22]);
-        t.extend([0, 1, 0, 1, 0, 0, 0x40, 0, 0x40, 0]);
-        t.extend([0, 3, 0, 0, 0, 1, 0, 0, 5, 0xF9, 9]);
-        t
-    }
-
-    #[test]
-    fn every_value_tag_reaches_its_table() {
-        let map: BTreeMap<String, TableBytes> = [("MVAR".into(), TableBytes::from_vec(mvar()))].into_iter().collect();
-        let (mut hhea, mut vhea) = (vec![0u8; 36], vec![0u8; 36]);
-        hhea[18..20].copy_from_slice(&100i16.to_be_bytes());
-        vhea[4..6].copy_from_slice(&500i16.to_be_bytes());
-        let mut gasp = vec![0, 1, 0, 2, 0, 8, 0, 2, 0xFF, 0xFF, 0, 15];
-        let targets = MvarTargets { hhea: &mut hhea, vhea: &mut vhea, os2: &mut [], post: &mut [], gasp: &mut gasp };
-        apply_mvar(&map, targets, &[1.0]).expect("applies");
-        assert_eq!((read_i16_be(&hhea, 18), read_i16_be(&vhea, 4), read_u16_be(&gasp, 4)), (Some(93), Some(509), Some(13)));
-    }
-}
+#[path = "../../../tests/unit/daetype/instancer/mvar.rs"]
+mod tests;

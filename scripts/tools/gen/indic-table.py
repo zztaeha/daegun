@@ -1,437 +1,261 @@
 #!/usr/bin/env python3
+# The class and position of each character the Indic, Khmer and Myanmar shapers read (indic_tables.rs), from
+# Unicode's Indic properties and Microsoft's script development specifications, and the vowel sequences Microsoft
+# lists as invalid (vowel_constraints.rs).
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import trie
+import ucd
+from categories import INDIC_CLASSES, INDIC_POSITIONS, emit_consts
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "..", "..", "data", "unicode")
-OUT = os.path.join(HERE, "..", "..", "..", "src", "daecore", "src", "daeshaper", "generated", "indic_tables.rs")
+GENERATED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "src", "daecore", "src",
+                         "daeshaper", "generated")
+OUT = os.path.join(GENERATED, "indic_tables.rs")
 
-CATEGORIES = [
-    "X", "C", "V", "N", "H", "ZWNJ", "ZWJ", "M", "SM", "A",
-    "PLACEHOLDER", "DOTTEDCIRCLE", "RS", "MPst", "Repha", "Ra", "CM", "Symbol", "CS",
-    "VAbv", "VBlw", "VPre", "VPst", "VS", "MW", "MY", "MR", "MH", "ML",
-    "PT", "As", "Robatic", "Xgroup", "Ygroup",
-    "SMPst",
-]
-CATEGORY_INDEX = {name: i for i, name in enumerate(CATEGORIES)}
+# The scripts these shapers serve; Unicode's Indic properties for any other's characters belong to the Universal
+# Shaping Engine.
+SERVED = {"Deva", "Beng", "Guru", "Gujr", "Orya", "Taml", "Telu", "Knda", "Mlym", "Mymr", "Khmr"}
+INDIC = SERVED - {"Mymr", "Khmr"}
 
-POSITIONS = [
-    "START", "RA_TO_BECOME_REPH", "PRE_M", "PRE_C",
-    "BASE_C", "AFTER_MAIN", "ABOVE_C",
-    "BEFORE_SUB", "BELOW_C", "AFTER_SUB",
-    "BEFORE_POST", "POST_C", "AFTER_POST",
-    "SMVD", "END",
-]
-POSITION_INDEX = {name: i for i, name in enumerate(POSITIONS)}
+# The Indic_Syllabic_Category values each class takes; any other is X.
+SYLLABIC = {
+    "C": ["Consonant", "Consonant_Dead", "Consonant_Head_Letter", "Consonant_Initial_Postfixed"],
+    "V": ["Vowel", "Vowel_Independent"],
+    "N": ["Nukta"],
+    "H": ["Virama", "Invisible_Stacker"],
+    "ZWNJ": ["Non_Joiner"],
+    "ZWJ": ["Joiner"],
+    "M": ["Vowel_Dependent", "Pure_Killer"],
+    "SM": ["Bindu", "Visarga", "Syllable_Modifier", "Gemination_Mark", "Tone_Mark"],
+    "A": ["Cantillation_Mark"],
+    "Placeholder": ["Consonant_Placeholder", "Number", "Number_Joiner", "Brahmi_Joining_Number"],
+    "Repha": ["Consonant_Preceding_Repha"],
+    "Medial": ["Consonant_Medial", "Consonant_Subjoined", "Consonant_Final"],
+    "Stacker": ["Consonant_With_Stacker"],
+    "Symbol": ["Avagraha"],
+    "RegShift": ["Register_Shifter"],
+    "Robat": ["Consonant_Succeeding_Repha"],
+    "AbvS": ["Consonant_Killer"],
+}
+CLASS_OF = {value: name for name, values in SYLLABIC.items() for value in values}
 
-FROM_SYLLABIC = {
-    "Avagraha": "Symbol",
-    "Bindu": "SM",
-    "Brahmi_Joining_Number": "PLACEHOLDER",
-    "Cantillation_Mark": "A",
-    "Consonant": "C",
-    "Consonant_Dead": "C",
-    "Consonant_Final": "CM",
-    "Consonant_Head_Letter": "C",
-    "Consonant_Initial_Postfixed": "C",
-    "Consonant_Killer": "Xgroup",
-    "Consonant_Medial": "CM",
-    "Consonant_Placeholder": "PLACEHOLDER",
-    "Consonant_Preceding_Repha": "Repha",
-    "Consonant_Prefixed": "X",
-    "Consonant_Subjoined": "CM",
-    "Consonant_Succeeding_Repha": "Robatic",
-    "Consonant_With_Stacker": "CS",
-    "Gemination_Mark": "SM",
-    "Invisible_Stacker": "H",
-    "Joiner": "ZWJ",
-    "Modifying_Letter": "X",
-    "Non_Joiner": "ZWNJ",
-    "Nukta": "N",
-    "Number": "PLACEHOLDER",
-    "Number_Joiner": "PLACEHOLDER",
-    "Other": "X",
-    "Pure_Killer": "M",
-    "Register_Shifter": "Robatic",
-    "Syllable_Modifier": "SM",
-    "Tone_Letter": "X",
-    "Tone_Mark": "SM",
-    "Virama": "H",
-    "Visarga": "SM",
-    "Vowel": "V",
-    "Vowel_Dependent": "M",
-    "Vowel_Independent": "V",
+# Classes a specification's class chart gives outright, where Unicode's properties say less or other.
+CHARTED = {
+    # Myanmar's: kinzi's letters, the asat, the medials (Mon's medial la apart), the Pwo tones, the dot below, the
+    # anusvara class, its consonants and generic bases, and digit zero, a cluster of its own.
+    "Ra": [0x1004, 0x101B, 0x105A],
+    "As": [0x103A],
+    "MY": [0x103B, 0x105E, 0x105F], "MR": [0x103C], "MW": [0x103D, 0x1082], "MH": [0x103E], "ML": [0x1060],
+    "PT": [0x1063, 0x1064, *range(0x1069, 0x106E), 0xAA7B],
+    "N": [0x1037],
+    "A": [0x1032, 0x1036],
+    "SM": [0x109C],
+    "C": [0x104E],
+    "X": [0x1040],
+    "Placeholder": [0x2015, 0x2022, *range(0x25FB, 0x25FF)],
+    # Khmer's: the register shifters, the robat, and the signs above and after the base, bathamasat above its number
+    # among them.
+    "RegShift": [0x17C9, 0x17CA],
+    "Robat": [0x17CC],
+    "AbvS": [0x17C6, 0x17CB, *range(0x17CD, 0x17D2), 0x17D3, 0x17DD],
+    "PstS": [0x17C7, 0x17C8],
+    "VS": list(range(0xFE00, 0xFE10)),
+    "DottedCircle": [0x25CC],
 }
 
-def cps(*items):
-    out = set()
-    for item in items:
-        if isinstance(item, tuple):
-            out.update(range(item[0], item[1] + 1))
-        else:
-            out.add(item)
-    return out
-
-OVERRIDES = [
-    ("Ra", cps(
-        0x0930,  # DEVANAGARI LETTER RA
-        0x09B0,  # BENGALI LETTER RA
-        0x09F0,  # BENGALI LETTER RA WITH MIDDLE DIAGONAL
-        0x0A30,  # GURMUKHI LETTER RA
-        0x0AB0,  # GUJARATI LETTER RA
-        0x0B30,  # ORIYA LETTER RA
-        0x0BB0,  # TAMIL LETTER RA
-        0x0C30,  # TELUGU LETTER RA
-        0x0CB0,  # KANNADA LETTER RA
-        0x0D30,  # MALAYALAM LETTER RA
-        0x1004,  # MYANMAR LETTER NGA
-        0x101B,  # MYANMAR LETTER RA
-        0x105A,  # MYANMAR LETTER MON NGA
-        0x179A,  # KHMER LETTER RO
-    )),
-
-    ("VS", cps((0xFE00, 0xFE0F))),
-
-    ("VPre", cps(
-        0x1031,          # MYANMAR VOWEL SIGN E
-        0x1084,          # MYANMAR VOWEL SIGN SHAN E
-        (0x17C1, 0x17C3),  # KHMER VOWEL SIGN E, AE, AI
-    )),
-    ("VAbv", cps(
-        0x102D, 0x102E,  # MYANMAR VOWEL SIGN I, II
-        (0x1033, 0x1035),  # MYANMAR VOWEL SIGN MON II, MON O, E ABOVE
-        (0x1071, 0x1074),  # MYANMAR VOWEL SIGN GEBA KAREN I .. KAYAH II
-        0x1085, 0x1086,  # MYANMAR VOWEL SIGN SHAN E ABOVE, SHAN FINAL Y
-        0x109D,          # MYANMAR VOWEL SIGN AITON AI
-        (0x17B7, 0x17BA),  # KHMER VOWEL SIGN I, II, Y, YY
-        0x17BE,          # KHMER VOWEL SIGN OE
-        0xA9E5,          # MYANMAR SIGN SHAN SAW
-    )),
-    ("VBlw", cps(
-        0x102F, 0x1030,  # MYANMAR VOWEL SIGN U, UU
-        0x1058, 0x1059,  # MYANMAR VOWEL SIGN VOCALIC L, LL
-        (0x17BB, 0x17BD),  # KHMER VOWEL SIGN U, UU, UA
-    )),
-    ("VPst", cps(
-        0x102B, 0x102C,  # MYANMAR VOWEL SIGN TALL AA, AA
-        0x1056, 0x1057,  # MYANMAR VOWEL SIGN VOCALIC R, RR
-        0x1062,          # MYANMAR VOWEL SIGN SGAW KAREN EU
-        0x1067, 0x1068,  # MYANMAR VOWEL SIGN WESTERN PWO KAREN EU, UE
-        0x1083,          # MYANMAR VOWEL SIGN SHAN AA
-        0x17B6,          # KHMER VOWEL SIGN AA
-        0x17BF, 0x17C0,  # KHMER VOWEL SIGN YA, IE
-        0x17C4, 0x17C5,  # KHMER VOWEL SIGN OO, AU
-    )),
-
-    ("MW", cps(0x103D, 0x1082)),  # MEDIAL WA, SHAN MEDIAL WA
-    ("MY", cps(0x103B, 0x105E, 0x105F)),  # MEDIAL YA, MON MEDIAL NA, MON MEDIAL MA
-    ("MR", cps(0x103C)),  # MEDIAL RA
-    ("MH", cps(0x103E, 0x1060)),  # MEDIAL HA, MON MEDIAL LA
-    ("ML", cps(0x1060)),  # MON MEDIAL LA
-    ("As", cps(0x103A)),  # MYANMAR SIGN ASAT, which kills the vowel of its consonant
-    ("PT", cps(
-        0x1063, 0x1064,  # MYANMAR TONE MARK SGAW KAREN HATHI, KE PHO
-        (0x1069, 0x106D),  # MYANMAR SIGN WESTERN PWO KAREN TONE-1 .. TONE-5
-        0xAA7B,          # MYANMAR SIGN PAO KAREN TONE
-    )),
-
-    ("Xgroup", cps(
-        0x17C6,          # KHMER SIGN NIKAHIT
-        0x17CB,          # KHMER SIGN BANTOC
-        (0x17CE, 0x17D1),  # KHMER SIGN KAKABAT, AHSDA, SAMYOK SANNYA, VIRIAM
-    )),
-    ("Ygroup", cps(
-        0x17C7, 0x17C8,  # KHMER SIGN REAHMUK, YUUKALEAPINTU
-        0x17D3,          # KHMER SIGN BATHAMASAT
-        0x17DD,          # KHMER SIGN ATTHACAN
-    )),
-
-    ("Symbol", cps(
-        (0x1CE9, 0x1CEC),  # VEDIC SIGN ANUSVARA ANTARGOMUKHA .. VAMAGOMUKHA WITH TAIL
-        (0x1CEE, 0x1CF1),  # VEDIC SIGN HEXIFORM LONG ANUSVARA .. ANUSVARA UBHAYATO MUKHA
-        (0xA8F2, 0xA8F7),  # DEVANAGARI SIGN SPACING CANDRABINDU .. SIGN CANDRABINDU AVAGRAHA
-    )),
-    ("A", cps(
-        0x1032, 0x1036,    # MYANMAR VOWEL SIGN AI, SIGN ANUSVARA
-        (0x1CE2, 0x1CE8),  # VEDIC SIGN VISARGA SVARITA .. VISARGA ANUDATTA WITH TAIL
-        0x1CED,            # VEDIC SIGN TIRYAK
-    )),
-
-    ("PLACEHOLDER", cps(
-        0x09FC,  # BENGALI LETTER VEDIC ANUSVARA
-        0x0C80,  # TELUGU SIGN COMBINING ANUSVARA ABOVE
-        0x0D04,  # MALAYALAM LETTER VEDIC ANUSVARA
-        0x104A,  # MYANMAR SIGN LITTLE SECTION
-        0x17D9,  # KHMER SIGN PHNAEK MUAN
-        0x2015,  # HORIZONTAL BAR
-        0x2022,  # BULLET
-        (0x25FB, 0x25FE),  # WHITE/BLACK MEDIUM SQUARE and SMALL SQUARE
-    )),
-    ("DOTTEDCIRCLE", cps(0x25CC)),
-
-    ("C", cps(
-        0x0A72, 0x0A73,  # GURMUKHI IRI, URA – bases in their own right
-        0x104E,          # MYANMAR SYMBOL AFOREMENTIONED
-    )),
-    ("N", cps(
-        0x0AFB,  # GUJARATI SIGN SHADDA
-        0x0B55,  # ORIYA SIGN OVERLINE
-        0x1037,  # MYANMAR SIGN DOT BELOW
-        0xAA7C, 0xAA7D,  # MYANMAR SIGN TAI LAING TONE-2, TONE-5
-    )),
-    ("SM", cps(
-        0x0953, 0x0954,  # DEVANAGARI GRAVE and ACUTE ACCENT
-        0x109C,          # MYANMAR VOWEL SIGN AITON A
-    )),
-    ("MPst", cps(0x0A40)),  # GURMUKHI VOWEL SIGN II, which follows its consonant
-    ("M", cps(0x0A51)),     # GURMUKHI SIGN UDAAT
-    ("CM", cps(0x0A75)),    # GURMUKHI SIGN YAKASH
-
-    ("X", cps(
-        0x11300, 0x11305, 0x11306, 0x11307,
-        0x11338, 0x11339, 0x1133D, 0x1133E, 0x1133F,
-    )),
-]
-
-def load_ranges(name):
-    out = {}
-    path = os.path.join(DATA, name)
-    if not os.path.exists(path):
-        sys.exit("missing {} – see this file's docstring".format(path))
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            rng, value = (p.strip() for p in line.split(";"))
-            lo, hi = rng.split("..") if ".." in rng else (rng, rng)
-            for cp in range(int(lo, 16), int(hi, 16) + 1):
-                out[cp] = value
-    return out
-
-def load_blocks():
-    out = []
-    with open(os.path.join(DATA, "Blocks.txt"), encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            rng, name = (p.strip() for p in line.split(";"))
-            lo, hi = rng.split("..")
-            out.append((int(lo, 16), int(hi, 16), name))
-    return out
-
-def load_general_categories():
-    out, pending = {}, None
-    for line in open(os.path.join(DATA, "UnicodeData.txt"), encoding="utf-8"):
-        fields = line.split(";")
-        if len(fields) < 3:
-            continue
-        cp, name, gc = int(fields[0], 16), fields[1], fields[2]
-        if name.endswith(", First>"):
-            pending = (cp, gc)
-        elif name.endswith(", Last>") and pending:
-            out.update(dict.fromkeys(range(pending[0], cp + 1), pending[1]))
-            pending = None
-        else:
-            out[cp] = gc
-    return out
-
-def build():
-    syllabic = load_ranges("IndicSyllabicCategory.txt")
-    positional = load_ranges("IndicPositionalCategory.txt")
-    blocks = load_blocks()
-
-    def block_of(cp):
-        for lo, hi, name in blocks:
-            if lo <= cp <= hi:
-                return name
-        return "?"
-
-    interesting = set(syllabic) | set(positional)
-    for _, group in OVERRIDES:
-        interesting |= group
-
-    general = load_general_categories()
-
-    categories = {}
-    for cp in interesting:
-        categories[cp] = FROM_SYLLABIC.get(syllabic.get(cp, "Other"), "X")
-        if categories[cp] == "SM" and general.get(cp, "").startswith("N"):
-            categories[cp] = "SMPst"
-    for name, group in OVERRIDES:
-        for cp in group:
-            categories[cp] = name
-
-    positions = {cp: position_of(cp, categories[cp], positional.get(cp, "NA"), block_of(cp))
-                 for cp in interesting}
-
-    return categories, positions
-
-MATRA_POSITIONS = {
-    "Devanagari":          {"Left": "PRE_M", "Top": "AFTER_SUB", "Bottom": "AFTER_SUB", "Right": "AFTER_SUB"},
-    "Devanagari Extended": {"Top": "AFTER_SUB"},
-    "Bengali":             {"Left": "PRE_M", "Bottom": "AFTER_SUB", "Right": "AFTER_POST",
-                            "Left_And_Right": "AFTER_POST"},
-    "Gujarati":            {"Left": "PRE_M", "Top": "AFTER_SUB", "Bottom": "AFTER_POST",
-                            "Right": "AFTER_POST", "Top_And_Right": "AFTER_POST"},
-    "Gurmukhi":            {"Left": "PRE_M", "Top": "AFTER_POST", "Bottom": "AFTER_POST",
-                            "Right": "AFTER_POST"},
-    "Oriya":               {"Left": "PRE_M", "Top": "AFTER_MAIN", "Bottom": "AFTER_SUB",
-                            "Right": "AFTER_POST", "Left_And_Right": "AFTER_POST",
-                            "Top_And_Right": "AFTER_POST", "Top_And_Left": "AFTER_MAIN",
-                            "Top_And_Left_And_Right": "AFTER_POST"},
-    "Tamil":               {"Left": "PRE_M", "Top": "AFTER_SUB", "Right": "AFTER_POST",
-                            "Left_And_Right": "AFTER_POST"},
-    "Telugu":              {"Top": "BEFORE_SUB", "Bottom": "BEFORE_SUB", "Right": "BEFORE_SUB",
-                            "Top_And_Bottom": "BEFORE_SUB"},
-    "Kannada":             {"Top": "BEFORE_SUB", "Bottom": "BEFORE_SUB", "Right": "AFTER_SUB",
-                            "Top_And_Right": "AFTER_SUB"},
-    "Malayalam":           {"Left": "PRE_M", "Top": "AFTER_SUB", "Bottom": "AFTER_POST",
-                            "Right": "AFTER_POST", "Left_And_Right": "AFTER_POST"},
+# Characters whose use in text these classes follow, each for the reason given.
+USAGE = {
+    # Gurmukhi's vowel bearers open syllables and carry vowel signs as letters do.
+    "C": [0x0A72, 0x0A73],
+    # Gujarati's shadda doubles its consonant and is typed right after it, where a nukta goes.
+    "N": [0x0AFB],
+    # Devanagari's grave and acute accents close a syllable as its tone marks do.
+    "SM": [0x0953, 0x0954],
+    # Gurmukhi's ii follows its consonant; its udaat is written under the base and typed with the vowel signs.
+    "MPost": [0x0A40],
+    "M": [0x0A51],
+    # Spacing letters that stand alone and carry the vedic signs after them.
+    "Placeholder": [0x09FC, 0x0C80, 0x0D04],
 }
 
-def position_of(cp, category, positional, block):
-    if cp == 0x0D4E:
-        return "END"
-    if category in ("C", "Ra", "PLACEHOLDER", "DOTTEDCIRCLE", "V", "CS", "Repha"):
-        return "BASE_C"
-    if category in ("Xgroup", "Ygroup"):
-        return "END"
-    if category == "VS":
-        return "END"
-    if category in ("SM", "SMPst", "A", "Symbol"):
-        if category == "SM" and block == "Oriya" and positional == "Top":
-            return "BEFORE_SUB"
-        return "SMVD"
-    if category == "H":
-        return {"Bottom": "BELOW_C", "Top": "ABOVE_C"}.get(positional, "END")
-    if category == "CM":
-        return "BASE_C" if block == "Gurmukhi" else "END"
-    if category == "VPre":
-        return "PRE_C"
-    if category == "VAbv":
-        return "ABOVE_C"
-    if category == "VBlw":
-        return "BELOW_C"
-    if category == "VPst":
-        return "POST_C"
 
-    if category in ("M", "MPst"):
-        exceptions = {
-            0x0A51: "BELOW_C",   # GURMUKHI SIGN UDAAT, which is written under the base
-            0x0C43: "AFTER_SUB", # TELUGU VOWEL SIGN VOCALIC R
-            0x0C44: "AFTER_SUB", # TELUGU VOWEL SIGN VOCALIC RR
-            0x0CBE: "BEFORE_SUB",# KANNADA VOWEL SIGN AA
-            0x0CC0: "BEFORE_SUB",# KANNADA VOWEL SIGN II
-            0x0CC1: "BEFORE_SUB",# KANNADA VOWEL SIGN U
-            0x0CC2: "BEFORE_SUB",# KANNADA VOWEL SIGN UU
-        }
-        if cp in exceptions:
-            return exceptions[cp]
-        return MATRA_POSITIONS.get(block, {}).get(positional, "AFTER_SUB")
+def scripts_of():
+    alias = {f[2]: f[1] for f in ucd.rows("PropertyValueAliases.txt") if f[0] == "sc"}
+    script = {c: alias[v] for c, v in ucd.by_code_point("Scripts.txt").items()}
+    extensions = {c: set(v.split()) for c, v in ucd.by_code_point("ScriptExtensions.txt").items()}
+    return lambda c: extensions.get(c, {script.get(c, "Zzzz")})
 
-    return "END"
 
-def emit(categories, positions):
-    both = {}
-    for cp in categories:
-        both[cp] = (CATEGORY_INDEX[categories[cp]], POSITION_INDEX[positions[cp]])
+def names():
+    with open(ucd.path("UnicodeData.txt"), encoding="utf-8") as f:
+        return {int(line.split(";")[0], 16): line.split(";")[1] for line in f}
 
-    default = (CATEGORY_INDEX["X"], POSITION_INDEX["END"])
-    ranges = []
-    for cp in sorted(both):
-        value = both[cp]
-        if value == default:
-            continue
-        if ranges and ranges[-1][1] == cp - 1 and ranges[-1][2] == value:
-            ranges[-1][1] = cp
+
+def classes():
+    syllabic = ucd.by_code_point("IndicSyllabicCategory.txt")
+    positional = ucd.by_code_point("IndicPositionalCategory.txt")
+    general = ucd.unicode_data()[0]
+    of_script = scripts_of()
+    name = names()
+
+    # A character Unicode's Indic properties list takes its class when its script is one these shapers serve, or
+    # when it's common to all: the joiners, generic bases and modifiers written as digits.
+    found = {}
+    for c in set(syllabic) | set(positional):
+        scripts = of_script(c)
+        if scripts & SERVED or scripts <= {"Zyyy", "Zinh"} and c in syllabic:
+            found[c] = CLASS_OF.get(syllabic.get(c), "X")
+            if found[c] == "SM" and general.get(c, "").startswith("N"):
+                found[c] = "SMDigit"
+    # Myanmar and Khmer class their vowels by where they're written, a split vowel by its last part but Khmer's oe,
+    # which the Khmer specification counts above.
+    for c in [c for c in found if syllabic.get(c) == "Vowel_Dependent" and of_script(c) & {"Mymr", "Khmr"}]:
+        where = positional.get(c, "")
+        found[c] = "VPre" if where == "Left" else "VPst" if where.endswith("Right") else \
+            "VBlw" if where == "Bottom" else "VAbv"
+    # The vedic blocks' spacing signs Unicode's Indic properties leave out, or call a bindu, are bases for the signs
+    # after them; every other combining sign of Vedic Extensions is a vedic sign.
+    for c, n in name.items():
+        if re.match(r"(VEDIC|DEVANAGARI) SIGN ", n) and general.get(c) == "Lo" \
+                and syllabic.get(c) in (None, "Bindu") and of_script(c) & INDIC:
+            found[c] = "Symbol"
+        elif 0x1CD0 <= c <= 0x1CFF and general.get(c) == "Mn" and c not in syllabic:
+            found[c] = "A"
+    # The Devanagari specification's Ra, each script's letter that forms a reph; Assamese ra among Bengali's.
+    for c, n in name.items():
+        if of_script(c) & INDIC and re.fullmatch(r"\w+ LETTER RA( WITH MIDDLE DIAGONAL)?", n):
+            found[c] = "Ra"
+    found[0x179A] = "Ra"
+    for listed in (CHARTED, USAGE):
+        for cls, codes in listed.items():
+            for c in codes:
+                found[c] = cls
+    return found, positional
+
+
+# The matra positions by script, from the Devanagari specification's four affinities: before the first half form,
+# after the main consonant, after subjoined consonants, and after post-base ones. Each script's below- and post-base
+# forms are drawn against its matras where its fonts put them, so a script may move a matra across them.
+MATRAS = {
+    "Deva": {"Left": "PRE_MATRA", "Top": "AFTER_BELOW", "Bottom": "AFTER_BELOW", "Right": "AFTER_BELOW"},
+    "Beng": {"Left": "PRE_MATRA", "Bottom": "AFTER_BELOW", "Right": "AFTER_POST", "Left_And_Right": "AFTER_POST"},
+    "Guru": {"Left": "PRE_MATRA", "Top": "AFTER_POST", "Bottom": "AFTER_POST", "Right": "AFTER_POST"},
+    "Gujr": {"Left": "PRE_MATRA", "Top": "AFTER_BELOW", "Bottom": "AFTER_POST", "Right": "AFTER_POST",
+             "Top_And_Right": "AFTER_POST"},
+    "Orya": {"Left": "PRE_MATRA", "Top": "AFTER_BASE", "Bottom": "AFTER_BELOW", "Right": "AFTER_POST",
+             "Left_And_Right": "AFTER_POST", "Top_And_Right": "AFTER_POST", "Top_And_Left": "AFTER_BASE",
+             "Top_And_Left_And_Right": "AFTER_POST"},
+    "Taml": {"Left": "PRE_MATRA", "Top": "AFTER_BELOW", "Right": "AFTER_POST", "Left_And_Right": "AFTER_POST"},
+    "Telu": {"Top": "BEFORE_BELOW", "Bottom": "BEFORE_BELOW", "Right": "BEFORE_BELOW",
+             "Top_And_Bottom": "BEFORE_BELOW"},
+    "Knda": {"Top": "BEFORE_BELOW", "Bottom": "BEFORE_BELOW", "Right": "AFTER_BELOW", "Top_And_Right": "AFTER_BELOW"},
+    "Mlym": {"Left": "PRE_MATRA", "Top": "AFTER_BELOW", "Bottom": "AFTER_POST", "Right": "AFTER_POST",
+             "Left_And_Right": "AFTER_POST"},
+}
+# Matras whose fonts draw them against another consonant than their script's others: Telugu's vocalic r and rr after
+# the below-base forms, and Kannada's aa, ii, u and uu before them; Gurmukhi's udaat goes under the base.
+MATRA_EXCEPTIONS = {
+    0x0C43: "AFTER_BELOW", 0x0C44: "AFTER_BELOW",
+    0x0CBE: "BEFORE_BELOW", 0x0CC0: "BEFORE_BELOW", 0x0CC1: "BEFORE_BELOW", 0x0CC2: "BEFORE_BELOW",
+    0x0A51: "BELOW",
+}
+# Each class's position, where its class alone gives one.
+BY_CLASS = {
+    "BASE": ["C", "Ra", "V", "Placeholder", "DottedCircle", "Stacker", "Repha"],
+    "SIGNS": ["SM", "SMDigit", "A", "Symbol"],
+    "PRE_BASE": ["VPre"], "ABOVE": ["VAbv"], "BELOW": ["VBlw"], "POST": ["VPst"],
+}
+POSITION_BY_CLASS = {cls: position for position, classes in BY_CLASS.items() for cls in classes}
+
+
+def position(c, cls, where, scripts):
+    if c == 0x0D4E:
+        return "LAST"  # Malayalam's dot reph, which is already where it's drawn
+    if cls == "SM" and where == "Top" and "Orya" in scripts:
+        return "BEFORE_BELOW"
+    if cls == "H":
+        return {"Bottom": "BELOW", "Top": "ABOVE"}.get(where, "LAST")
+    if cls == "Medial":
+        return "BASE" if "Guru" in scripts else "LAST"
+    if cls in ("M", "MPost"):
+        script = next(iter(scripts & INDIC), None)
+        return MATRA_EXCEPTIONS.get(c) or MATRAS.get(script, {}).get(where, "AFTER_BELOW")
+    return POSITION_BY_CLASS.get(cls, "LAST")
+
+
+def table():
+    found, positional = classes()
+    of_script = scripts_of()
+    return {c: (cls, position(c, cls, positional.get(c, ""), of_script(c))) for c, cls in found.items()}
+
+
+def write_table(entries):
+    index = {name: i for i, name in enumerate(INDIC_CLASSES)}, {name: i for i, name in enumerate(INDIC_POSITIONS)}
+    default = ("X", "LAST")
+    runs = []
+    for c in sorted(c for c, value in entries.items() if value != default):
+        if runs and runs[-1][1] == c - 1 and runs[-1][2] == entries[c]:
+            runs[-1][1] = c
         else:
-            ranges.append([cp, cp, value])
-
+            runs.append([c, c, entries[c]])
     with open(OUT, "w", encoding="utf-8") as f:
-        f.write("// Generated by scripts/tools/gen/indic-table.py. Do not edit.\n")
-        f.write("//\n")
-        f.write("// The syllabic category and matra position of every codepoint the Indic, Khmer\n")
-        f.write("// and Myanmar shapers may meet. A codepoint in no range is `X` at position `END`,\n")
-        f.write("// which is what everything outside these scripts is.\n")
-        f.write("//\n")
-        f.write("// Derived in part from the Unicode Character Database. Copyright (c) Unicode,\n")
-        f.write("// Inc.; the license notice is reproduced in full at the top of\n")
-        f.write("// src/daecore/src/daeshaper/generated/unicode_tables.rs.\n")
-        f.write("\n")
-        cats = [(lo, hi, cat) for lo, hi, (cat, _) in ranges]
-        poss = [(lo, hi, pos) for lo, hi, (_, pos) in ranges]
-        stats = trie.emit(
-            f, "INDIC_CATEGORY", [("category", "u8"), ("position", "u8")], [cats, poss],
-            [CATEGORY_INDEX["X"], POSITION_INDEX["END"]],
-            "// A codepoint's Indic category and position, behind a three-stage trie.\n"
-            "//\n"
-            "// One descent answers both, where two values in one sorted range list would be bisected\n"
-            "// eleven deep, once per character.\n",
-        )
-        print("  indic trie      {} records, {} mid blocks, {} leaf blocks".format(*stats))
+        f.write("// Generated by scripts/tools/gen/indic-table.py. Do not edit.\n//\n"
+                "// The class and position of every character the Indic, Khmer and Myanmar shapers read; any\n"
+                "// other is X at LAST. Derived in part from the Unicode Character Database, whose license notice\n"
+                "// is at the top of src/daecore/src/daeshaper/generated/unicode_tables.rs.\n\n"
+                "use crate::daecore::daeshaper::unicode::Trie;\n\n")
+        emit_consts(f, "category", enumerate(INDIC_CLASSES), "every class the table holds; each grammar reads some")
+        emit_consts(f, "position", enumerate(INDIC_POSITIONS), "the sorting order; each pass names some")
+        columns = [[(lo, hi, index[k][value[k]]) for lo, hi, value in runs] for k in (0, 1)]
+        stats = trie.emit(f, "INDIC_CATEGORY", "IndicCategoryRecord", [("category", "u8"), ("position", "u8")],
+                          columns, [index[0]["X"], index[1]["LAST"]],
+                          "// A character's class and position, in one record so one lookup finds both.\n")
+    print("  {} runs over {} characters; trie of {} records, {} mid blocks, {} leaf blocks".format(
+        len(runs), len(entries), *stats))
 
-    return len(ranges)
 
-def emit_vowel_constraints():
-    path = os.path.join(DATA, "IndicShapingInvalidCluster.txt")
-    if not os.path.exists(path):
-        sys.exit(
-            "missing {} – fetch it from Microsoft's font-tools:\n"
-            "  curl -sS -o {} \\\n"
-            "    https://raw.githubusercontent.com/microsoft/font-tools/master/USE/"
-            "IndicShapingInvalidCluster.txt".format(path, path)
-        )
-
-    pairs, triples = [], []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip().rstrip(";").strip()
-            if not line:
-                continue
-            parts = [int(p, 16) for p in line.split()]
-            if len(parts) == 2:
-                pairs.append(tuple(parts))
-            elif len(parts) == 3:
-                triples.append(tuple(parts))
-
-    pairs.sort()
-    triples.sort()
-    out = os.path.join(HERE, "..", "..", "..", "src", "daecore", "src", "daeshaper", "generated", "vowel_constraints.rs")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write("// Generated by scripts/tools/gen/indic-table.py. Do not edit.\n")
-        f.write("//\n")
-        f.write("// Vowel pairs that are written the same way as some other single vowel. A dotted\n")
-        f.write("// circle goes between them, so the reader can see the sequence is not the vowel it\n")
-        f.write("// resembles and the font does not compose it into one.\n\n")
-        f.write("// Sorted, so a lookup can bisect.\n")
-        f.write("pub(crate) static INVALID_VOWEL_PAIRS: &[(u32, u32)] = &[\n")
-        for a, b in pairs:
-            f.write("    (0x{:04X}, 0x{:04X}),\n".format(a, b))
-        f.write("];\n\n")
-        f.write("// The same thing over three characters. Checked first, because a sequence that\n")
-        f.write("// matches here is not also the pair its first two characters form – and the circle\n")
-        f.write("// belongs before the last character rather than in the middle.\n")
-        f.write("pub(crate) static INVALID_VOWEL_TRIPLES: &[(u32, u32, u32)] = &[\n")
-        for a, b, c in triples:
-            f.write("    (0x{:04X}, 0x{:04X}, 0x{:04X}),\n".format(a, b, c))
-        f.write("];\n")
-
+# Microsoft's invalid vowel sequences: two or three characters that read as another vowel, which take a dotted circle
+# before their last so a font doesn't compose them.
+def write_vowel_constraints():
+    sequences = [tuple(int(p, 16) for p in fields[0].split()) for fields in ucd.rows("IndicShapingInvalidCluster.txt")]
+    pairs = sorted(s for s in sequences if len(s) == 2)
+    # A triple whose first two are a pair is never reached: the pair matches first.
+    triples = sorted(s for s in sequences if len(s) == 3 and s[:2] not in set(pairs))
+    starts = []
+    for c in sorted({s[0] for s in pairs + triples}):
+        if starts and starts[-1][1] == c - 1:
+            starts[-1][1] = c
+        else:
+            starts.append([c, c])
+    arms = ["0x{:04X}".format(lo) if lo == hi else "0x{:04X}..=0x{:04X}".format(lo, hi) for lo, hi in starts]
+    with open(os.path.join(GENERATED, "vowel_constraints.rs"), "w", encoding="utf-8") as f:
+        f.write("// Generated by scripts/tools/gen/indic-table.py. Do not edit.\n//\n"
+                "// Vowel sequences written the same way as some other vowel. A dotted circle goes before the\n"
+                "// last, so the reader can see the sequence isn't the vowel it resembles and the font doesn't\n"
+                "// compose it.\n//\n"
+                "// From Microsoft's list of invalid Indic clusters, whose license notice is at the top of\n"
+                "// src/daecore/src/daeshaper/generated/use_tables.rs.\n\n"
+                "// Sorted, so a lookup can bisect.\n"
+                "pub(crate) static INVALID_VOWEL_PAIRS: &[(u32, u32)] = &[\n")
+        f.writelines("    (0x{:04X}, 0x{:04X}),\n".format(*p) for p in pairs)
+        f.write("];\n\n// The same over three characters, none opening with a pair, which would match first.\n"
+                "pub(crate) static INVALID_VOWEL_TRIPLES: &[(u32, u32, u32)] = &[\n")
+        f.writelines("    (0x{:04X}, 0x{:04X}, 0x{:04X}),\n".format(*t) for t in triples)
+        f.write("];\n\n// Whether a sequence opens with `c`. Few characters do, and the rest skip the searches.\n"
+                "pub(crate) fn opens_invalid_vowel_sequence(c: u32) -> bool {\n"
+                "    matches!(\n        c,\n        " + "\n            | ".join(arms) + "\n    )\n}\n")
     print("  {} invalid vowel pairs, {} triples".format(len(pairs), len(triples)))
-    return len(pairs) + len(triples)
+
 
 def main():
-    categories, positions = build()
-    count = emit(categories, positions)
-    print("wrote {}".format(OUT))
-    print("  {} ranges over {} codepoints".format(count, len(categories)))
+    write_table(table())
+    write_vowel_constraints()
+    print("wrote {} and vowel_constraints.rs".format(os.path.relpath(OUT)))
 
-    emit_vowel_constraints()
 
 if __name__ == "__main__":
     main()

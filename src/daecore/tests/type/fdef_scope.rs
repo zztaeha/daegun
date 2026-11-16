@@ -1,27 +1,34 @@
-use daegun::daecore::daetype::hinting::{HintContext, HintMode};
-use daegun::daecore::daetype::TableBytes;
+use crate::daecore::daetype::hinting::HintContext;
+use crate::daecore::daetype::{TableBytes, Tables};
+use alloc::vec::Vec;
 
 const PPEM: u16 = 16;
 
-fn parts() -> (std::collections::BTreeMap<String, TableBytes>, Vec<usize>, Vec<u8>, u16) {
-    let path = format!("{}/test-fixtures/hinted.ttf", crate::FONTS);
+fn parts() -> (Tables, Vec<usize>, Vec<u8>, u16) {
+    let path = format!("{}/test-fixtures/hinted.ttf", super::FONTS);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing: {path} ({e})"));
-    let map = daegun::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("fixture parses");
-    let upm = daegun::daecore::daetype::decoder::read_u16_be(map.get("head").expect("head"), 18).expect("upm");
-    let fmt = daegun::daecore::daetype::decoder::read_i16_be(map.get("head").expect("head"), 50).expect("fmt");
-    let n = daegun::daecore::daetype::decoder::read_u16_be(map.get("maxp").expect("maxp"), 4).expect("n");
-    let loca = daegun::daecore::daetype::instancer::parse_loca(&map, fmt, n as usize).expect("loca");
+    let map = crate::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("fixture parses");
+    let upm = crate::daecore::daetype::decoder::read_u16_be(map.get("head").expect("head"), 18).expect("upm");
+    let fmt = crate::daecore::daetype::decoder::read_i16_be(map.get("head").expect("head"), 50).expect("fmt");
+    let n = crate::daecore::daetype::decoder::read_u16_be(map.get("maxp").expect("maxp"), 4)
+        .map(u32::from)
+        .expect("n");
+    let loca = crate::daecore::daetype::instancer::parse_loca(&map, fmt, n as usize).expect("loca");
     let glyf = map.get("glyf").expect("glyf").to_owned_vec();
     (map, loca, glyf, upm)
 }
 
-const GID_A: u16 = 1;
-const GID_E: u16 = 5;
-const GID_F: u16 = 6;
+const GID_A: u32 = 1;
+const GID_E: u32 = 5;
+const GID_F: u32 = 6;
 
-fn hint_sequence(gids: &[u16]) -> Vec<Vec<i32>> {
-    let (map, loca, glyf, upm) = parts();
-    let mut ctx = HintContext::new(&map, PPEM.into(), upm, HintMode::Classic).expect("fixture hints");
+fn hint_sequence(gids: &[u32]) -> Vec<Vec<i32>> {
+    let (mut map, loca, glyf, upm) = parts();
+    // The fixture's functions round along x, which points move along only under native ClearType: its prep, then
+    // INSTCTRL selector 3.
+    let prep = [&map.get("prep").expect("prep")[..], &[0xB1, 0x04, 0x03, 0x8E]].concat();
+    map.insert("prep", TableBytes::from_vec(prep));
+    let mut ctx = HintContext::new(&map, PPEM.into(), upm).expect("fixture hints");
     gids.iter()
         .map(|&g| {
             let out = ctx.hint_glyph(&glyf, &loca, g).unwrap_or_else(|| panic!("gid {g} hinted to nothing"));

@@ -1,108 +1,113 @@
 #[cfg(all(not(feature = "std"), not(test)))]
-use crate::daecore::daemachine::float::FloatExt;
-use alloc::vec::Vec;
+use crate::daecore::daekit::float::FloatExt;
+use crate::daecore::daekit::cache::{Advances, FontCache, GlyphExtents, VerticalOrigins};
+use crate::daecore::daetype::format::ivs::{round_fixed, store_delta, store_scalars, units, ItemVariationStore};
+use crate::daecore::daetype::format::sanitize::OtlTable;
+use super::ot::{gdef_class, ClassDef, Coverage, Gdef, LayoutTable, COVERAGE_ABSENT};
+use crate::daecore::daetype::format::index::SparseIndex;
+use crate::daecore::daekit::base::sync::Shared;
 
-use crate::daecore::daetype::format::ivs::{compute_ivs_delta_f64, precompute_region_scalars, ItemVariationStore};
-use crate::daecore::cache::FontCache;
-use super::ot::{glyph_props_from_gdef_class, Gdef};
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct GlyphExtents {
-    pub(crate) x_bearing: i32,
-    pub(crate) y_bearing: i32,
-    pub(crate) width: i32,
-    pub(crate) height: i32,
+// What a plan takes of GSUB's and GPOS's FeatureVariations at a location: the record each takes, and the conditions
+// of its lookup variations that hold there.
+#[derive(Clone, Default, PartialEq)]
+pub(crate) struct LayoutVariation {
+    pub(crate) records: [Option<u32>; 2],
+    pub(crate) conditions: [alloc::vec::Vec<u32>; 2],
 }
 
-#[derive(Default)]
-struct BboxPen {
-    min_x: f32,
-    min_y: f32,
-    max_x: f32,
-    max_y: f32,
-    any: bool,
-}
-
-impl BboxPen {
-    fn add(&mut self, x: f32, y: f32) {
-        if !self.any {
-            self.any = true;
-            self.min_x = x;
-            self.max_x = x;
-            self.min_y = y;
-            self.max_y = y;
-            return;
+impl LayoutVariation {
+    // At `coords` in F2Dot14, a value condition read from GDEF's `store`.
+    fn at(font: &FontCache, coords: &[i32], store: Option<&ItemVariationStore>) -> Self {
+        let tables = [OtlTable::Gsub, OtlTable::Gpos].map(|t| font.layout_table(t).and_then(|t| LayoutTable::parse(t)));
+        LayoutVariation {
+            records: tables.each_ref().map(|t| t.as_ref()?.find_variation_index(coords, store)),
+            conditions: tables
+                .each_ref()
+                .map(|t| t.as_ref().map_or_else(Default::default, |t| t.lookup_conditions(coords, store))),
         }
-        self.min_x = self.min_x.min(x);
-        self.max_x = self.max_x.max(x);
-        self.min_y = self.min_y.min(y);
-        self.max_y = self.max_y.max(y);
     }
 }
 
-impl crate::daecore::daetype::outline::OutlinePen for BboxPen {
-    fn move_to(&mut self, x: f32, y: f32) {
-        self.add(x, y);
-    }
-    fn line_to(&mut self, x: f32, y: f32) {
-        self.add(x, y);
-    }
-    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-        self.add(cx, cy);
-        self.add(x, y);
-    }
-    fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
-        self.add(c1x, c1y);
-        self.add(c2x, c2y);
-        self.add(x, y);
-    }
-    fn close(&mut self) {}
+// What shaping reads of a location beyond its metrics, built once there: what a plan takes of FeatureVariations,
+// whether that differs from the default's, which a plan can't share, and GPOS's device deltas, none where all are 0.
+pub(crate) struct Variation {
+    layout: LayoutVariation,
+    own_plan: bool,
+    deltas: Option<Deltas>,
 }
 
-struct VarDeltas {
-    store: crate::daecore::sync::Shared<ItemVariationStore>,
-    scalars: Vec<f64>,
+impl Variation {
+    pub(crate) fn new(font: &FontCache, location: &[f64]) -> Self {
+        let store = font.gdef_var_store();
+        let coords: alloc::vec::Vec<i32> = location.iter().map(|&v| (v * 16384.0).round() as i32).collect();
+        let layout = LayoutVariation::at(font, &coords, store.as_deref());
+        let own_plan = layout != LayoutVariation::at(font, &[], None);
+        let deltas = store.and_then(|store| Deltas::at(store, location));
+        Variation { layout, own_plan, deltas }
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.deltas.as_ref().map_or(0, |d| crate::daecore::daekit::base::sync::heap_of(&d.scalars))
+    }
+}
+
+// GDEF's store and its regions' 16.16 scalars at the location.
+pub(crate) struct Deltas {
+    store: Shared<ItemVariationStore>,
+    scalars: alloc::vec::Vec<i64>,
+}
+
+impl Deltas {
+    // None where every coordinate is 0.
+    pub(crate) fn at(store: Shared<ItemVariationStore>, location: &[f64]) -> Option<Deltas> {
+        location.iter().any(|&v| v != 0.0).then(|| Deltas { scalars: store_scalars(&store, location), store })
+    }
+
+    // Rounded half up, as a delta baked into an instance is.
+    pub(crate) fn of(&self, outer: u16, inner: u16) -> i32 {
+        round_fixed(self.fixed(outer, inner))
+    }
+
+    // Unrounded, as an anchor keeps it until the difference of two is taken.
+    pub(crate) fn exact(&self, outer: u16, inner: u16) -> f32 {
+        units(self.fixed(outer, inner)) as f32
+    }
+
+    fn fixed(&self, outer: u16, inner: u16) -> i64 {
+        store_delta(&self.store, outer.into(), inner.into(), &self.scalars)
+    }
 }
 
 pub struct Face<'a> {
     cache: &'a FontCache,
-    axes: crate::daecore::cache::AxisKey,
+    // The cache holding the location's metrics and measuring its glyphs, `cache` itself at the default.
+    metrics: &'a FontCache,
+    variation: Option<&'a Variation>,
     gdef: Option<Gdef<'a>>,
-    gdef_class_index: Option<crate::daecore::sync::Shared<crate::daecore::daetype::format::index::SparseIndex>>,
-    gdef_mark_attach_index: Option<crate::daecore::sync::Shared<crate::daecore::daetype::format::index::SparseIndex>>,
-    var_deltas: Option<VarDeltas>,
-    cmap_index: Option<crate::daecore::sync::Shared<crate::daecore::daetype::format::index::SparseIndex>>,
+    gdef_class_index: Option<&'a SparseIndex>,
+    gdef_mark_attach_index: Option<&'a SparseIndex>,
+    mark_set_indexes: Option<&'a [Option<SparseIndex>]>,
+    cmap_index: Option<&'a SparseIndex>,
     upm: u16,
     point_size: Option<f64>,
 }
 
 impl<'a> Face<'a> {
-    pub fn new(cache: &'a FontCache, axes: &[(&str, f64)]) -> Self {
+    // The cache's tables as they are: a location's cache is already instanced, so no device table varies them.
+    pub fn new(cache: &'a FontCache) -> Self {
         cache.warm_cmap_index();
-        let gdef = cache.table_map.get("GDEF").and_then(|d| Gdef::new(d));
-        let axes = crate::daecore::cache::canonical_axes(axes);
-        let var_deltas = gdef.as_ref().filter(|g| g.item_var_store_off != 0).and_then(|g| {
-            let store = cache.gdef_var_store(g.item_var_store_off)?;
-            let location = cache.compute_location_rs(&axes);
-            let scalars = precompute_region_scalars(&store, &location);
-            Some(VarDeltas { store, scalars })
-        });
-        let (gdef_class_index, gdef_mark_attach_index) = cache.gdef_class_indexes(|| {
-            let g = gdef.as_ref();
-            (
-                g.and_then(|g| g.glyph_classes.as_ref()).and_then(|c| c.index_entries()),
-                g.and_then(|g| g.mark_attach_classes.as_ref()).and_then(|c| c.index_entries()),
-            )
-        });
+        let gdef = cache.gdef().and_then(|d| Gdef::new(d));
+        let (classes, marks, sets) = cache.gdef_class_indexes(gdef.as_ref());
 
         Face {
             cache,
-            axes,
+            metrics: cache,
+            variation: None,
             point_size: None,
             gdef,
-            gdef_class_index,
-            gdef_mark_attach_index,
-            var_deltas,
+            gdef_class_index: classes.as_deref(),
+            gdef_mark_attach_index: marks.as_deref(),
+            mark_set_indexes: sets.as_deref().map(alloc::vec::Vec::as_slice),
             cmap_index: cache.cmap_index(),
             upm: cache.font_upm(),
         }
@@ -113,273 +118,201 @@ impl<'a> Face<'a> {
         self
     }
 
-    pub(crate) fn tracking_point_size(&self) -> f64 {
-        match self.point_size {
-            Some(p) if p > 0.0 => p,
-            _ => crate::daecore::daetype::trak::DEFAULT_POINT_SIZE,
+    // The font's face at a location `at` describes, unless it's the font's own cache, at the default or where the
+    // location can't be built.
+    pub(crate) fn located(mut self, at: &'a FontCache) -> Self {
+        if !core::ptr::eq(at, self.cache) {
+            self.metrics = at;
+            self.variation = Some(at.variation(self.cache));
         }
+        self
+    }
+
+    // What a plan takes of FeatureVariations: the location's, or what holds at the default.
+    pub(crate) fn layout_variation(&self) -> LayoutVariation {
+        match self.variation {
+            Some(v) => v.layout.clone(),
+            None => LayoutVariation::at(self.cache, &[], None),
+        }
+    }
+
+    // What sets a plan apart at a location: None where it takes the default's.
+    pub(crate) fn variation_key(&self) -> Option<&LayoutVariation> {
+        self.variation.filter(|v| v.own_plan).map(|v| &v.layout)
+    }
+
+    pub(crate) fn deltas(&self) -> Option<&Deltas> {
+        self.variation?.deltas.as_ref()
     }
 
     pub(crate) fn tracking(&self, horizontal: bool) -> i32 {
-        let adjust =
-            crate::daecore::daetype::trak::tracking(&self.cache.table_map, self.tracking_point_size(), horizontal);
-        // `ot_round`, not `f64::round`: this is a positional IVS delta, which the spec rounds the
-        // same way `format/round.rs` rounds the rest of that family.
+        use crate::daecore::daetype::trak::{tracking, DEFAULT_POINT_SIZE};
+        let adjust = tracking(self.cache.tables(), self.point_size.unwrap_or(DEFAULT_POINT_SIZE), horizontal);
         crate::daecore::daetype::format::round::ot_round(adjust)
     }
 
-    pub(crate) fn uses_device_tables(&self) -> bool {
-        !self.axes.is_empty()
-    }
-
-    pub(crate) fn variation_delta(&self, outer: u16, inner: u16) -> i32 {
-        let Some(v) = self.var_deltas.as_ref() else { return 0 };
-        crate::daecore::daetype::format::round::ot_round(
-            compute_ivs_delta_f64(&v.store, outer as usize, inner as usize, &v.scalars),
-        )
-    }
-
-    pub(crate) fn units_per_em(&self) -> u16 {
+    pub(crate) fn upm(&self) -> u16 {
         self.upm
     }
 
-    pub(crate) fn num_glyphs(&self) -> u16 {
-        self.table("maxp")
-            .and_then(|maxp| crate::daecore::daetype::decoder::read_u16_be(maxp, 4))
-            .unwrap_or(u16::MAX)
+    pub(crate) fn glyph_count(&self) -> u32 {
+        self.cache.font_num_glyphs()
     }
 
-    pub(crate) fn glyph_index(&self, codepoint: u32) -> Option<u16> {
-        if let Some(index) = &self.cmap_index {
-            return Some(index.lookup(codepoint)).filter(|&g| g != 0);
+    // The font's glyph for a character, none for one cmap leaves at .notdef.
+    pub(crate) fn glyph_of(&self, c: u32) -> Option<u32> {
+        match self.cmap_index {
+            Some(index) => Some(u32::from(index.lookup(c))).filter(|&glyph| glyph != 0),
+            None => self.cache.glyph_id(c),
         }
-        self.cache.glyph_id(codepoint)
     }
 
-    pub(crate) fn has_glyph(&self, codepoint: u32) -> bool {
-        self.glyph_index(codepoint).is_some()
+    pub(crate) fn maps(&self, c: u32) -> bool {
+        self.glyph_of(c).is_some()
     }
 
-    pub(crate) fn glyph_variation_index(&self, base: u32, selector: u32) -> Option<u16> {
+    // The glyph cmap's variation sequences give `base` under `selector`.
+    pub(crate) fn variant_of(&self, base: u32, selector: u32) -> Option<u32> {
         self.cache.variation_glyph_id(base, selector)
     }
 
-    pub(crate) fn glyph_h_advance(&self, glyph: u16) -> i32 {
-        self.cache.advance_font_units_rs(&self.axes, glyph, false) as i32
+    pub(crate) fn advances(&self, vertical: bool) -> Advances<'a> {
+        self.metrics.advances(vertical)
     }
 
-    pub(crate) fn advances_table(&self, vertical: bool) -> crate::daecore::sync::Shared<Vec<u32>> {
-        self.cache.advances_font_units_table(&self.axes, vertical)
+    pub(crate) fn width(&self, glyph: u32) -> i32 {
+        self.advances(false).of(glyph) as i32
     }
 
-    pub(crate) fn v_advance_or_line_height(&self, raw: u32) -> i32 {
-        let advance = raw as i32;
-        if advance != 0 {
-            return advance;
-        }
-        self.line_height()
+    // A glyph's advance down a line: vmtx's (`stated` as read), else `fallback`, for a glyph vmtx doesn't cover.
+    pub(crate) fn height_or(&self, glyph: u32, stated: u32, fallback: i32) -> i32 {
+        self.metrics.stated_vertical_advance(glyph, stated).map_or(fallback, |a| a as i32)
     }
 
-    pub(crate) fn glyph_v_advance(&self, glyph: u16) -> i32 {
-        let advance = self.cache.advance_font_units_rs(&self.axes, glyph, true) as i32;
-        if advance != 0 {
-            return advance;
-        }
-        self.line_height()
+    pub(crate) fn height(&self, glyph: u32) -> i32 {
+        self.height_or(glyph, self.advances(true).of(glyph), self.line_height())
     }
 
-    fn line_height(&self) -> i32 {
-        let Some(hhea) = self.cache.table_map.get("hhea").filter(|t| t.len() >= 8) else {
-            return i32::from(self.upm);
-        };
-        let ascender = crate::daecore::daetype::decoder::read_i16_be(hhea, 4).unwrap_or(0) as i32;
-        let descender = crate::daecore::daetype::decoder::read_i16_be(hhea, 6).unwrap_or(0) as i32;
-        let height = ascender - descender;
-        if height > 0 { height } else { i32::from(self.upm) }
+    // Without vmtx a glyph advances the line's height, ascender to descender, so glyphs set down a line keep apart as
+    // horizontal lines do.
+    pub(crate) fn line_height(&self) -> i32 {
+        self.metrics.vertical_fallback_advance() as i32
     }
 
-    pub(crate) fn glyph_h_origin(&self, glyph: u16) -> i32 {
-        self.glyph_h_advance(glyph) / 2
-    }
-
-    pub(crate) fn glyph_v_origin(&self, glyph: u16) -> i32 {
-        if let Some(y) = crate::daecore::daetype::vorg::vorg_origin_y(&self.cache.table_map, glyph) {
-            return i32::from(y);
-        }
-        let Some(extents) = self.glyph_extents(glyph) else {
-            return self.ascender();
-        };
-        if self.has_table("vmtx") {
-            extents.y_bearing + self.glyph_v_side_bearing(glyph)
-        } else {
-            let line = self.ascender().saturating_sub(self.descender());
-            extents
-                .y_bearing
-                .saturating_add(line.saturating_sub(extents.height.saturating_neg()) >> 1)
+    // A pass's vertical origins: VORG's where the font has one, which needs no outline.
+    pub(crate) fn with_origins<T>(&self, f: impl FnOnce(&VerticalOrigins) -> T) -> T {
+        match self.metrics.vorg_origins() {
+            Some(vorg) => f(&vorg),
+            None => f(&self.metrics.vertical_origins()),
         }
     }
 
-    fn glyph_v_side_bearing(&self, glyph: u16) -> i32 {
-        let tables = &self.cache.table_map;
-        let Some(vmtx) = tables.get("vmtx") else { return 0 };
-        let long = tables
-            .get("vhea")
-            .filter(|t| t.len() >= 36)
-            .and_then(|t| crate::daecore::daetype::decoder::read_u16_be(t, 34))
-            .unwrap_or(0) as usize;
-        let glyph = glyph as usize;
-        let at = if glyph < long {
-            glyph * 4 + 2
-        } else {
-            long * 4 + (glyph - long) * 2
-        };
-        crate::daecore::daetype::decoder::read_i16_be(vmtx, at).map_or(0, i32::from)
+    // Point `index` of `glyph`'s outline as TrueType numbers its points, at the face's location, from its drawn origin;
+    // None for a glyph without glyf points or one past them.
+    pub(crate) fn outline_point(&self, glyph: u32, index: u16) -> Option<(f64, f64)> {
+        let (xs, ys) = self.metrics.contour_points(glyph)?;
+        let at = usize::from(index);
+        xs.get(at).zip(ys.get(at)).map(|(&x, &y)| (x, y))
     }
 
-    fn ascender(&self) -> i32 {
-        self.typo_metric(68, 4).unwrap_or_else(|| i32::from(self.upm) * 4 / 5)
+    pub(crate) fn extents(&self, glyph: u32) -> Option<GlyphExtents> {
+        self.metrics.glyph_extents(glyph)
     }
 
-    fn descender(&self) -> i32 {
-        self.typo_metric(70, 6).unwrap_or_else(|| -i32::from(self.upm) / 5)
-    }
-
-    fn typo_metric(&self, os2_off: usize, hhea_off: usize) -> Option<i32> {
-        let tables = &self.cache.table_map;
-        let os2 = tables.get("OS/2").filter(|t| t.len() >= 72);
-        let os2_value = || os2.and_then(|t| crate::daecore::daetype::decoder::read_i16_be(t, os2_off)).map(i32::from);
-
-        let use_typo = crate::daecore::daetype::decoder::parse_os2(tables).is_some_and(|o| o.use_typo_metrics());
-        if use_typo
-            && let Some(v) = os2_value() {
-                return Some(v);
-            }
-        match tables
-            .get("hhea")
-            .filter(|t| t.len() >= 8)
-            .and_then(|t| crate::daecore::daetype::decoder::read_i16_be(t, hhea_off))
-        {
-            Some(0) | None => os2_value().filter(|&v| v != 0),
-            Some(v) => Some(i32::from(v)),
-        }
-    }
-
-    pub(crate) fn glyph_extents(&self, glyph: u16) -> Option<GlyphExtents> {
-        use crate::daecore::daetype::outline::OutlinePen;
-        let mut pen = BboxPen::default();
-        let tables = &self.cache.table_map;
-
-        if let Some(stored) = self.glyf_stored_bbox(glyph) {
-            return Some(stored);
-        }
-
-        let drawn = if let Some(cff) = tables.get("CFF ") {
-            match self.cache.cff_outlines() {
-                Some(o) => crate::daecore::daetype::outline::outline_cff_glyph_with(
-                    &o, cff, glyph, &mut pen as &mut dyn OutlinePen,
-                ).is_ok(),
-                None => false,
-            }
-        } else if tables.contains_key("glyf") {
-            match self.cache.loca_offsets() {
-                Some(loca) => self.cache.draw_glyf_reusing(&loca, glyph, &mut pen as &mut dyn OutlinePen).is_ok(),
-                None => false,
-            }
-        } else {
-            false
-        };
-
-        if !drawn {
-            return None;
-        }
-        if !pen.any {
-            return Some(GlyphExtents { x_bearing: 0, y_bearing: 0, width: 0, height: 0 });
-        }
-
-        Some(GlyphExtents {
-            x_bearing: pen.min_x.round() as i32,
-            y_bearing: pen.max_y.round() as i32,
-            width: (pen.max_x - pen.min_x).round() as i32,
-            height: (pen.min_y - pen.max_y).round() as i32,
-        })
-    }
-
-    fn glyf_stored_bbox(&self, glyph: u16) -> Option<GlyphExtents> {
-        use crate::daecore::daetype::decoder::read_i16_be;
-
-        let glyf = self.cache.table_map.get("glyf")?;
-        let loca = self.cache.loca_offsets()?;
-        let start = *loca.get(usize::from(glyph))?;
-        let end = *loca.get(usize::from(glyph) + 1)?;
-        if end <= start || end > glyf.len() || end - start < 10 {
-            return None;
-        }
-
-        let x_min = read_i16_be(glyf, start + 2)?;
-        let y_min = read_i16_be(glyf, start + 4)?;
-        let x_max = read_i16_be(glyf, start + 6)?;
-        let y_max = read_i16_be(glyf, start + 8)?;
-
-        Some(GlyphExtents {
-            x_bearing: i32::from(x_min) + self.cache.glyf_origin_shift(&loca, glyph),
-            y_bearing: i32::from(y_max),
-            width: i32::from(x_max) - i32::from(x_min),
-            height: i32::from(y_min) - i32::from(y_max),
-        })
-    }
-
-    pub(crate) fn has_glyph_classes(&self) -> bool {
+    // Whether GDEF classes the glyphs; without it they take classes from their characters.
+    pub(crate) fn gives_classes(&self) -> bool {
         self.gdef.as_ref().is_some_and(Gdef::has_glyph_classes)
     }
 
-    pub(crate) fn glyph_props(&self, glyph: u16) -> u16 {
-        let Some(gdef) = self.gdef.as_ref() else { return 0 };
-        let class = gdef.glyph_classes.as_ref().map_or(0, |c| {
-            c.indexed(self.gdef_class_index.as_deref()).class_of(glyph)
-        });
-        let mark_attach = gdef.mark_attach_classes.as_ref().map_or(0, |c| {
-            c.indexed(self.gdef_mark_attach_index.as_deref()).class_of(glyph)
-        });
-        glyph_props_from_gdef_class(class, mark_attach)
+    // The glyph's class and mark attachment class; only a mark keeps an attachment class.
+    pub(crate) fn classes(&self, glyph: u32) -> (u8, u8) {
+        let Some(gdef) = self.gdef.as_ref() else { return (0, 0) };
+        let read = |defs: Option<&ClassDef>, index| defs.map_or(0, |d| d.indexed(index).class_of(glyph));
+        let class = read(gdef.glyph_classes.as_ref(), self.gdef_class_index);
+        let attach = if class == 3 { read(gdef.mark_attach_classes.as_ref(), self.gdef_mark_attach_index) } else { 0 };
+        gdef_class(class, attach)
     }
 
-    pub(crate) fn is_mark_glyph(&self, glyph: u16, set_index: u16) -> bool {
-        self.gdef.as_ref().is_some_and(|g| g.is_mark_glyph(glyph, set_index))
+    pub(crate) fn mark_set_count(&self) -> u16 {
+        self.gdef.as_ref().map_or(0, Gdef::mark_glyph_set_count)
     }
 
-    pub(crate) fn lookup_digest(
+    pub(crate) fn in_mark_set(&self, glyph: u32, set: u16) -> bool {
+        match self.mark_set_indexes.and_then(|s| s.get(usize::from(set))?.as_ref()) {
+            Some(index) => index.lookup(glyph) != COVERAGE_ABSENT,
+            None => self.gdef.as_ref().is_some_and(|g| g.is_mark_glyph(glyph, set)),
+        }
+    }
+
+    // The index of the coverage or, with `class`, the class definition `data` at `start` in GSUB or GPOS, shared by
+    // every subtable naming it; None for an empty one or one that can't be indexed.
+    pub(crate) fn shared_index(
         &self,
-        table_index: usize,
-        lookup_count: usize,
-        index: u16,
-        compute: impl FnOnce() -> super::ot::digest::Digest,
-    ) -> super::ot::digest::Digest {
-        self.cache.lookup_digest_cached(table_index, lookup_count, index, compute)
+        indexes: &mut crate::daecore::daekit::cache::OtlIndexes,
+        start: usize,
+        data: &[u8],
+        class: bool,
+    ) -> Option<Shared<SparseIndex>> {
+        if data.is_empty() {
+            return None;
+        }
+        self.cache.otl_index_in(indexes, (start, class), || match class {
+            true => self.cache.build_index(&|e| ClassDef::new(data).each_entry(e), 0),
+            false => self.cache.build_index(&|e| Coverage::new(data).each_entry(e), COVERAGE_ABSENT),
+        })
     }
 
     pub(crate) fn build_index(
         &self,
-        entries: &[(u32, u16)],
+        each: &crate::daecore::daekit::cache::shaping::IndexEntries,
         absent: u16,
-    ) -> Option<crate::daecore::daetype::format::index::SparseIndex> {
-        self.cache.build_index(entries, absent)
+    ) -> Option<SparseIndex> {
+        self.cache.build_index(each, absent)
     }
 
-    pub(crate) fn subtable_indexes(
+    pub(crate) fn reserve_index_bytes(&self, bytes: usize) -> bool {
+        self.cache.reserve_index_bytes(bytes)
+    }
+
+    pub(crate) fn draw_index_bytes(&self, bytes: usize) -> Option<crate::daecore::daekit::cache::shaping::Drawn> {
+        self.cache.draw_index_bytes(bytes)
+    }
+
+    pub(crate) fn lookup_index(
         &self,
         table_index: usize,
         lookup_count: usize,
         index: u16,
-        build: impl FnOnce() -> alloc::vec::Vec<super::ot::SubtableIndex>,
-    ) -> Option<crate::daecore::sync::Shared<alloc::vec::Vec<super::ot::SubtableIndex>>> {
-        self.cache.subtable_indexes_cached(table_index, lookup_count, index, build)
+        build: impl FnOnce(&mut crate::daecore::daekit::cache::OtlIndexes) -> super::ot::LookupIndex,
+    ) -> Shared<super::ot::LookupIndex> {
+        self.cache.lookup_index_cached(table_index, lookup_count, index, build)
     }
 
-    pub(crate) fn has_table(&self, tag: &str) -> bool {
-        self.cache.table_map.contains_key(tag)
+    pub(crate) fn subtable_sets(
+        &self,
+        table: crate::daecore::daetype::format::sanitize::AatTable,
+        subtable_count: usize,
+        index: usize,
+        build: impl FnOnce() -> super::ot::aat::SubtableSets,
+    ) -> Shared<super::ot::aat::SubtableSets> {
+        self.cache.subtable_sets_cached(table, subtable_count, index, build)
     }
 
     pub(crate) fn table(&self, tag: &str) -> Option<&'a [u8]> {
-        self.cache.table_map.get(tag).map(|t| t.as_slice())
+        self.cache.table(tag).map(|t| t.as_slice())
+    }
+
+    // An AAT table where shaping reads it, and none where the sanitizer rejects it or finds no data.
+    pub(crate) fn aat(&self, which: crate::daecore::daetype::format::sanitize::AatTable) -> Option<&'a [u8]> {
+        self.cache.aat_table(which).map(|t| t.as_slice())
+    }
+
+    // GSUB or GPOS where shaping reads it, parsed; none where the sanitizer rejects it.
+    pub(crate) fn layout(&self, table: super::plan::Table) -> Option<LayoutTable<'a>> {
+        let which = match table {
+            super::plan::Table::Gsub => OtlTable::Gsub,
+            super::plan::Table::Gpos => OtlTable::Gpos,
+        };
+        self.cache.layout_table(which).and_then(|t| LayoutTable::parse(t.as_slice()))
     }
 }

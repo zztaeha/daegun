@@ -1,5 +1,5 @@
 #[cfg(all(not(feature = "std"), not(test)))]
-use crate::daecore::daemachine::float::FloatExt;
+use crate::daecore::daekit::float::FloatExt;
 
 pub(crate) const ONE: i32 = 64;
 pub(crate) const HALF: i32 = 32;
@@ -23,6 +23,7 @@ impl Size {
         ((self.0 + HALF) / ONE) as u16
     }
 
+    #[cfg(test)]
     pub fn px(self) -> f32 {
         self.0 as f32 / ONE as f32
     }
@@ -31,19 +32,29 @@ impl Size {
         self.0
     }
 
-    // FreeType's scale, font units to 26.6 in 16.16. Wider than i32: a small em at the largest
-    // sizes passes 2^31.
+    // The scale, font units to 26.6 in 16.16. Wider than i32: a small em at the largest sizes passes 2^31.
     pub(crate) fn scale16(self, upm: u16) -> i64 {
         if upm == 0 { return 0; }
         (i64::from(self.0) * 0x10000 + i64::from(upm) / 2) / i64::from(upm)
     }
 }
 
-// A font-unit value at a scale from `Size::scale16`, rounded as FT_MulFix rounds.
-pub(crate) fn scale_fix(value: i32, scale16: i64) -> i32 {
-    let p = i128::from(value) * i128::from(scale16);
-    let r = (p + 0x8000 + if p < 0 { -1 } else { 0 }) >> 16;
-    r.clamp(-i128::from(SCALE_LIMIT), i128::from(SCALE_LIMIT)) as i32
+// A 26.6 font-unit value at a scale from `Size::scale16`, then rounded to the 64th, as points at a location scale. A
+// product past i64 saturates, which the clamp would pin all the same.
+pub(crate) fn scale_f26dot6(value: i32, scale16: i64) -> i32 {
+    let p = i64::from(value).saturating_mul(scale16).clamp(-WIDE, WIDE);
+    ((shift_round(p, 16) + i64::from(HALF)) >> 6).clamp(-SCALE_LIMIT, SCALE_LIMIT) as i32
+}
+
+// As `scale_units`, for a value `fits_scale` passed: its product reaches 2^45 at most, so it needs no clamp.
+pub(crate) fn scale_fitting(value: i32, scale16: i64) -> i32 {
+    shift_round(i64::from(value) * scale16, 16) as i32
+}
+
+// A font-unit value at a scale from `Size::scale16`, in 26.6 to the nearest.
+pub(crate) fn scale_units(value: i32, scale16: i64) -> i32 {
+    let p = i64::from(value).saturating_mul(scale16).clamp(-WIDE, WIDE);
+    shift_round(p, 16).clamp(-SCALE_LIMIT, SCALE_LIMIT) as i32
 }
 
 impl From<u16> for Size {
@@ -57,26 +68,37 @@ impl From<u16> for Size {
 const SCALE_LIMIT: i64 = 1 << 29;
 
 // Whether a glyph's coordinates scale inside SCALE_LIMIT. Past it `scale` pins them and the glyph
-// collapses, so such a glyph is left unhinted.
+// collapses, so such a glyph is left unhinted, as is one with a NaN, which f64::max would pass over.
 pub fn fits(coords: impl IntoIterator<Item = f64>, size: Size, upm: u16) -> bool {
-    let reach = coords.into_iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let mut reach = 0.0f64;
+    for v in coords {
+        if v.is_nan() { return false; }
+        reach = reach.max(v.abs());
+    }
     upm != 0 && reach * f64::from(size.0) / f64::from(upm) < SCALE_LIMIT as f64
 }
 
-pub fn scale(value: i32, size: Size, upm: u16) -> i32 {
-    if upm == 0 { return 0; }
-    let num = value as i64 * size.0 as i64;
-    let den = upm as i64;
-    let half = den / 2;
-    let adjusted = if num >= 0 { num + half } else { num - half };
-    (adjusted / den).clamp(-SCALE_LIMIT, SCALE_LIMIT) as i32
+// The same for font-unit coordinates at a scale from `Size::scale16`, as the bytecode hinter scales them.
+pub(crate) fn fits_scale(coords: impl Iterator<Item = i32>, scale16: i64) -> bool {
+    let reach = coords.map(|v| i64::from(v).abs()).max().unwrap_or(0);
+    (i128::from(reach) * i128::from(scale16)) >> 16 < i128::from(SCALE_LIMIT)
 }
+
 
 // A font-unit value with a fraction, as a CFF2 instance writes it, scaled and rounded once.
 pub fn scale_f32(value: f32, size: Size, upm: u16) -> i32 {
     if upm == 0 { return 0; }
     let v = (f64::from(value) * f64::from(size.0) / f64::from(upm)).round();
     v.clamp(-(SCALE_LIMIT as f64), SCALE_LIMIT as f64) as i32
+}
+
+// Each of `values` as `scale_f32` scales it, onto `out`: the em checked once, so the loop vectorizes.
+pub(crate) fn scale_f32_into(values: &[f32], size: Size, upm: u16, out: &mut alloc::vec::Vec<i32>) {
+    if upm == 0 {
+        return out.extend(values.iter().map(|_| 0));
+    }
+    let (s, u, limit) = (f64::from(size.0), f64::from(upm), SCALE_LIMIT as f64);
+    out.extend(values.iter().map(|&v| (f64::from(v) * s / u).round().clamp(-limit, limit) as i32));
 }
 
 // Clamped rather than cast: `as i32` truncates the high bits, so a coordinate past the format
@@ -97,112 +119,82 @@ pub(crate) fn floor_pixel(v: i32) -> i32 {
     v & !(ONE - 1)
 }
 
+// To the nearest and the next whole pixel; past the last whole pixel i32 holds, to that pixel.
+pub(crate) fn round_pixel(v: i32) -> i32 {
+    floor_pixel(v.saturating_add(HALF))
+}
+
 pub(crate) fn ceil_pixel(v: i32) -> i32 {
-    v.saturating_add(ONE - 1) & !(ONE - 1)
+    floor_pixel(v.saturating_add(ONE - 1))
 }
 
-// The bytecode interpreter matches FreeType to the 64th, so each helper below rounds as its FreeType
-// namesake does: worked in 64 bits, ties away from zero, pinned back to i32.
+// Hinted points depend on every product and quotient rounding alike: each below rounds once, halves away from 0, so
+// a distance and its negation land alike, and saturates to i32.
 
-// FT_MulFix: a * b / 2^16.
-pub(crate) fn mul_fix(a: i32, b: i32) -> i32 {
-    let ab = i64::from(a) * i64::from(b);
-    clamp_i32((ab + 0x8000 + (ab >> 63)) >> 16)
+// What `shift_round` takes: a saturated product pinned here rounds to past any limit all the same.
+const WIDE: i64 = 1 << 62;
+
+// v / 2^bits to the nearest: half a step added on v's own side, then divided toward 0.
+fn shift_round(v: i64, bits: u32) -> i64 {
+    let half = 1 << (bits - 1);
+    (if v < 0 { v - half } else { v + half }) / (1 << bits)
 }
 
-// TT_MulFix14: a * b / 2^14, b a 2.14 vector component.
-pub(crate) fn mul_fix14(a: i32, b: i32) -> i32 {
-    let ab = i64::from(a) * i64::from(b);
-    clamp_i32((ab + 0x2000 + (ab >> 63)) >> 14)
+// v times a 16.16 factor.
+pub(crate) fn times_16_16(v: i32, factor: i32) -> i32 {
+    clamp_i32(shift_round(i64::from(v) * i64::from(factor), 16))
 }
 
-// TT_DotFix14: (ax, ay) . (bx, by) / 2^14, the difference already taken in 64 bits.
-pub(crate) fn dot_fix14(ax: i64, ay: i64, bx: i32, by: i32) -> i32 {
-    let c = ax.saturating_mul(i64::from(bx)).saturating_add(ay.saturating_mul(i64::from(by)));
-    clamp_i32((c.saturating_add(0x2000) + (c >> 63)) >> 14)
+// v times a 2.14 factor, a unit vector's component.
+pub(crate) fn times_2_14(v: i32, factor: i32) -> i32 {
+    clamp_i32(shift_round(i64::from(v) * i64::from(factor), 14))
 }
 
-// FT_MulDiv and FT_MulDiv_No_Round: on magnitudes with the sign put back; a zero divisor gives
-// 0x7FFFFFFF, as FreeType's does.
-pub(crate) fn mul_div(a: i32, b: i32, c: i32) -> i32 {
-    mul_div_by(a, b, c, true)
+// (dx, dy) projected onto the 2.14 unit vector (x, y).
+pub(crate) fn dot_2_14(dx: i64, dy: i64, x: i32, y: i32) -> i32 {
+    let sum = dx.saturating_mul(x.into()).saturating_add(dy.saturating_mul(y.into()));
+    clamp_i32(shift_round(sum.clamp(-WIDE, WIDE), 14))
 }
 
-pub(crate) fn mul_div_no_round(a: i32, b: i32, c: i32) -> i32 {
-    mul_div_by(a, b, c, false)
+// a * b / c to the nearest.
+pub(crate) fn ratio(a: i32, b: i32, c: i32) -> i32 {
+    quotient(i64::from(a) * i64::from(b), c, true)
 }
 
-fn mul_div_by(a: i32, b: i32, c: i32, round: bool) -> i32 {
-    let negative = (a < 0) ^ (b < 0) ^ (c < 0);
-    let (a, b, c) = (u128::from(a.unsigned_abs()), u128::from(b.unsigned_abs()), u128::from(c.unsigned_abs()));
-    let d = (a * b + if round { c / 2 } else { 0 }).checked_div(c).unwrap_or(0x7FFF_FFFF);
-    let d = d.min(i64::MAX as u128) as i64;
-    clamp_i32(if negative { -d } else { d })
+// a * b / c, cut toward 0.
+pub(crate) fn ratio_truncated(a: i32, b: i32, c: i32) -> i32 {
+    quotient(i64::from(a) * i64::from(b), c, false)
 }
 
-// FT_DivFix: a / b in 16.16.
-pub(crate) fn div_fix(a: i32, b: i32) -> i32 {
-    mul_div_by(a, 0x10000, b, true)
+// n / d, exact in 64 bits as n, two i32 multiplied, stays within 2^62. Over 0, n saturates with its sign; 0 stays 0.
+fn quotient(n: i64, d: i32, nearest: bool) -> i32 {
+    let negative = (n < 0) != (d < 0);
+    let (n, d) = (n.unsigned_abs(), u64::from(d.unsigned_abs()));
+    let q = match d {
+        0 if n == 0 => 0,
+        0 => u64::MAX,
+        _ if nearest => (2 * n + d) / (2 * d),
+        _ => n / d,
+    };
+    let q = i64::try_from(q).unwrap_or(i64::MAX);
+    clamp_i32(if negative { -q } else { q })
 }
 
-// FT_Vector_NormLen's unit vector, then cut to 2.14 as SPVTL and its kin cut it. None for (0, 0),
-// which FreeType leaves unnormalized.
-pub(crate) fn normalize(x: i32, y: i32) -> Option<(i32, i32)> {
-    if x == 0 && y == 0 {
+// The unit vector along (dx, dy) in 2.14, each component exactly rounded (halves away from 0); None for (0, 0). For
+// a component v of a length L that's (1 + isqrt(⌊2^30 v² / L²⌋)) / 2 floored, in 128 bits for i32 differences.
+pub(crate) fn unit_vector(dx: i64, dy: i64) -> Option<(i32, i32)> {
+    let (x, y) = (u128::from(dx.unsigned_abs()), u128::from(dy.unsigned_abs()));
+    let length2 = x * x + y * y;
+    if length2 == 0 {
         return None;
     }
-    let (mut ux, mut uy) = (x.unsigned_abs(), y.unsigned_abs());
-    let sign = |v: i32, negative: bool| if negative { -v } else { v };
-    if ux == 0 {
-        return Some((0, sign(0x4000, y < 0)));
-    }
-    if uy == 0 {
-        return Some((sign(0x4000, x < 0), 0));
-    }
-    // Prenormalized by a shift so the estimated length lies between 2/3 and 4/3, then refined by
-    // Newton's iterations on the reciprocal length.
-    let estimate = |ux: u32, uy: u32| if ux > uy { ux + (uy >> 1) } else { uy + (ux >> 1) };
-    let mut l = estimate(ux, uy);
-    let mut shift = l.leading_zeros() as i32;
-    shift -= 15 + i32::from(l >= (0xAAAA_AAAAu32 >> shift));
-    if shift > 0 {
-        ux <<= shift;
-        uy <<= shift;
-        l = estimate(ux, uy);
-    } else {
-        ux >>= -shift;
-        uy >>= -shift;
-        l >>= -shift;
-    }
-    let mut b = 0x10000 - l as i32;
-    let (x0, y0) = (ux as i32, uy as i32);
-    let (mut u, mut v);
-    loop {
-        u = (x0 + ((i64::from(x0) * i64::from(b)) >> 16) as i32) as u32;
-        v = (y0 + ((i64::from(y0) * i64::from(b)) >> 16) as i32) as u32;
-        let z = i64::from((u.wrapping_mul(u).wrapping_add(v.wrapping_mul(v)) as i32).wrapping_neg()) / 0x200;
-        let z = (z * i64::from((0x10000 + b) >> 8) / 0x10000) as i32;
-        b += z;
-        if z <= 0 {
-            break;
-        }
-    }
-    Some((sign(u as i32, x < 0) / 4, sign(v as i32, y < 0) / 4))
+    let component = |v: u128, negative: bool| {
+        let c = ((((v * v) << 30) / length2).isqrt() as i32 + 1) >> 1;
+        if negative { -c } else { c }
+    };
+    Some((component(x, dx < 0), component(y, dy < 0)))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // MPPEM has to hold the whole-pixel size, so the limits are 1 and 65,535 after rounding.
-    #[test]
-    fn a_size_is_refused_where_its_whole_pixels_leave_mppem_range() {
-        for px in [0.49, 65_535.5, -1.0, f32::NAN, f32::INFINITY] {
-            assert_eq!(Size::from_px(px), None, "{px} px was accepted");
-        }
-        for (px, ppem) in [(0.5, 1), (16.4, 16), (16.5, 17), (29.7, 30), (65_535.49, 65_535)] {
-            assert_eq!(Size::from_px(px).map(Size::ppem), Some(ppem), "{px} px");
-        }
-        assert_eq!(Size::from_px(16.4).map(Size::px), Some(1050.0 / 64.0), "16.4 px is not 1050 in 26.6");
-    }
-}
+#[path = "../../../tests/unit/daetype/hinting/f26dot6.rs"]
+mod tests;

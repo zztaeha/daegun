@@ -1,32 +1,60 @@
+
 use alloc::vec::Vec;
 use core::ops::Deref;
 
-use crate::daecore::sync::Shared;
+use crate::daecore::daekit::base::sync::Shared;
+
+// The bytes a font's tables are windows onto: its own, or the program's. Two kinds only, as a third (an `Arc` of a
+// caller's bytes) slowed every font's table reads, and a call through `dyn AsRef` far more (logbook, A3).
+pub(crate) enum Source {
+    Owned(Vec<u8>),
+    Static(&'static [u8]),
+}
+
+impl Deref for Source {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        match self {
+            Source::Owned(bytes) => bytes,
+            Source::Static(bytes) => bytes,
+        }
+    }
+}
 
 // A window onto the font's one shared buffer, so a table is never copied; cloning is a refcount.
 #[derive(Clone)]
-pub struct TableBytes {
-    buf: Shared<Vec<u8>>,
+pub(crate) struct TableBytes {
+    buf: Shared<Source>,
     start: usize,
-    len: usize,
+    // 32 bits, as sfnt states a table's length, so a table takes no more than a pointer and two words.
+    len: u32,
 }
 
 impl TableBytes {
+    // A font can't hold a table past 4 GiB, so the window ends there.
     pub fn from_vec(bytes: Vec<u8>) -> TableBytes {
-        let len = bytes.len();
-        TableBytes { buf: Shared::new(bytes), start: 0, len }
+        let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        TableBytes { buf: Shared::new(Source::Owned(bytes)), start: 0, len }
     }
 
-    pub fn slice(buf: &Shared<Vec<u8>>, start: usize, len: usize) -> Option<TableBytes> {
+    pub(crate) fn slice(buf: &Shared<Source>, start: usize, len: usize) -> Option<TableBytes> {
         let end = start.checked_add(len)?;
         if end > buf.len() {
             return None;
         }
+        let len = u32::try_from(len).ok()?;
         Some(TableBytes { buf: Shared::clone(buf), start, len })
     }
 
+    // The length of the buffer this is a window onto: a font file's, or a collection face's copy.
+    pub(crate) fn source_len(&self) -> usize {
+        self.buf.len()
+    }
+
     pub fn as_slice(&self) -> &[u8] {
-        &self.buf[self.start..self.start + self.len]
+        &self.buf[self.start..self.start + self.len as usize]
     }
 
     pub fn to_owned_vec(&self) -> Vec<u8> {

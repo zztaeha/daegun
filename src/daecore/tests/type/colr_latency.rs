@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
-use daegun::daecore::daetype::TableBytes;
+use crate::daecore::daetype::Tables;
+use crate::daecore::Tag;
+use alloc::vec::Vec;
 
-fn table_map_of(rel: &str) -> BTreeMap<String, TableBytes> {
-    let path = format!("{}/{}", crate::FONTS, rel);
+fn table_map_of(rel: &str) -> Tables {
+    let path = format!("{}/{}", super::FONTS, rel);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing: {path} ({e})"));
-    daegun::daecore::daetype::decoder::extract_ttf_tables(&bytes)
+    crate::daecore::daetype::decoder::extract_ttf_tables(&bytes)
         .unwrap_or_else(|e| panic!("{path} did not parse: {e}"))
 }
 
@@ -21,28 +22,24 @@ fn report(name: &str, detail: &str, samples: &mut [Duration]) {
     );
 }
 
-fn base_glyphs(colr: &[u8]) -> Vec<u16> {
-    let off = daegun::daecore::daetype::decoder::read_u32_be(colr, 14).unwrap_or(0) as usize;
+fn base_glyphs(colr: &[u8]) -> Vec<u32> {
+    let off = crate::daecore::daetype::decoder::read_u32_be(colr, 14).unwrap_or(0) as usize;
     if off == 0 { return Vec::new(); }
-    let n = daegun::daecore::daetype::decoder::read_u32_be(colr, off).unwrap_or(0) as usize;
+    let n = crate::daecore::daetype::decoder::read_u32_be(colr, off).unwrap_or(0) as usize;
     (0..n)
-        .filter_map(|i| daegun::daecore::daetype::decoder::read_u16_be(colr, off + 4 + i * 6))
+        .filter_map(|i| crate::daecore::daetype::decoder::read_u16_be(colr, off + 4 + i * 6).map(u32::from))
         .collect()
 }
 
-fn bench(name: &str, rel: &str, location: &[f64]) {
+// Every base glyph's paint graph as `Font::paint_graph` walks it, at `coords`, timed over the whole sweep.
+fn bench(name: &str, rel: &str, coords: &[(Tag, f64)]) {
     let map = table_map_of(rel);
-    let colr = map.get("COLR").expect("COLR present").clone();
-    let gids = base_glyphs(&colr);
+    let gids = base_glyphs(map.get("COLR").expect("COLR present"));
     assert!(!gids.is_empty(), "{name}: font declares no v1 base glyphs");
-    let var_data = daegun::daecore::daetype::colr_v1::parse_colr_v1_var_data(&colr);
+    let cache = crate::daecore::daekit::cache::FontCache::new(map).expect("the fixture loads");
+    let location = cache.axis_key(coords);
 
-    let mut expect = 0usize;
-    for &g in &gids {
-        if daegun::daecore::daetype::colr_v1::colr_v1_paint_graph_cached(&map, g, location, 0, &var_data).is_some() {
-            expect += 1;
-        }
-    }
+    let expect = gids.iter().filter(|&&g| cache.colr_v1_paint(g, &location, 0).is_some()).count();
     assert!(expect > 0, "{name}: no glyph resolved to a paint graph");
 
     let iters = (400_000 / gids.len().max(1)).max(20);
@@ -52,7 +49,7 @@ fn bench(name: &str, rel: &str, location: &[f64]) {
         let t = Instant::now();
         let mut hit = 0usize;
         for &g in &gids {
-            let p = daegun::daecore::daetype::colr_v1::colr_v1_paint_graph_cached(&map, g, location, 0, &var_data);
+            let p = cache.colr_v1_paint(g, &location, 0);
             if p.is_some() { hit += 1; }
             core::hint::black_box(&p);
         }
@@ -69,45 +66,19 @@ fn colr_v1_paint_graph_static() {
     bench("colr_v1_paint_graph_static", "colr-v1-test-glyphs/test_glyphs.ttf", &[]);
 }
 
+// Halfway from each axis's default to its maximum: normalized 0.5 on each.
 #[test]
 #[ignore]
 fn colr_v1_paint_graph_variable() {
-    bench(
-        "colr_v1_paint_graph_variable",
-        "colr-v1-test-glyphs/test_glyphs_variable.ttf",
-        &[0.5, 0.5, 0.5],
-    );
+    let rel = "colr-v1-test-glyphs/test_glyphs_variable.ttf";
+    let axes = crate::daecore::daetype::decoder::parse_fvar_axes(&table_map_of(rel)).expect("fvar");
+    let half: Vec<(Tag, f64)> = axes.iter().take(3).map(|a| (a.tag, a.default + (a.max - a.default) / 2.0)).collect();
+    bench("colr_v1_paint_graph_variable", rel, &half);
 }
 
 #[test]
 #[ignore]
 fn cache_colr_variable() {
-    let map = table_map_of("colr-v1-test-glyphs/test_glyphs_variable.ttf");
-    let colr = map.get("COLR").expect("COLR present").clone();
-    let gids = base_glyphs(&colr);
-    let cache = daegun::daecore::cache::FontCache::new(map);
-    let location = [0.5, 0.5, 0.5];
-
-    let mut expect = 0usize;
-    for &g in &gids {
-        if cache.colr_v1_paint(g, &location, 0).is_some() { expect += 1; }
-    }
-    assert!(expect > 0, "no glyph resolved to a paint graph");
-
-    let iters = (400_000 / gids.len().max(1)).max(20);
-    let mut samples = Vec::with_capacity(iters);
-    let mut proof = 0usize;
-    for _ in 0..iters {
-        let t = Instant::now();
-        let mut hit = 0usize;
-        for &g in &gids {
-            let p = cache.colr_v1_paint(g, &location, 0);
-            if p.is_some() { hit += 1; }
-            core::hint::black_box(&p);
-        }
-        samples.push(t.elapsed());
-        proof += hit;
-    }
-    assert_eq!(proof, iters * expect, "a run resolved a different number of graphs");
-    report("cache_colr_variable", &format!("{} base glyphs through FontCache", gids.len()), &mut samples);
+    let at = [(Tag::new(b"SWPS"), 45.0), (Tag::new(b"SWPE"), 45.0), (Tag::new(b"SWC1"), 1.0)];
+    bench("cache_colr_variable", "colr-v1-test-glyphs/test_glyphs_variable.ttf", &at);
 }

@@ -1,562 +1,813 @@
-use alloc::string::String;
-use alloc::string::ToString;
+#[cfg(all(not(feature = "std"), not(test)))]
+use crate::daecore::daekit::float::FloatExt;
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
-use super::super::decoder::{pad4, read_u16_be, read_u32_be, read_i16_be};
-use super::super::format::ivs::axis_factor;
-use super::super::format::round::ot_round;
-use super::coords::{GlyphCoords, extract_coords_into, iup, apply_simple_glyph_deltas, count_composite_components, apply_composite_glyph_deltas};
-use crate::daecore::daetype::TableBytes;
+use super::super::decoder::{
+    clamp_i16, glyf_tags, pad4, read_i16_be, read_u16_be, read_u32_be, write_i16_be,
+};
+use super::super::format::ivs::{fixed_coords, round_fixed};
+use super::super::format::round::ot_round_f32;
+use super::drawn::{fixed_to_int, DeltaRoom, DeltaSource, Gvar};
+use super::super::outline::{
+    glyf_glyph_box_varied, points_box, Decoded, Deltas, Moves, PointBounds, Shape as Drawn, Vary,
+};
+use super::super::format::metrics::{shaped_tags, MetricsTable};
+use super::coords::{GlyphCoords, extract_coords_into, write_composite_glyph, write_simple_glyph};
+use super::super::format::glyf::{
+    glyph_record, simple_point_count, Component, ComponentPath, Components, LocaRef, Stack, GLYPH_WORK,
+    MAX_VISITS, MAX_POINTS, USE_MY_METRICS,
+};
+use super::super::subsetter::subset_budget;
+use crate::daecore::daetype::{TableBytes, Tables};
+use crate::daecore::daekit::base::sync::Shared;
+use crate::daecore::Error;
 
-const MAX_INSTANCED_GLYF_SIZE: usize = 1024 * 1024 * 1024;
+type Point = (f32, f32);
 
+// The instance's glyf and loca, and each glyph's advances across and down and its side bearings as its phantom
+// points give them, a bearing None where glyf's doesn't change.
 pub struct GvarResult {
     pub glyf_data: Vec<u8>,
     pub new_loca:  Vec<usize>,
-    pub advance_deltas: Vec<f64>,
-    pub lsb_new: Vec<Option<i32>>,
-    pub vadvance_deltas: Vec<f64>,
-    pub tsb_new: Vec<Option<i32>>,
+    pub advances:  Vec<i32>,
+    pub lsb_new:   Vec<Option<i32>>,
+    pub vadvances: Vec<i32>,
+    pub tsb_new:   Vec<Option<i32>>,
 }
 
-fn read_side_bearing(mtx: &[u8], long_metrics: usize, gid: usize) -> i32 {
-    super::super::subsetter::metric_pair(mtx, long_metrics, 0, gid).1 as i32
+// gvar's header as a subset checks it: where glyphs' data starts and how its offsets are written. A font without gvar
+// has an empty one.
+#[derive(Default)]
+pub(crate) struct GvarHeader {
+    use_words: bool,
+    wide: bool,
+}
+
+impl GvarHeader {
+    // maxp counts the glyphs whatever gvar's header says, so the offsets must span them, and the shared tuples must lie
+    // in the table. `wide` for GVAR, whose glyph count and each glyph's data offset take 3 bytes.
+    pub(crate) fn read(gvar: &[u8], num_glyphs: usize, wide: bool) -> Result<GvarHeader, Error> {
+        let u16_at = |at: usize| if gvar.is_empty() { Some(0) } else { read_u16_be(gvar, at) };
+        let u32_at = |at: usize| if gvar.is_empty() { Some(0) } else { read_u32_be(gvar, at) };
+        let shift = usize::from(wide);
+        let axes               = u16_at(4).ok_or(Error::malformed("gvar: header truncated"))? as usize;
+        let shared_tuple_count = u16_at(6).ok_or(Error::malformed("gvar: header truncated"))? as usize;
+        let shared_tuples_off  = u32_at(8).ok_or(Error::malformed("gvar: header truncated"))? as usize;
+        let flags              = u16_at(14 + shift).ok_or(Error::malformed("gvar: header truncated"))?;
+        u32_at(16 + shift).ok_or(Error::malformed("gvar: header truncated"))?;
+        if !gvar.is_empty() && read_u16_be(gvar, 0) != Some(1) {
+            return Err(Error::unsupported("gvar: unknown major version"));
+        }
+        let shared_bytes = shared_tuple_count.checked_mul(axes).and_then(|n| n.checked_mul(2));
+        let shared_end = shared_bytes.and_then(|n| shared_tuples_off.checked_add(n));
+        if shared_tuple_count > 0 && shared_end.is_none_or(|end| end > gvar.len()) {
+            return Err(Error::malformed("gvar: shared tuple array does not fit the table"));
+        }
+        let header = GvarHeader { use_words: flags & 1 != 0, wide };
+        header.offset(gvar, num_glyphs).ok_or(Error::malformed("gvar: glyph variation offsets truncated"))?;
+        Ok(header)
+    }
+
+    fn offset(&self, gvar: &[u8], gid: usize) -> Option<usize> {
+        let at = 20 + usize::from(self.wide);
+        match (gvar.is_empty(), self.use_words) {
+            (true, _) => Some(0),
+            (false, true) => read_u32_be(gvar, at + gid * 4).map(|v| v as usize),
+            (false, false) => read_u16_be(gvar, at + gid * 2).map(|v| usize::from(v) * 2),
+        }
+    }
+}
+
+// gvar's deltas at a normalized `location` as drawing reads them, phantom points moved by gvar alone; None at the
+// default and without gvar, Err where its header refuses every location. `coords` and `scalars` hold what it reads.
+pub(crate) fn gvar_source<'a>(
+    gvar: Option<&'a Gvar>, location: &[f64], coords: &'a mut Vec<i64>, scalars: &'a mut Vec<i64>,
+) -> Option<DeltaSource<'a>> {
+    let gvar = gvar?;
+    *coords = fixed_coords(location);
+    coords.resize(gvar.axes(), 0);
+    if coords.iter().all(|&c| c == 0) {
+        return None;
+    }
+    *scalars = gvar.tuple_scalars(coords);
+    Some(DeltaSource { coords, gvar: Some(gvar), scalars: Some(scalars), hvar: false, vvar: false })
+}
+
+// A glyf font's glyphs varied at a location: gvar's deltas there as drawing reads them, none at the default, glyf
+// and loca, and the metrics their phantom points start from.
+pub(crate) struct GlyfAt<'a> {
+    pub(crate) source: Option<DeltaSource<'a>>,
+    pub(crate) glyf: &'a [u8],
+    pub(crate) extended: bool,
+    pub(crate) loca: LocaRef<'a>,
+    pub(crate) horizontal: Option<(&'a [u8], usize)>,
+    pub(crate) vertical: Option<(&'a [u8], usize)>,
+    pub(crate) upem: i32,
+}
+
+impl<'a> GlyfAt<'a> {
+    fn glyphs(&self) -> usize {
+        self.loca.len().saturating_sub(1)
+    }
+
+    fn record(&self, gid: usize) -> Option<&'a [u8]> {
+        u32::try_from(gid).ok().and_then(|g| glyph_record(self.glyf, self.loca, g))
+    }
+
+    fn glyph(&self, gid: usize) -> &'a [u8] {
+        self.record(gid).unwrap_or_default()
+    }
+
+    // Each glyph's phantom points as stored: its origin and advance across, and its top and advance down. A glyph glyf
+    // doesn't hold, or whose bytes don't read, is no glyph at all, with no metrics of its own.
+    fn phantoms(&self, gid: usize, glyph: &[u8]) -> [Point; 4] {
+        if self.record(gid).is_none() {
+            return [(0.0, 0.0); 4];
+        }
+        let header = |at: usize| if glyph.len() >= 10 { read_i16_be(glyph, at).map_or(0, i32::from) } else { 0 };
+        let pair = |m: Option<(&[u8], usize)>| m.map_or((0, 0), |(mtx, long)| MetricsTable::new(mtx, long).pair(gid));
+        let ((advance, lsb), (vadvance, tsb)) = (pair(self.horizontal), pair(self.vertical));
+        let (left, top) = (header(2) - i32::from(lsb), header(8) + i32::from(tsb));
+        let right = left + i32::from(advance);
+        [(left as f32, 0.0), (right as f32, 0.0), (0.0, top as f32), (0.0, (top - i32::from(vadvance)) as f32)]
+    }
+
+    // The glyphs varied within `left`, what the call varying them may spend.
+    fn variation(&self, left: usize) -> GlyphVariation<'a> {
+        let (source, extended) = (self.source, self.extended);
+        GlyphVariation { source, extended, buffers: Buffers::default(), room: DeltaRoom::default(), left }
+    }
+
+    // A glyph and its components as walks reach them, which share what one glyph's walks may spend with the tuples
+    // moving the glyphs.
+    fn reached(&self) -> Reached<'_, 'a> {
+        Reached { at: self, variation: self.variation(GLYPH_SPEND), own: BTreeMap::new(), points: Vec::new() }
+    }
+
+    // The glyph's box before rounding and its phantom points, its components varied as the walk reaches each, and
+    // what its walks and tuples spent; past their budget it measures as failing, None past glyf's glyphs.
+    fn reach(&self, gid: usize) -> Option<(Placed, usize)> {
+        if gid >= self.glyphs() {
+            return None;
+        }
+        let mut reached = self.reached();
+        let (placed, spent) = walk_glyph(self, &mut reached, gid, &mut GlyphCoords::default());
+        let failed = Placed { bounds: None, phantoms: None, drawn: false };
+        Some(match reached.variation.spend(spent) {
+            Some(()) => (placed, GLYPH_SPEND - reached.variation.left),
+            None => (failed, GLYPH_SPEND),
+        })
+    }
+
+    // The box of glyph `gid` drawn as drawing draws it, each glyph moved by the whole-unit deltas `kept` gives it;
+    // whether it draws, and its spend, a glyph visited costing 16 as a phantom walk's visit does.
+    fn draw<K: Points>(
+        &self, gid: usize, kept: &mut K, scratch: &mut GlyphCoords, pen: &mut PointBounds,
+    ) -> (bool, usize) {
+        let Ok(gid) = u32::try_from(gid) else { return (false, 0) };
+        let moved = Moved(core::cell::RefCell::new(kept));
+        let (drawn, [visits, points]) =
+            glyf_glyph_box_varied(self.glyf, self.extended, self.loca, gid, scratch, &moved, pen);
+        (drawn.is_ok(), 16 * visits + points)
+    }
+
+    // One glyph measured at the location, None past glyf's glyphs.
+    pub(crate) fn measure(&self, gid: usize) -> Option<Measured> {
+        let (placed, _) = self.reach(gid)?;
+        let s = placed.phantoms.map_or(0.0, |phantoms| phantoms[0].0);
+        let edge = |v: f32| f64::from(v.round());
+        let extents = placed.drawn.then(|| match placed.bounds {
+            Some((x0, y0, x1, y1)) => {
+                let (x, y) = (edge(x0 - s), edge(y1));
+                [x as i32, y as i32, (edge(x1 - s) - x) as i32, (edge(y0) - y) as i32]
+            }
+            None => [0; 4],
+        });
+        let upem = self.upem as f32;
+        let (advances, top) = match placed.phantoms {
+            Some([left, right, top, bottom]) => {
+                let advance = |v: f32| ot_round_f32(v).max(0) as u32;
+                ([advance(right.0 - left.0), advance(top.1 - bottom.1)], ot_round_f32(top.1 * upem / upem))
+            }
+            None => ([self.upem as u32 / 2, self.upem as u32], self.upem),
+        };
+        Some(Measured { extents, advances, top })
+    }
+
+    // The glyph and every glyph it's built from, written as an instance holds them in a glyf and loca of their own,
+    // every other glyph empty, for its points to be read as TrueType numbers them. None past glyf's glyphs.
+    pub(crate) fn instanced(&self, gid: usize) -> Option<(Vec<u8>, Vec<usize>)> {
+        if gid >= self.glyphs() {
+            return None;
+        }
+        // Every glyph reached is walked whole, so the walks share what one glyph's may spend.
+        let mut reached = self.reached();
+        let (mut placed, mut next, mut scratch) = (BTreeMap::new(), alloc::vec![gid], GlyphCoords::default());
+        while let Some(g) = next.pop() {
+            let Some(own) = reached.own(g).filter(|_| !placed.contains_key(&g)) else { continue };
+            let (walked, spent) = walk_glyph(self, &mut reached, g, &mut scratch);
+            reached.variation.spend(spent)?;
+            placed.insert(g, walked);
+            if own.shape == Shape::Composite {
+                let components = Components::new(self.glyph(g), self.extended).map_while(Result::ok);
+                next.extend(components.map(|c| c.gid as usize));
+            }
+        }
+        let shift = |g: usize| placed.get(&g).and_then(|p: &Placed| p.phantoms).map_or(0.0, |phantoms| phantoms[0].0);
+        let (mut glyf, mut loca, mut buffers) = (Vec::new(), Vec::new(), Buffers::default());
+        for (&g, &at) in &placed {
+            loca.resize(g + 1, glyf.len());
+            let Some(own) = reached.own(g) else { continue };
+            // A glyph at a time, the flags are read again rather than kept.
+            let glyph = self.glyph(g);
+            let read = match own.shape {
+                Shape::Simple(n) if extract_coords_into(glyph, n, &mut buffers.coords) => buffers.coords.flags.clone(),
+                _ => Vec::new(),
+            };
+            let glyph = (glyph, self.extended);
+            write_glyph(glyph, (&own, reached.points(g), &read), at, &shift, &mut buffers, &mut glyf);
+            glyf.resize(pad4(glyf.len()), 0);
+        }
+        loca.push(glyf.len());
+        Some((glyf, loca))
+    }
+
+    // The box of the glyph's drawn outline at the location, its origin on its left phantom point: None inside for one
+    // with no points; None where it fails or past glyf's glyphs. What its walks spent adds to `work`.
+    pub(crate) fn bounds(&self, gid: usize, work: &mut usize) -> Option<Option<Bounds>> {
+        let (placed, spent) = self.reach(gid)?;
+        *work = work.saturating_add(spent);
+        let s = placed.phantoms.filter(|_| placed.drawn)?[0].0;
+        Some(placed.bounds.map(|(x0, y0, x1, y1)| (x0 - s, y0, x1 - s, y1)))
+    }
+}
+
+// A glyph as measured: extents (bearings, width, height), all 0 for a glyph without points, None where its outline
+// fails; advances both ways; vertical origin, the top phantom point at the em's own scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Measured {
+    pub(crate) extents: Option<[i32; 4]>,
+    pub(crate) advances: [u32; 2],
+    pub(crate) top: i32,
+}
+
+// The most a glyph's two walks spend, drawing's and the phantom points'.
+const GLYPH_SPEND: usize = 16 * MAX_VISITS + 2 * GLYPH_WORK;
+
+// The glyph's box, the box of its outline as drawing draws it, and the phantom points its metrics take; and what the
+// two walks spent.
+fn walk_glyph<K: Points>(at: &GlyfAt, kept: &mut K, gid: usize, scratch: &mut GlyphCoords) -> (Placed, usize) {
+    let mut pen = PointBounds::default();
+    let (drawn, drew) = at.draw(gid, kept, scratch, &mut pen);
+    let mut walk = Walk::new(at, kept);
+    let mut gathered = 0;
+    let phantoms = walk.phantoms(gid, &mut gathered);
+    let phantoms = phantoms.filter(|_| walk.spend(gathered).is_some());
+    (Placed { bounds: pen.finish().filter(|_| drawn), phantoms, drawn }, drew + GLYPH_WORK - walk.work)
 }
 
 pub fn apply_gvar(
-    table_map:     &BTreeMap<String, TableBytes>,
+    table_map:     &Tables,
     glyf_data:     &[u8],
     glyph_offsets: &[usize],
-    num_glyphs:    usize,
     location:      &[f64],
-    axis_count:    usize,
-) -> Result<GvarResult, String> {
-    let gvar = table_map.get("gvar").ok_or("missing gvar")?;
-
-    let gvar_axis_count    = read_u16_be(gvar, 4).ok_or("gvar: header truncated")? as usize;
-    let shared_tuple_count = read_u16_be(gvar, 6).ok_or("gvar: header truncated")? as usize;
-    let shared_tuples_off  = read_u32_be(gvar, 8).ok_or("gvar: header truncated")? as usize;
-    let glyph_count        = read_u16_be(gvar, 12).ok_or("gvar: header truncated")? as usize;
-    let flags              = read_u16_be(gvar, 14).ok_or("gvar: header truncated")?;
-    let var_array_off      = read_u32_be(gvar, 16).ok_or("gvar: header truncated")? as usize;
-    // The spec requires both to match, and FreeType refuses a gvar where they do not.
-    if gvar_axis_count != axis_count || glyph_count != num_glyphs {
-        return Err("gvar: axis or glyph count differs from fvar's and maxp's".into());
-    }
-
-    if shared_tuple_count > 0 {
-        let shared_bytes = shared_tuple_count
-            .checked_mul(gvar_axis_count)
-            .and_then(|n| n.checked_mul(2))
-            .and_then(|n| shared_tuples_off.checked_add(n));
-        if shared_bytes.is_none_or(|end| end > gvar.len()) {
-            return Err("gvar: shared tuple array does not fit the table".into());
-        }
-    }
-
-    let mut shared_tuples: Vec<Vec<f64>> = Vec::with_capacity(shared_tuple_count);
-    for i in 0..shared_tuple_count {
-        let mut coords = Vec::with_capacity(gvar_axis_count);
-        for j in 0..gvar_axis_count {
-            let v = read_i16_be(gvar, shared_tuples_off + (i * gvar_axis_count + j) * 2)
-                .ok_or("gvar: shared tuple truncated")?;
-            coords.push(v as f64 / 16384.0);
-        }
-        shared_tuples.push(coords);
-    }
-
-    let use_words = (flags & 1) != 0;
-    let glyph_var_offset = |gid: usize| -> Option<usize> {
-        if use_words {
-            read_u32_be(gvar, 20 + gid * 4).map(|v| v as usize)
-        } else {
-            read_u16_be(gvar, 20 + gid * 2).map(|v| v as usize * 2)
-        }
+) -> Result<GvarResult, Error> {
+    // A font without gvar varies no glyph, though each is measured by its points at the location like any other.
+    let gvar = Gvar::load(table_map).map_err(|()| Error::malformed("gvar: header malformed"))?;
+    let (mut coords, mut scalars) = (Vec::new(), Vec::new());
+    let metrics = |vertical: bool| {
+        let tags = shaped_tags(table_map, vertical);
+        table_map.get(tags.mtx).map(TableBytes::as_slice).zip(tags.header(table_map).map(|_| tags.long(table_map)))
     };
-
-    let metrics = |mtx: &str, header: &str| {
-        table_map.get(mtx).zip(table_map.get(header).and_then(|h| read_u16_be(h, 34)).map(usize::from))
-    };
-    let horizontal = metrics("hmtx", "hhea");
-    let vertical = metrics("vmtx", "vhea");
-
-    let mut state = GlyphVariation {
-        gvar,
+    let at = GlyfAt {
+        source: gvar_source(gvar.as_ref(), location, &mut coords, &mut scalars),
         glyf: glyf_data,
-        location,
-        axis_count,
-        gvar_axis_count,
-        var_array_off,
-        shared_tuple_scalars: vec![None; shared_tuple_count],
-        shared_tuples,
-        font_work_left: gvar.len().saturating_mul(64),
-        buffers: Buffers::default(),
+        extended: glyf_tags(table_map).extended,
+        loca: glyph_offsets.into(),
+        horizontal: metrics(false),
+        vertical: metrics(true),
+        upem: table_map.get("head").and_then(|h| read_u16_be(h, 18)).map_or(1000, i32::from),
     };
+    let glyphs = at.glyphs();
+    // Glyphs sharing a deep composite or gvar data each walk it or work out its tuples again, so walks and tuples
+    // share 256 a byte of glyf and a glyph, under 5% of it spent by real fonts, and one glyph draw's work, which a
+    // glyph that draws may take whole; past it the outlines stay as stored.
+    let over = || Error::limit("gvar: the glyphs' walks and tuples run past the instance's budget");
+    let mut state = at.variation(glyf_data.len().saturating_add(glyphs).saturating_mul(256).saturating_add(GLYPH_WORK));
 
+    // Every glyph's own points at the location before any is put together, since a composite takes its components',
+    // and a simple glyph's flags as read, which its instance keeps. Glyphs can share their bytes, so the points kept
+    // and the records copied are held to glyf's subset budget, a point to a byte, beside four phantom points a glyph.
+    let mut kept = Kept { own: Vec::with_capacity(glyphs), points: Vec::new(), flags: Vec::new(), moves: [].into() };
+    let (mut points, mut moves): (Vec<Point>, Vec<_>) = (Vec::new(), Vec::new());
+    let (budget, mut copied) = (subset_budget(glyf_data.len()), 0usize);
+    let room = budget.saturating_add(4 * glyphs);
+    for gid in 0..glyphs {
+        let glyph = at.glyph(gid);
+        copied += glyph.len();
+        if copied > budget {
+            return Err(Error::limit("gvar: glyf ranges past the subset budget"));
+        }
+        let mut own = state.own(gid, at.record(gid).is_some(), glyph, at.phantoms(gid, glyph), &mut points, &mut moves);
+        if state.left == 0 {
+            return Err(over());
+        }
+        if kept.points.len() + points.len() > room {
+            return Err(Error::limit("gvar: the glyphs' points run past the instance's budget"));
+        }
+        own.at = (kept.points.len(), points.len());
+        kept.points.extend_from_slice(&points);
+        moves.resize(kept.points.len(), (0, 0));
+        let read = if matches!(own.shape, Shape::Simple(_)) && own.drawn { own.count } else { 0 };
+        kept.flags.extend_from_slice(&state.buffers.coords.flags[..read]);
+        kept.flags.resize(kept.points.len(), 0);
+        kept.own.push(own);
+    }
+    kept.moves = moves.into();
+
+    // Each glyph's box before rounding, as drawn, and the phantom points its metrics take, a USE_MY_METRICS
+    // component's for a composite.
+    let mut scratch = GlyphCoords::default();
+    let mut placed = Vec::with_capacity(glyphs);
+    for gid in 0..glyphs {
+        let (walked, spent) = walk_glyph(&at, &mut kept, gid, &mut scratch);
+        state.spend(spent).ok_or_else(over)?;
+        placed.push(walked);
+    }
+
+    // Each glyph is written with its origin on its left phantom point, where it's drawn from at the location, so its
+    // box and bearing are as drawn; a component's offset makes up for its own glyph's shift and the composite's.
+    let shift = |gid: usize| placed.get(gid).and_then(|p| p.phantoms).map_or(0.0, |phantoms| phantoms[0].0);
     let mut new_glyf: Vec<u8> = Vec::with_capacity(glyf_data.len() + glyf_data.len() / 8);
-    let mut new_loca: Vec<usize>          = vec![0; num_glyphs + 1];
-    let mut advance_deltas: Vec<f64>      = vec![0.0; num_glyphs];
-    let mut lsb_new: Vec<Option<i32>>     = vec![None; num_glyphs];
-    let mut vadvance_deltas: Vec<f64>     = vec![0.0; num_glyphs];
-    let mut tsb_new: Vec<Option<i32>>     = vec![None; num_glyphs];
-    let mut composites: Vec<(usize, f64, f64)> = Vec::new();
+    let mut new_loca: Vec<usize> = vec![0; glyphs + 1];
+    let mut metrics = GlyphMetrics::new(glyphs, at.vertical.is_some(), at.upem);
+    for gid in 0..glyphs {
+        let s = shift(gid);
+        let (own, points) = kept.get(gid).ok_or(Error::missing("gvar: a glyph's points are missing"))?;
+        let read = &kept.flags[own.at.0..own.at.0 + own.count.min(own.at.1)];
+        let glyph = (own, points, read);
+        let source = (at.glyph(gid), at.extended);
+        let bounds = write_glyph(source, glyph, placed[gid], &shift, &mut state.buffers, &mut new_glyf);
+        metrics.set(gid, bounds, placed[gid].phantoms.map(|phantoms| phantoms.map(|(x, y)| (x - s, y))));
+        new_loca[gid + 1] = new_glyf.len();
+    }
+    // Short offsets count 2-byte words, so where they reach the end each glyph is padded to 2 bytes; else unpadded.
+    let odd = new_loca.windows(2).filter(|w| (w[1] - w[0]) % 2 == 1).count();
+    if new_glyf.len() + odd < 0x1_FFFF {
+        let (mut padded, mut start) = (Vec::with_capacity(new_glyf.len() + odd), 0);
+        for end in &mut new_loca[1..] {
+            padded.extend_from_slice(&new_glyf[start..*end]);
+            padded.resize(padded.len() + padded.len() % 2, 0);
+            (start, *end) = (*end, padded.len());
+        }
+        new_glyf = padded;
+    }
 
-    for gid in 0..num_glyphs {
-        let glyph_start  = glyph_offsets[gid];
-        let glyph_end    = glyph_offsets[gid + 1];
-        let var_off      = glyph_var_offset(gid).ok_or("gvar: glyph variation offset truncated")?;
-        let var_off_next = glyph_var_offset(gid + 1).ok_or("gvar: glyph variation offset truncated")?;
+    let GlyphMetrics { advances, lsb_new, vadvances, tsb_new, .. } = metrics;
+    Ok(GvarResult { glyf_data: new_glyf, new_loca, advances, lsb_new, vadvances, tsb_new })
+}
 
-        let at = new_glyf.len();
-        let varied = if var_off == var_off_next {
-            None
-        } else {
-            match state.vary(glyph_start, glyph_end, var_off, &mut new_glyf) {
-                Ok(varied) => varied,
-                Err(GlyphError::Budget(e)) => return Err(e),
-                // One glyph's bad variation data leaves that glyph at its default, as FreeType does.
-                Err(GlyphError::Malformed) => None,
+type Bounds = (f32, f32, f32, f32);
+
+// Glyph `glyph` (GLYF's where `extended`) written onto `out` from its left phantom point, its box and bearing as drawn
+// and a component's offset making up for both; returns the shifted box, None for a failing outline, written empty.
+fn write_glyph(
+    (glyph, extended): (&[u8], bool), (own, points, read): (&Own, &[Point], &[u8]), placed: Placed,
+    shift: &dyn Fn(usize) -> f32, b: &mut Buffers, out: &mut Vec<u8>,
+) -> Option<Bounds> {
+    let (start, s) = (out.len(), placed.phantoms.map_or(0.0, |phantoms| phantoms[0].0));
+    // Drawn, a glyph without points has a box of 0 at its own origin, shifted as a point would be, so its side
+    // bearing holds.
+    let bounds = placed.drawn.then(|| placed.bounds.unwrap_or_default());
+    let bounds = bounds.map(|(x0, y0, x1, y1)| (x0 - s, y0, x1 - s, y1));
+    match own.shape {
+        _ if !placed.drawn => {}
+        Shape::Empty => out.extend_from_slice(empty_glyph_kept(glyph)),
+        // Off the default, every simple glyph is written again, packed afresh, without the padding or glyf's cubic
+        // bit a stored one can carry.
+        Shape::Simple(n_contours) => {
+            b.shifted.clear();
+            b.shifted.extend(points.iter().map(|&(x, y)| (x - s, y)));
+            write_simple_glyph((glyph, extended), n_contours, &b.shifted, read, &mut b.coords, &mut b.flags, out);
+        }
+        Shape::Composite => {
+            b.shifted.clear();
+            for (i, c) in Components::new(glyph, extended).map_while(Result::ok).enumerate() {
+                let offset = points.get(i).copied().unwrap_or_default();
+                b.shifted.push(compensated(&c, offset, s, shift(c.gid as usize)));
             }
+            if !own.varied && b.shifted.iter().zip(points).all(|(a, b)| a == b) {
+                out.extend_from_slice(glyph);
+            } else {
+                write_composite_glyph(glyph, extended, &b.shifted, out);
+            }
+        }
+    }
+    if let Some(bounds) = bounds.filter(|_| own.shape != Shape::Empty) {
+        write_box(out, start, bounds);
+    }
+    bounds
+}
+
+// What a glyph of no contours keeps: its header and instructions, which can move its phantom points, unless they're
+// said to run past it.
+fn empty_glyph_kept(glyph: &[u8]) -> &[u8] {
+    let instructions = read_u16_be(glyph, 10).map_or(0, usize::from);
+    glyph.get(..12 + instructions).filter(|_| instructions > 0).unwrap_or_default()
+}
+
+// What the walks give a glyph: its box, the phantom points its metrics take, and whether its outline is drawn.
+#[derive(Clone, Copy)]
+struct Placed {
+    bounds: Option<Bounds>,
+    phantoms: Option<[Point; 4]>,
+    drawn: bool,
+}
+
+// A glyph's box in its header at `at`, each edge rounded once from the float box, half away from 0.
+fn write_box(glyf: &mut [u8], at: usize, (x_min, y_min, x_max, y_max): Bounds) {
+    for (k, v) in [x_min, y_min, x_max, y_max].into_iter().enumerate() {
+        write_i16_be(glyf, at + 2 + 2 * k, clamp_i16(v.round() as i32));
+    }
+}
+
+// Each glyph's metrics from its phantom points and box: the advances between the phantom points, and the bearings
+// from the left one and the top one. Without phantom points it advances half an em across and an em down.
+struct GlyphMetrics {
+    advances: Vec<i32>,
+    lsb_new: Vec<Option<i32>>,
+    vadvances: Vec<i32>,
+    tsb_new: Vec<Option<i32>>,
+    vertical: bool,
+    upem: i32,
+}
+
+impl GlyphMetrics {
+    fn new(glyphs: usize, vertical: bool, upem: i32) -> Self {
+        GlyphMetrics {
+            advances: vec![0; glyphs],
+            lsb_new: vec![None; glyphs],
+            vadvances: vec![0; glyphs],
+            tsb_new: vec![None; glyphs],
+            vertical,
+            upem,
+        }
+    }
+
+    fn set(&mut self, gid: usize, bounds: Option<Bounds>, phantoms: Option<[Point; 4]>) {
+        // A glyph drawn empty has a box of 0, so its top bearing places its origin.
+        let y_max = bounds.map_or(0, |(_, _, _, y_max)| i32::from(clamp_i16(y_max.round() as i32)));
+        let Some([left, right, top, bottom]) = phantoms else {
+            (self.advances[gid], self.vadvances[gid]) = (self.upem / 2, self.upem);
+            self.tsb_new[gid] = self.vertical.then_some(self.upem);
+            return;
         };
-        match varied {
-            None => {
-                let raw = glyf_data.get(glyph_start..glyph_end).ok_or("gvar: glyph data range out of bounds")?;
-                new_glyf.extend_from_slice(raw);
-            }
-            Some(v) => {
-                // The advance runs between the two horizontal phantom points, so it moves by their difference.
-                advance_deltas[gid] = v.phantom[1].0 - v.phantom[0].0;
-                vadvance_deltas[gid] = v.phantom[2].1 - v.phantom[3].1;
-                if v.composite {
-                    composites.push((gid, v.phantom[0].0, v.phantom[2].1));
-                } else {
-                    let (lsb, tsb) = bearings(glyf_data, glyph_start, &new_glyf[at..], gid, horizontal, vertical, v.phantom[0].0, v.phantom[2].1);
-                    lsb_new[gid] = lsb;
-                    tsb_new[gid] = tsb;
+        self.advances[gid] = ot_round_f32(right.0 - left.0).max(0);
+        self.vadvances[gid] = ot_round_f32(top.1 - bottom.1).max(0);
+        self.lsb_new[gid] = bounds.map(|(x_min, ..)| (x_min - left.0).round() as i32);
+        self.tsb_new[gid] = self.vertical.then(|| ot_round_f32(top.1) - y_max);
+    }
+}
+
+// A glyph as gvar varies it: a simple glyph of its contours, a composite of its components' offsets, or one with no
+// outline, of its phantom points alone.
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    Simple(usize),
+    Composite,
+    Empty,
+}
+
+// What a glyph's own data gives at the location: its points' place in the arena, its point or component count,
+// whether its outline can be drawn and its data read, if moved, and a simple glyph's points as decoded and moved.
+#[derive(Clone, Copy)]
+struct Own {
+    at: (usize, usize),
+    shape: Shape,
+    count: usize,
+    drawn: bool,
+    readable: bool,
+    varied: bool,
+    decoded: Option<Decoded>,
+}
+
+// The points each glyph is left with at the location, as a walk reaches it: what its own data gives, None for a glyph
+// glyf doesn't hold, then its outline or offsets and its phantom points.
+trait Points {
+    fn own(&mut self, gid: usize) -> Option<Own>;
+    fn points(&self, gid: usize) -> &[Point];
+    // Its whole-unit deltas, as drawing moves its points.
+    fn deltas(&mut self, gid: usize) -> Deltas;
+    // A simple glyph's points as its own data decoded and moved them.
+    fn decoded(&mut self, gid: usize) -> Option<Decoded> {
+        self.own(gid)?.decoded
+    }
+}
+
+// Drawing's view of a walk's glyphs: each moved by the deltas its own data gave, worked out once within the walks'
+// own budget.
+struct Moved<'k, K>(core::cell::RefCell<&'k mut K>);
+
+impl<K: Points> Vary for Moved<'_, K> {
+    fn deltas(&self, gid: u32, _: Drawn<'_>, _: &mut usize) -> Result<Deltas, Error> {
+        Ok(self.0.borrow_mut().deltas(gid as usize))
+    }
+
+    fn known(&self, gid: u32, _: &mut usize) -> Option<Result<Deltas, Error>> {
+        Some(Ok(self.0.borrow_mut().deltas(gid as usize)))
+    }
+
+    fn decoded(&self, gid: u32) -> Option<Decoded> {
+        self.0.borrow_mut().decoded(gid as usize)
+    }
+}
+
+// Each glyph's own points at the location, outline or offsets then phantom points, all in one arena.
+struct Kept {
+    own: Vec<Own>,
+    points: Vec<Point>,
+    // Beside each point, its flags where its glyph is simple and read, and its whole-unit delta.
+    flags: Vec<u8>,
+    moves: Shared<[(i16, i16)]>,
+}
+
+impl Kept {
+    fn get(&self, gid: usize) -> Option<(&Own, &[Point])> {
+        let own = self.own.get(gid)?;
+        Some((own, self.points.get(own.at.0..own.at.0 + own.at.1)?))
+    }
+}
+
+impl Points for Kept {
+    fn own(&mut self, gid: usize) -> Option<Own> {
+        self.own.get(gid).copied()
+    }
+
+    fn points(&self, gid: usize) -> &[Point] {
+        self.get(gid).map_or(&[], |(_, points)| points)
+    }
+
+    fn deltas(&mut self, gid: usize) -> Deltas {
+        let own = self.own.get(gid).filter(|own| own.varied)?;
+        Some(Moves::within(&self.moves, own.at.0..own.at.0 + own.at.1))
+    }
+}
+
+// One glyph's points and its components', each varied when a walk first reaches it.
+struct Reached<'g, 'a> {
+    at: &'g GlyfAt<'a>,
+    variation: GlyphVariation<'a>,
+    own: BTreeMap<usize, (Own, Deltas)>,
+    points: Vec<Point>,
+}
+
+impl Points for Reached<'_, '_> {
+    fn own(&mut self, gid: usize) -> Option<Own> {
+        if gid >= self.at.glyphs() {
+            return None;
+        }
+        if let Some(&(own, _)) = self.own.get(&gid) {
+            return Some(own);
+        }
+        let glyph = self.at.glyph(gid);
+        let (mut points, mut moves) = (Vec::new(), Vec::new());
+        let known = self.at.record(gid).is_some();
+        let phantoms = self.at.phantoms(gid, glyph);
+        let mut own = self.variation.own(gid, known, glyph, phantoms, &mut points, &mut moves);
+        own.at = (self.points.len(), points.len());
+        self.points.extend_from_slice(&points);
+        self.own.insert(gid, (own, own.varied.then(|| Shared::<[_]>::from(moves).into())));
+        Some(own)
+    }
+
+    fn points(&self, gid: usize) -> &[Point] {
+        let at = self.own.get(&gid).map_or((0, 0), |(own, _)| own.at);
+        self.points.get(at.0..at.0 + at.1).unwrap_or_default()
+    }
+
+    fn deltas(&mut self, gid: usize) -> Deltas {
+        self.own(gid)?;
+        self.own.get(&gid).and_then(|(_, deltas)| deltas.clone())
+    }
+}
+
+// The phantom points a glyph's metrics take from the points each glyph was left with at the location, within the
+// work, points and visits a glyph may take.
+struct Walk<'w, 'a, K> {
+    at: &'w GlyfAt<'a>,
+    kept: &'w mut K,
+    work: usize,
+    edges: usize,
+}
+
+impl<'w, 'a, K: Points> Walk<'w, 'a, K> {
+    fn new(at: &'w GlyfAt<'a>, kept: &'w mut K) -> Self {
+        Walk { at, kept, work: GLYPH_WORK, edges: 0 }
+    }
+
+    fn spend(&mut self, work: usize) -> Option<()> {
+        self.work = self.work.checked_sub(work)?;
+        Some(())
+    }
+
+    // A glyph's visit: one more glyph, and its own points.
+    fn visit(&mut self, work: usize) -> Option<()> {
+        if self.edges >= MAX_VISITS {
+            return None;
+        }
+        self.edges += 1;
+        self.spend(16 + work)
+    }
+
+    // The phantom points of a glyph the walk has reached.
+    fn phantoms_of(&self, gid: usize) -> Option<[Point; 4]> {
+        let points = self.kept.points(gid);
+        points.get(points.len().checked_sub(4)?..)?.try_into().ok()
+    }
+
+    // Glyph `gid`'s phantom points alone, through USE_MY_METRICS components, every component read spending work.
+    // `gathered` counts points drawing holds: a simple glyph's unread, a component's dropped once placed or skipped.
+    // Composites are walked on the heap: each one's components left, its phantoms so far, and what was gathered
+    // before the component being read, two in place, as setting up eight for every glyph cost instancing Inter 0.7%.
+    fn phantoms(&mut self, gid: usize, gathered: &mut usize) -> Option<[Point; 4]> {
+        let (mut inside, mut path) = (Stack::<(Components, [Point; 4], usize), 2>::default(), ComponentPath::default());
+        let mut gid = gid;
+        loop {
+            let glyph = self.at.glyph(gid);
+            let mut read = None;
+            match self.kept.own(gid) {
+                None => {
+                    self.visit(0)?;
+                    *gathered += 4;
+                    read = Some(self.at.phantoms(gid, glyph));
+                }
+                Some(own) => {
+                    let simple = if let Shape::Simple(_) = own.shape { own.count } else { 0 };
+                    if !own.readable {
+                        return None;
+                    }
+                    self.visit(simple)?;
+                    *gathered += simple;
+                    if *gathered + 4 > MAX_POINTS {
+                        return None;
+                    }
+                    let phantoms = self.phantoms_of(gid)?;
+                    if own.shape == Shape::Composite {
+                        path.enter(gid as u32);
+                        inside.push((Components::new(glyph, self.at.extended), phantoms, 0));
+                    } else {
+                        *gathered += 4;
+                        read = Some(phantoms);
+                    }
                 }
             }
-        }
-        new_glyf.resize(pad4(new_glyf.len()), 0);
-        new_loca[gid + 1] = new_glyf.len();
-        if new_glyf.len() > MAX_INSTANCED_GLYF_SIZE {
-            return Err("gvar: instanced glyf size exceeds sanity limit".to_string());
+            // The next USE_MY_METRICS component to read, each glyph read whole handing its phantoms to its composite.
+            gid = loop {
+                if let Some(phantoms) = read.take() {
+                    let Some((_, held, before)) = inside.last_mut() else { return Some(phantoms) };
+                    *held = phantoms;
+                    *gathered -= 4;
+                    let more = *gathered - *before;
+                    self.spend(more)?;
+                    if *gathered + 4 > MAX_POINTS {
+                        return None;
+                    }
+                }
+                let (components, _, before) = inside.last_mut()?;
+                let mut down = None;
+                while let Some(Ok(c)) = components.next() {
+                    self.spend(1)?;
+                    if path.holds(c.gid) {
+                        continue;
+                    }
+                    if c.flags & USE_MY_METRICS != 0 {
+                        (*before, down) = (*gathered, Some(c.gid as usize));
+                        break;
+                    }
+                    if *gathered + 4 > MAX_POINTS {
+                        return None;
+                    }
+                }
+                if let Some(down) = down {
+                    break down;
+                }
+                let (_, phantoms, _) = inside.pop()?;
+                path.leave();
+                *gathered += 4;
+                read = Some(phantoms);
+            };
         }
     }
+}
 
-    recompute_composite_bboxes(&mut new_glyf, &new_loca, num_glyphs);
-    // A composite's box is known only once every component is, so its bearings come last.
-    for (gid, pp1, pp3) in composites {
-        let glyph = new_glyf.get(new_loca[gid]..new_loca[gid + 1]).unwrap_or_default();
-        let (lsb, tsb) = bearings(glyf_data, glyph_offsets[gid], glyph, gid, horizontal, vertical, pp1, pp3);
-        lsb_new[gid] = lsb;
-        tsb_new[gid] = tsb;
+// A component's offset as written: moved for the composite's shift `s` and for its own glyph's, `component`, which
+// the component's outline was written with, through its matrix as its flags place the offset.
+fn compensated(c: &Component, offset: Point, s: f32, component: f32) -> Point {
+    let m = c.matrix.map(|v| f32::from(v) / 16384.0);
+    if !c.offset_through_matrix() {
+        return (offset.0 + m[0] * component - s, offset.1 + m[1] * component);
     }
-
-    Ok(GvarResult { glyf_data: new_glyf, new_loca, advance_deltas, lsb_new, vadvance_deltas, tsb_new })
-}
-
-// A varied glyph's bearings: the new box against phantom points 1 and 3, each moved by its delta.
-#[allow(clippy::too_many_arguments, reason = "the glyph's old and new forms, both metrics tables and both phantom deltas")]
-fn bearings(
-    glyf: &[u8],
-    glyph_start: usize,
-    varied: &[u8],
-    gid: usize,
-    horizontal: Option<(&TableBytes, usize)>,
-    vertical: Option<(&TableBytes, usize)>,
-    pp1: f64,
-    pp3: f64,
-) -> (Option<i32>, Option<i32>) {
-    let field = |data: &[u8], at: usize| read_i16_be(data, at).map(i32::from);
-    let lsb = horizontal.and_then(|(hmtx, long)| {
-        let (old, new) = (field(glyf, glyph_start + 2)?, field(varied, 2)?);
-        Some(new - old + read_side_bearing(hmtx, long, gid) - ot_round(pp1))
-    });
-    let tsb = vertical.and_then(|(vmtx, long)| {
-        let (old, new) = (field(glyf, glyph_start + 8)?, field(varied, 8)?);
-        Some(old - new + read_side_bearing(vmtx, long, gid) + ot_round(pp3))
-    });
-    (lsb, tsb)
-}
-
-struct Varied {
-    phantom: [(f64, f64); 4],
-    composite: bool,
-}
-
-enum GlyphError {
-    Budget(String),
-    Malformed,
+    let det = m[0] * m[3] - m[1] * m[2];
+    if det == 0.0 {
+        return (offset.0 + component, offset.1);
+    }
+    (offset.0 + component - m[3] * s / det, offset.1 + m[1] * s / det)
 }
 
 #[derive(Default)]
 struct Buffers {
-    xr: Vec<f64>,
-    yr: Vec<f64>,
-    dx: Vec<f64>,
-    dy: Vec<f64>,
-    fdx: Vec<f64>,
-    fdy: Vec<f64>,
+    shifted: Vec<Point>,
     coords: GlyphCoords,
     flags: Vec<u8>,
-    touched: Vec<bool>,
-    order: Vec<usize>,
-    peak: Vec<f64>,
-    start: Vec<f64>,
-    end: Vec<f64>,
-    shared_points: Vec<usize>,
-    private_points: Vec<usize>,
 }
 
+// The tuples moving the glyphs and the walks placing them share `left`, spent once it reaches 0.
 struct GlyphVariation<'a> {
-    gvar: &'a [u8],
-    glyf: &'a [u8],
-    location: &'a [f64],
-    axis_count: usize,
-    gvar_axis_count: usize,
-    var_array_off: usize,
-    shared_tuples: Vec<Vec<f64>>,
-    shared_tuple_scalars: Vec<Option<f64>>,
-    font_work_left: usize,
+    source: Option<DeltaSource<'a>>,
+    extended: bool,
     buffers: Buffers,
+    room: DeltaRoom,
+    left: usize,
 }
 
 impl GlyphVariation<'_> {
-    // The varied glyph goes onto the end of `out`, which is left alone where it errs.
-    fn vary(&mut self, glyph_start: usize, glyph_end: usize, var_off: usize, out: &mut Vec<u8>) -> Result<Option<Varied>, GlyphError> {
-        let (gvar, glyf) = (self.gvar, self.glyf);
-        let (n_contours, num_points) = if glyph_start == glyph_end {
-            (0i16, 0usize)
-        } else {
-            let nc = read_i16_be(glyf, glyph_start).ok_or(GlyphError::Malformed)?;
-            match nc {
-                1.. => {
-                    let last = read_u16_be(glyf, glyph_start + 10 + (nc as usize - 1) * 2).ok_or(GlyphError::Malformed)?;
-                    (nc, usize::from(last) + 1)
-                }
-                ..=-1 => (nc, count_composite_components(glyf, glyph_start, glyph_end)),
-                0 => (0, 0),
-            }
+    fn spend(&mut self, n: usize) -> Option<()> {
+        self.left = self.left.checked_sub(n).filter(|&left| left > 0)?;
+        Some(())
+    }
+
+    // Glyph `gid`'s points at the location onto `points`, offsets then phantoms, each moved by its 16.16 delta rounded
+    // once, onto `moves` that delta in 16 bits; unread points are 0, and failed data or no glyf record stays as stored.
+    fn own(
+        &mut self, gid: usize, known: bool, glyph: &[u8], phantoms: [Point; 4], points: &mut Vec<Point>,
+        moves: &mut Vec<(i16, i16)>,
+    ) -> Own {
+        let start = moves.len();
+        let mut own = self.own_points(gid, known, glyph, phantoms, points, moves);
+        if matches!(own.shape, Shape::Simple(_)) && own.drawn {
+            let coords = &self.buffers.coords;
+            let moved = own.varied.then(|| &moves[start..]);
+            own.decoded = Some(Decoded { points: coords.num_points, bounds: points_box(coords, moved) });
+        }
+        own
+    }
+
+    fn own_points(
+        &mut self, gid: usize, known: bool, glyph: &[u8], phantoms: [Point; 4], points: &mut Vec<Point>,
+        moves: &mut Vec<(i16, i16)>,
+    ) -> Own {
+        points.clear();
+        let n_contours = if glyph.len() < 10 { 0 } else { read_i16_be(glyph, 0).unwrap_or(0) };
+        let mut own = Own {
+            at: (0, 0), shape: Shape::Empty, count: 0, drawn: true, readable: true, varied: false, decoded: None,
         };
-
-        let total_points = num_points + 4;
-        let gvd_base = self.var_array_off.checked_add(var_off).ok_or(GlyphError::Malformed)?;
-        let raw_tuple_count = read_u16_be(gvar, gvd_base).ok_or(GlyphError::Malformed)?;
-        let has_shared_pts = (raw_tuple_count & 0x8000) != 0;
-        let tup_count = (raw_tuple_count & 0x0FFF) as usize;
-        let serialized_start = gvd_base + read_u16_be(gvar, gvd_base + 2).ok_or(GlyphError::Malformed)? as usize;
-
-        let b = &mut self.buffers;
-        let mut serialized_pos = serialized_start;
-        let mut shared_points = false;
-        if has_shared_pts {
-            (shared_points, serialized_pos) = parse_packed_points_into(gvar, serialized_pos, &mut b.shared_points);
-        }
-
-        b.dx.clear(); b.dx.resize(total_points, 0.0);
-        b.dy.clear(); b.dy.resize(total_points, 0.0);
-        if n_contours > 0 {
-            extract_coords_into(glyf, glyph_start, n_contours as usize, &mut b.coords);
-        }
-
-        let mut header_pos       = gvd_base + 4;
-        let mut private_data_pos = serialized_pos;
-
-        const MAX_TUPLE_POINT_WORK: usize = 16_777_216;
-        let mut tuple_work_left = MAX_TUPLE_POINT_WORK;
-
-        for _ in 0..tup_count {
-            let var_data_size    = read_u16_be(gvar, header_pos).ok_or(GlyphError::Malformed)? as usize;
-            let tuple_index_word = read_u16_be(gvar, header_pos + 2).ok_or(GlyphError::Malformed)?;
-            header_pos += 4;
-
-            let has_peak         = (tuple_index_word & 0x8000) != 0;
-            let has_intermediate = (tuple_index_word & 0x4000) != 0;
-            let has_private_pts  = (tuple_index_word & 0x2000) != 0;
-            let shared_idx       = (tuple_index_word & 0x0FFF) as usize;
-
-            let peak: &[f64] = if has_peak {
-                read_tuple(gvar, &mut header_pos, self.gvar_axis_count, &mut b.peak)?;
-                &b.peak
-            } else {
-                self.shared_tuples.get(shared_idx).ok_or(GlyphError::Malformed)?
-            };
-            if has_intermediate {
-                read_tuple(gvar, &mut header_pos, self.gvar_axis_count, &mut b.start)?;
-                read_tuple(gvar, &mut header_pos, self.gvar_axis_count, &mut b.end)?;
-            }
-
-            let scalar = if !has_peak && !has_intermediate {
-                *self.shared_tuple_scalars[shared_idx]
-                    .get_or_insert_with(|| compute_tuple_scalar(self.location, peak, None, None, self.axis_count))
-            } else {
-                let (start, end) = if has_intermediate { (Some(&b.start[..]), Some(&b.end[..])) } else { (None, None) };
-                compute_tuple_scalar(self.location, peak, start, end, self.axis_count)
-            };
-            let tuple_end = private_data_pos + var_data_size;
-
-            if scalar.abs() > 1e-10 {
-                tuple_work_left = tuple_work_left
-                    .checked_sub(total_points.max(1))
-                    .ok_or_else(|| GlyphError::Budget("gvar: per-glyph tuple work budget exhausted".into()))?;
-                self.font_work_left = self.font_work_left
-                    .checked_sub(total_points.max(1))
-                    .ok_or_else(|| GlyphError::Budget("gvar: font-wide tuple work budget exhausted".into()))?;
-                let points = if has_private_pts {
-                    let named;
-                    (named, private_data_pos) = parse_packed_points_into(gvar, private_data_pos, &mut b.private_points);
-                    named.then_some(&b.private_points[..])
-                } else {
-                    shared_points.then_some(&b.shared_points[..])
+        let cc = &mut self.buffers.coords;
+        let mut contours = false;
+        match n_contours {
+            1.. => {
+                let n = n_contours as usize;
+                own.shape = Shape::Simple(n);
+                let Some(count) = simple_point_count(glyph, n) else {
+                    (own.drawn, own.readable) = (false, false);
+                    points.extend(phantoms);
+                    return own;
                 };
-
-                let n_delta = points.map_or(total_points, |p| p.len());
-                private_data_pos = parse_packed_deltas_into(gvar, private_data_pos, n_delta, &mut b.xr);
-                parse_packed_deltas_into(gvar, private_data_pos, n_delta, &mut b.yr);
-
-                match points {
-                    None => {
-                        for i in 0..total_points {
-                            b.dx[i] += scalar * b.xr[i];
-                            b.dy[i] += scalar * b.yr[i];
-                        }
-                    }
-                    Some(pts) => {
-                        b.fdx.clear(); b.fdx.resize(total_points, 0.0);
-                        b.fdy.clear(); b.fdy.resize(total_points, 0.0);
-                        // A point named twice takes both deltas, as the spec requires.
-                        for (i, &p) in pts.iter().enumerate() {
-                            if p < total_points {
-                                b.fdx[p] += b.xr[i];
-                                b.fdy[p] += b.yr[i];
-                            }
-                        }
-                        if n_contours > 0 {
-                            iup(&mut b.fdx, &mut b.fdy, pts, &b.coords, &mut b.touched, &mut b.order);
-                        }
-                        for i in 0..total_points {
-                            b.dx[i] += scalar * b.fdx[i];
-                            b.dy[i] += scalar * b.fdy[i];
-                        }
-                    }
+                own.count = count;
+                own.drawn = extract_coords_into(glyph, n, cc);
+                if own.drawn {
+                    points.extend(cc.x_coords.iter().zip(&cc.y_coords).map(|(&x, &y)| (x as f32, y as f32)));
+                    contours = true;
+                } else {
+                    points.resize(count, (0.0, 0.0));
                 }
             }
-            private_data_pos = tuple_end;
+            ..=-1 => {
+                let offset = |c: Component| {
+                    if c.has_offset() { (c.args.0 as f32, c.args.1 as f32) } else { (0.0, 0.0) }
+                };
+                points.extend(Components::new(glyph, self.extended).map_while(Result::ok).map(offset));
+                (own.shape, own.count) = (Shape::Composite, points.len());
+            }
+            0 => {}
         }
-
-        let phantom: [(f64, f64); 4] = core::array::from_fn(|k| (b.dx[num_points + k], b.dy[num_points + k]));
-        if n_contours > 0 {
-            apply_simple_glyph_deltas(glyf, glyph_start, glyph_end, n_contours as usize, &b.dx, &b.dy, &mut b.coords, &mut b.flags, out);
-        } else if n_contours < 0 {
-            apply_composite_glyph_deltas(glyf, glyph_start, glyph_end, &b.dx, &b.dy, num_points, out);
-        } else {
-            out.extend_from_slice(glyf.get(glyph_start..glyph_end).ok_or(GlyphError::Malformed)?);
-        }
-        Ok(Some(Varied { phantom, composite: n_contours < 0 }))
-    }
-}
-
-#[derive(Default)]
-struct BboxPen {
-    min: (f32, f32),
-    max: (f32, f32),
-    any: bool,
-}
-
-impl BboxPen {
-    fn add(&mut self, x: f32, y: f32) {
-        if !self.any {
-            self.any = true;
-            self.min = (x, y);
-            self.max = (x, y);
-            return;
-        }
-        self.min = (self.min.0.min(x), self.min.1.min(y));
-        self.max = (self.max.0.max(x), self.max.1.max(y));
-    }
-}
-
-impl crate::daecore::daetype::outline::OutlinePen for BboxPen {
-    fn move_to(&mut self, x: f32, y: f32) {
-        self.add(x, y);
-    }
-    fn line_to(&mut self, x: f32, y: f32) {
-        self.add(x, y);
-    }
-    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-        self.add(cx, cy);
-        self.add(x, y);
-    }
-    fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
-        self.add(c1x, c1y);
-        self.add(c2x, c2y);
-        self.add(x, y);
-    }
-    fn close(&mut self) {}
-}
-
-fn recompute_composite_bboxes(glyf: &mut [u8], loca: &[usize], num_glyphs: usize) {
-    use crate::daecore::daetype::decoder::write_i16_be;
-
-    let mut scratch = GlyphCoords::default();
-    for gid in 0..num_glyphs {
-        let (Some(&start), Some(&end)) = (loca.get(gid), loca.get(gid + 1)) else { break };
-        if end.saturating_sub(start) < 10 {
-            continue;
-        }
-        if read_i16_be(glyf, start).is_none_or(|n| n >= 0) {
-            continue;
-        }
-
-        let mut pen = BboxPen::default();
-        if crate::daecore::daetype::outline::outline_glyf_glyph_reusing_bytes(glyf, loca, gid as u16, &mut scratch, &mut pen).is_err() {
-            continue;
-        }
-        if !pen.any {
-            continue;
-        }
-        let clamp = |v: f32| ot_round(f64::from(v)).clamp(i16::MIN.into(), i16::MAX.into()) as i16;
-        write_i16_be(glyf, start + 2, clamp(pen.min.0));
-        write_i16_be(glyf, start + 4, clamp(pen.min.1));
-        write_i16_be(glyf, start + 6, clamp(pen.max.0));
-        write_i16_be(glyf, start + 8, clamp(pen.max.1));
-    }
-}
-
-pub(crate) fn compute_tuple_scalar(
-    location:    &[f64],
-    peak:        &[f64],
-    start_tuple: Option<&[f64]>,
-    end_tuple:   Option<&[f64]>,
-    axis_count:  usize,
-) -> f64 {
-    let mut scalar = 1.0f64;
-    for i in 0..axis_count.min(peak.len()) {
-        let p = peak[i];
-        // With no intermediate region, a tuple reaches from the default to its peak and no further.
-        let start = start_tuple.map_or(p.min(0.0), |s| s[i]);
-        let end   = end_tuple.map_or(p.max(0.0), |e| e[i]);
-        scalar *= axis_factor(location[i], start, p, end);
-        if scalar == 0.0 {
-            return 0.0;
-        }
-    }
-    scalar
-}
-
-// One tuple record's coordinates.
-fn read_tuple(gvar: &[u8], at: &mut usize, axes: usize, out: &mut Vec<f64>) -> Result<(), GlyphError> {
-    out.clear();
-    for _ in 0..axes {
-        out.push(f64::from(read_i16_be(gvar, *at).ok_or(GlyphError::Malformed)?) / 16384.0);
-        *at += 2;
-    }
-    Ok(())
-}
-
-pub(crate) fn parse_packed_points(buf: &[u8], pos: usize) -> (Option<Vec<usize>>, usize) {
-    let mut points = Vec::new();
-    let (named, next) = parse_packed_points_into(buf, pos, &mut points);
-    (named.then_some(points), next)
-}
-
-// Every point number as encoded, out of range or repeated ones included: the deltas that follow are
-// counted by them, and the caller drops a number past its points. False where the data means all points.
-pub(crate) fn parse_packed_points_into(buf: &[u8], pos: usize, points: &mut Vec<usize>) -> (bool, usize) {
-    points.clear();
-    let mut pos = pos;
-    let mut count = match buf.get(pos) {
-        Some(&b) => { pos += 1; b as usize }
-        None => return (false, pos),
-    };
-    if count == 0 { return (false, pos); }
-    if count & 0x80 != 0 {
-        let next = match buf.get(pos) {
-            Some(&b) => { pos += 1; b as usize }
-            None => return (false, pos),
+        points.extend(phantoms);
+        let Some(source) = self.source.filter(|_| known) else { return own };
+        let (x, y, ends) = match contours {
+            true => (&cc.x_coords[..], &cc.y_coords[..], &cc.end_pts[..]),
+            false => (&[][..], &[][..], &[][..]),
         };
-        count = ((count & 0x7F) << 8) | next;
-    }
-
-    points.reserve(count);
-    let mut idx = 0usize;
-    while points.len() < count {
-        let ctrl = match buf.get(pos) {
-            Some(&b) => { pos += 1; b }
-            None => break,
-        };
-        let words = (ctrl & 0x80) != 0;
-        let len   = (ctrl & 0x7F) as usize + 1;
-        for _ in 0..len {
-            if points.len() >= count { break; }
-            if words {
-                let hi = buf.get(pos).copied().unwrap_or(0) as usize;
-                let lo = buf.get(pos + 1).copied().unwrap_or(0) as usize;
-                pos += 2;
-                idx += (hi << 8) | lo;
-            } else {
-                idx += buf.get(pos).copied().unwrap_or(0) as usize;
-                pos += 1;
-            }
-            points.push(idx);
+        // Past the budget the glyph stays as stored, and whoever varies it fails once `left` is spent.
+        let deltas = source.deltas(gid, points.len(), (x, y), ends, &mut self.room, &mut self.left);
+        let Ok(Some(deltas)) = deltas else { return own };
+        own.varied = true;
+        for (p, &(dx, dy)) in points.iter_mut().zip(deltas) {
+            *p = (p.0 + round_fixed(dx) as f32, p.1 + round_fixed(dy) as f32);
         }
+        moves.extend(deltas.iter().map(|&(x, y)| (fixed_to_int(x), fixed_to_int(y))));
+        own
     }
-    (true, pos)
-}
-
-pub(crate) fn parse_packed_deltas(buf: &[u8], pos: usize, count: usize) -> (Vec<f64>, usize) {
-    let mut deltas = Vec::new();
-    let next = parse_packed_deltas_into(buf, pos, count, &mut deltas);
-    (deltas, next)
-}
-
-pub(crate) fn parse_packed_deltas_into(buf: &[u8], pos: usize, count: usize, deltas: &mut Vec<f64>) -> usize {
-    deltas.clear();
-    deltas.resize(count, 0.0);
-    let mut i = 0;
-    let mut pos = pos;
-    'outer: while i < count {
-        let ctrl = match buf.get(pos) { Some(&b) => { pos += 1; b } None => break };
-        let len  = (ctrl & 0x3F) as usize + 1;
-        if ctrl & 0x80 != 0 {
-            i += len;
-        } else if ctrl & 0x40 != 0 {
-            for _ in 0..len {
-                if i >= count { break; }
-                let hi = match buf.get(pos) { Some(&b) => { pos += 1; b as u16 } None => break 'outer };
-                let lo = match buf.get(pos) { Some(&b) => { pos += 1; b as u16 } None => break 'outer };
-                let raw = (hi << 8) | lo;
-                deltas[i] = if raw >= 0x8000 { raw as f64 - 0x10000 as f64 } else { raw as f64 };
-                i += 1;
-            }
-        } else {
-            for _ in 0..len {
-                if i >= count { break; }
-                let raw = match buf.get(pos) { Some(&b) => { pos += 1; b } None => break 'outer };
-                deltas[i] = if raw >= 0x80 { raw as f64 - 0x100 as f64 } else { raw as f64 };
-                i += 1;
-            }
-        }
-    }
-    pos
 }
 
 #[cfg(test)]
-mod tests {
-    use super::compute_tuple_scalar;
-
-    // Values from fontTools 4.63, which HarfBuzz and FreeType agree with.
-    #[test]
-    fn a_tuple_reaches_from_the_default_to_its_peak() {
-        assert_eq!(compute_tuple_scalar(&[0.25], &[0.5], None, None, 1), 0.5);
-        assert_eq!(compute_tuple_scalar(&[0.75], &[0.5], None, None, 1), 0.0);
-        assert_eq!(compute_tuple_scalar(&[-0.75], &[-0.5], None, None, 1), 0.0);
-    }
-
-    #[test]
-    fn a_malformed_intermediate_region_ignores_its_axis() {
-        assert_eq!(compute_tuple_scalar(&[0.75], &[0.25], Some(&[0.5]), Some(&[1.0]), 1), 1.0);
-        assert_eq!(compute_tuple_scalar(&[0.25], &[1.0], Some(&[-1.0]), Some(&[1.0]), 1), 1.0);
-        assert_eq!(compute_tuple_scalar(&[0.75], &[0.5], Some(&[0.25]), Some(&[1.0]), 1), 0.5);
-    }
-}
+#[path = "../../../tests/unit/daetype/instancer/gvar.rs"]
+mod tests;

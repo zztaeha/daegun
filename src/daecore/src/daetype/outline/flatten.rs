@@ -1,13 +1,19 @@
+#[cfg(doc)]
+use crate::ErrorKind::{InvalidArgument, LimitExceeded};
 use alloc::vec::Vec;
 
 #[allow(unused_imports, reason = "the inherent method shadows this whenever std is linked")]
-use crate::daecore::daemachine::float::FloatExt;
+use crate::daecore::daekit::float::FloatExt;
 
 use super::pen::OutlinePen;
-use super::path::Path;
+use super::path::{Path, Point, Verb};
+use crate::daecore::daekit::base::error::Result;
+use crate::daecore::Error;
 
 const MIN_SEGMENT_SPAN: f32 = 1.0 / 4096.0;
 
+/// The most points [`Path::flatten`] keeps, and [`Path::stroke_simplified`] holds to resolve: what a call hands back
+/// or holds whole keeps a size, while a stroke drawn onto a pen streams at any size.
 // A curve can become 4,097 points, so one glyph of 65,534 curves could otherwise come to 268 million.
 pub const MAX_FLATTEN_POINTS: usize = 1_048_576;
 
@@ -15,26 +21,69 @@ pub const MAX_FLATTEN_POINTS: usize = 1_048_576;
 // the limit: a path that reads more is refused, however little it would keep.
 const MAX_READ: usize = 2 * MAX_FLATTEN_POINTS;
 
-// The `max_area` 1.1.7's CPU rasterizer flattened with, for a path in font units drawn at `px`. A px so
-// small the area overflows, or one below zero, asks for the coarsest, which flatten would read as finest.
+/// The `max_area` [`Path::flatten`] takes to draw a path in font units at `px` pixels to the em, as 1.1.7's
+/// rasterizer flattened.
+// A px so small the area overflows, or one below zero, asks for the coarsest, which flatten would read as finest.
 pub fn max_area_for(px: f32, units_per_em: f32) -> f32 {
     let area = 3.0 * 2.0 * (units_per_em / px);
     if area == f32::INFINITY || area.is_sign_negative() && !area.is_nan() { f32::MAX } else { area }
 }
 
-// Closed polygons, none under three points or repeating its first: `None` past `MAX_FLATTEN_POINTS`
-// points kept or twice that read, or a coordinate past `LIMIT`. A bad `max_area` halves all the way.
-pub fn flatten(path: &Path, max_area: f32) -> Option<Vec<Vec<(f32, f32)>>> {
-    let max_area = if max_area.is_finite() && max_area > 0.0 { max_area } else { 0.0 };
-    let mut pen = Flattener {
-        max_area, start: (0.0, 0.0), previous: (0.0, 0.0), points: Vec::new(), read: 0, contours: Vec::new(), in_range: true,
-    };
-    path.replay(None, &mut pen);
-    pen.end_contour();
-    if pen.read > MAX_READ || !pen.in_range {
-        return None;
+impl Path {
+    /// The path as closed polygons, none under three points or repeating its first. A curve halves until twice the
+    /// area of its ends-and-midpoint triangle is within `max_area`, one not finite and above zero halving all the
+    /// way.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidArgument`] for a point not finite or past `f32::MAX / 16`, and [`LimitExceeded`] past
+    /// [`MAX_FLATTEN_POINTS`] points kept or twice that read.
+    pub fn flatten(&self, max_area: f32) -> Result<Vec<Vec<Point>>> {
+        let mut contours = Vec::with_capacity(self.parts().0.iter().filter(|&&v| v == Verb::Move).count());
+        self.flatten_into(max_area, &mut contours)?;
+        Ok(contours)
     }
-    (pen.contours.iter().map(Vec::len).sum::<usize>() <= MAX_FLATTEN_POINTS).then_some(pen.contours)
+
+    /// The same into `contours`, each list it held reused, so lists kept between calls allocate only to grow;
+    /// emptied on an error.
+    ///
+    /// # Errors
+    ///
+    /// As [`flatten`](Path::flatten) gives them.
+    pub fn flatten_into(&self, max_area: f32, contours: &mut Vec<Vec<Point>>) -> Result<()> {
+        let max_area = if max_area.is_finite() && max_area > 0.0 { max_area } else { 0.0 };
+        let mut pen = Flattener {
+            max_area,
+            start: (0.0, 0.0),
+            previous: (0.0, 0.0),
+            points: Vec::new(),
+            read: 0,
+            contours,
+            kept: 0,
+            // The first contour's room, a guess from the path's own points rather than growing from four.
+            room: self.parts().1.len(),
+            in_range: true,
+        };
+        // Through the pen's table: inlined into the replay, the flattener took 0.4% longer.
+        self.replay(None, &mut pen as &mut dyn OutlinePen);
+        pen.end_contour();
+        let (read, kept, in_range) = (pen.read, pen.kept, pen.in_range);
+        contours.truncate(kept);
+        let failed = if !in_range {
+            Some(Error::invalid("a point is not finite or past f32::MAX / 16"))
+        } else if read > MAX_READ || contours.iter().map(Vec::len).sum::<usize>() > MAX_FLATTEN_POINTS {
+            Some(Error::limit("past MAX_FLATTEN_POINTS points kept or twice that read"))
+        } else {
+            None
+        };
+        match failed {
+            Some(error) => {
+                contours.clear();
+                Err(error)
+            }
+            None => Ok(()),
+        }
+    }
 }
 
 type Pt = (f32, f32);
@@ -47,14 +96,17 @@ fn fits(v: &f32) -> bool {
     v.abs() <= LIMIT
 }
 
-// `points` is the contour being read; each is kept as it ends, `read` counting every point read.
-struct Flattener {
+// `points` is the contour being read, its list the caller's in slot `kept` where there is one, else one of `room`,
+// the last kept contour's length; `read` counts every point read.
+struct Flattener<'a> {
     max_area: f32,
     start: Pt,
     previous: Pt,
-    points: Vec<Pt>,
+    points: Vec<Point>,
     read: usize,
-    contours: Vec<Vec<Pt>>,
+    contours: &'a mut Vec<Vec<Point>>,
+    kept: usize,
+    room: usize,
     in_range: bool,
 }
 
@@ -65,10 +117,9 @@ fn too_curved(a: Pt, b: Pt, c: Pt, max_area: f32) -> bool {
     area > max_area || area.is_nan()
 }
 
-// The span⁴ under which a piece of a cubic cannot fail its quarter checks once its midpoint passes: its
-// quarters sit within 3/64 span³ |Δ³| of the parabola through its ends and midpoint, whose quarter
-// triangles are an eighth of its own, and its chord is under 3 span times its longest edge. Half of
-// max_area is margin, and f64 keeps a tiny curve's product from underflowing to an infinite limit.
+// The span⁴ under which a cubic piece past its midpoint check can't fail its quarter checks: its quarters lie within
+// 3/64 span³ |Δ³| of the parabola through its ends and midpoint, whose quarter triangles are an eighth of its own, and
+// its chord is under 3 span × its longest edge. Half of max_area is margin; f64 keeps a tiny curve's limit finite.
 fn quarter_limit(p0: Pt, p1: Pt, p2: Pt, p3: Pt, max_area: f32) -> f32 {
     let w = |p: Pt| (f64::from(p.0), f64::from(p.1));
     let (p0, p1, p2, p3) = (w(p0), w(p1), w(p2), w(p3));
@@ -78,7 +129,7 @@ fn quarter_limit(p0: Pt, p1: Pt, p2: Pt, p3: Pt, max_area: f32) -> f32 {
     (0.5 * f64::from(max_area) / (9.0 / 64.0 * (edge2 * (d3.0 * d3.0 + d3.1 * d3.1)).sqrt())) as f32
 }
 
-impl Flattener {
+impl Flattener<'_> {
     // A contour is kept without a closing point repeating its first, and only with three points left.
     fn end_contour(&mut self) {
         self.read += self.points.len();
@@ -86,8 +137,13 @@ impl Flattener {
             self.points.pop();
         }
         if self.points.len() >= 3 {
-            let next = Vec::with_capacity(self.points.len());
-            self.contours.push(core::mem::replace(&mut self.points, next));
+            self.room = self.points.len();
+            let kept = core::mem::take(&mut self.points);
+            match self.contours.get_mut(self.kept) {
+                Some(slot) => *slot = kept,
+                None => self.contours.push(kept),
+            }
+            self.kept += 1;
         } else {
             self.points.clear();
         }
@@ -96,8 +152,22 @@ impl Flattener {
     // A contour drawn without `move_to` starts where the pen is: after `close`, the last one's start.
     fn begin(&mut self) {
         if self.points.is_empty() {
-            self.points.push(self.previous);
+            self.open();
+            self.points.push(self.previous.into());
             self.start = self.previous;
+        }
+    }
+
+    // A list for a contour about to begin, where the last one was kept: the caller's next, emptied, or a new one.
+    // Once a contour, so out of line, keeping `begin`, which every segment calls, small.
+    #[inline(never)]
+    fn open(&mut self) {
+        if self.points.capacity() == 0 {
+            self.points = match self.contours.get_mut(self.kept) {
+                Some(spare) => core::mem::take(spare),
+                None => Vec::with_capacity(self.room),
+            };
+            self.points.clear();
         }
     }
 
@@ -121,17 +191,18 @@ impl Flattener {
                 stack[len + 1] = (a, at, b, bt);
                 len += 2;
             } else {
-                self.points.push(c);
+                self.points.push(c.into());
             }
         }
     }
 }
 
-impl OutlinePen for Flattener {
+impl OutlinePen for Flattener<'_> {
     fn move_to(&mut self, x: f32, y: f32) {
         self.in_range &= fits(&x) && fits(&y);
         self.end_contour();
-        self.points.push((x, y));
+        self.open();
+        self.points.push(Point { x, y });
         self.start = (x, y);
         self.previous = (x, y);
     }
@@ -139,7 +210,7 @@ impl OutlinePen for Flattener {
     fn line_to(&mut self, x: f32, y: f32) {
         self.in_range &= fits(&x) && fits(&y);
         self.begin();
-        self.points.push((x, y));
+        self.points.push(Point { x, y });
         self.previous = (x, y);
     }
 
@@ -171,7 +242,7 @@ impl OutlinePen for Flattener {
 
     fn close(&mut self) {
         if self.start != self.previous {
-            self.points.push(self.start);
+            self.points.push(self.start.into());
         }
         self.previous = self.start;
         self.end_contour();

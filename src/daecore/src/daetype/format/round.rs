@@ -1,15 +1,18 @@
 #[cfg(all(not(feature = "std"), not(test)))]
-use crate::daecore::daemachine::float::FloatExt;
+use crate::daecore::daekit::float::FloatExt;
 
-// Ties toward +infinity (fontTools' otRound) for gvar points, cvar deltas and MVAR; Rust's `round`
-// goes away from zero and differs at interior locations. Half-to-even below is for CFF2 blend.
+/// Rounds as the OpenType spec does, ties toward positive infinity, as gvar points and cvar deltas are compiled.
+// Rust's `round` goes away from zero and differs at interior locations.
 pub fn ot_round(v: f64) -> i32 {
     (v + 0.5).floor() as i32
 }
 
-// CFF2 charstring coordinates are relative, so rounding a blended delta to a whole unit
-// accumulates error along the outline. The caller scales to 16.16 before rounding.
-pub(crate) fn banker_round_i64(v: f64) -> i64 {
-    v.round_ties_even() as i64
+// The same for what is computed in f32, outline points and anchors, widened first so the half is added in double: a
+// value just under a half rounds down, where f32 would round it up.
+pub(crate) fn ot_round_f32(v: f32) -> i32 {
+    ot_round(f64::from(v))
 }
 
+#[cfg(test)]
+#[path = "../../../tests/unit/daetype/format/round.rs"]
+mod tests;

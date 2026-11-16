@@ -1,6 +1,8 @@
 use crate::daecore::daetype::subsetter::GlyphSet;
 use super::*;
-use super::super::decoder::records_fit;
+use super::super::decoder::{bin_search_header, midpoint_search, records_fit};
+use super::super::format::metrics::{compacted, narrowed, MetricsTable};
+use super::super::vorg::Vorg;
 
 pub fn fix_post_table(mut post: Vec<u8>) -> Vec<u8> {
     if post.len() < 32 { return post; }
@@ -9,128 +11,101 @@ pub fn fix_post_table(mut post: Vec<u8>) -> Vec<u8> {
     post
 }
 
-// A record whose glyph has no place in the subset is left out, the rest kept.
-pub fn remap_vorg(vorg: &[u8], gid_map: &[u16], active: &GlyphSet) -> Option<Vec<u8>> {
-    if vorg.len() < 8 { return None; }
-    let major = read_u16_be(vorg, 0)?;
-    let minor = read_u16_be(vorg, 2)?;
-    let default = read_i16_be(vorg, 4)?;
-    let count = read_u16_be(vorg, 6)? as usize;
+// A record whose glyph has no place in the subset is left out, the rest kept, in the source's version at minor 0:
+// version 2's glyphs and count in 24 bits.
+pub fn remap_vorg(vorg: &[u8], gid_map: &[u32], active: &GlyphSet) -> Option<Vec<u8>> {
+    let table = Vorg::read(vorg)?;
+    let w = table.width;
+    let kept: Vec<(u32, i16)> =
+        table.records().filter_map(|(gid, y)| Some((remap_gid(active, gid_map, gid)?, y))).collect();
 
-    let mut kept: Vec<(u16, i16)> = Vec::with_capacity(count.min(active.len()));
-    for i in 0..count {
-        let rec = 8 + i * 4;
-        let orig_gid = read_u16_be(vorg, rec)?;
-        let y = read_i16_be(vorg, rec + 2)?;
-        if let Some(gid) = kept_gid(orig_gid, gid_map, active) { kept.push((gid, y)); }
-    }
-
-    let mut out = vec![0u8; 8 + kept.len() * 4];
-    write_u16_be(&mut out, 0, major);
-    write_u16_be(&mut out, 2, minor);
-    write_i16_be(&mut out, 4, default);
-    write_u16_be(&mut out, 6, kept.len() as u16);
-    for (i, &(gid, y)) in kept.iter().enumerate() {
-        write_u16_be(&mut out, 8 + i * 4, gid);
-        write_i16_be(&mut out, 8 + i * 4 + 2, y);
+    let fits = |v: u32| v >> (8 * w) == 0;
+    let count = u32::try_from(kept.len()).ok().filter(|&n| fits(n))?;
+    let mut out = vec![0, w as u8 - 1, 0, 0];
+    out.extend_from_slice(&table.default.to_be_bytes());
+    out.extend_from_slice(&count.to_be_bytes()[4 - w..]);
+    for (gid, y) in kept {
+        if !fits(gid) {
+            return None;
+        }
+        out.extend_from_slice(&gid.to_be_bytes()[4 - w..]);
+        out.extend_from_slice(&y.to_be_bytes());
     }
     Some(out)
 }
 
-fn kept_gid(gid: u16, gid_map: &[u16], active: &GlyphSet) -> Option<u16> {
-    if !active.contains(&gid) { return None; }
-    gid_map.get(usize::from(gid)).copied()
-}
-
-// The format 0 and 2 subtables the shaper applies, left with the kept glyphs' pairs or classes. Only the
-// last can pass 64 KB: read to the table's end, as HarfBuzz reads it, and written wrapped, as fontTools does.
-pub fn remap_kern(kern: &[u8], gid_map: &[u16], active: &GlyphSet) -> Option<Vec<u8>> {
-    let apple = read_u16_be(kern, 0)? == 1 && read_u16_be(kern, 2)? == 0;
-    let (n_tables, mut at) = if apple {
-        (read_u32_be(kern, 4)? as usize, 8)
-    } else {
-        if read_u16_be(kern, 0)? != 0 { return None; }
-        (read_u16_be(kern, 2)? as usize, 4)
+// Every subtable stays in order with its coverage, as shaping's plan counts them all: formats 0 to 3 cut to the kept
+// glyphs, any other its header alone. An OpenType kern's last reads to the table's end and can pass 64 KB, wrapped.
+// None once the subtables pass the subset budget.
+pub fn remap_kern(kern: &[u8], gid_map: &[u32], active: &GlyphSet) -> Option<Vec<u8>> {
+    let (apple, n_tables, header_len, mut at) = match read_u16_be(kern, 0)? {
+        0 => (false, usize::from(read_u16_be(kern, 2)?), 6, 4),
+        1 => (true, read_u32_be(kern, 4)? as usize, 8, 8),
+        // Another version applies nothing, but counts as data.
+        _ => return kern.get(..4).map(<[u8]>::to_vec),
     };
-    let header_len = if apple { 8 } else { 6 };
 
-    let mut subtables: Vec<Vec<u8>> = Vec::new();
+    let mut out = kern.get(..at)?.to_vec();
+    let budget = subset_budget(kern.len());
     for i in 0..n_tables {
+        let last = i + 1 == n_tables;
         let (length, coverage) = if apple {
             (read_u32_be(kern, at)? as usize, read_u16_be(kern, at + 4)?)
         } else {
             (usize::from(read_u16_be(kern, at + 2)?), read_u16_be(kern, at + 4)?)
         };
-        let end = if !apple && i + 1 == n_tables { kern.len() } else { at.checked_add(length)? };
+        let end = if last && !apple { kern.len() } else { at.checked_add(length)? };
         if end < at + header_len || end > kern.len() {
             return None;
         }
         let sub = &kern[at..end];
         let format = if apple { coverage & 0x00FF } else { coverage >> 8 };
-        let variation = apple && coverage & 0x2000 != 0;
         let body = match format {
-            _ if variation => None,
             0 => remap_kern_format0(sub, header_len, gid_map, active),
+            1 => remap_kern_format1(sub, header_len, gid_map, active),
             2 => remap_kern_format2(sub, header_len, gid_map, active),
-            _ => None,
-        };
-        if let Some(body) = body {
-            let mut rebuilt = sub[..header_len].to_vec();
-            rebuilt.extend(body);
-            subtables.push(rebuilt);
+            3 => remap_kern_format3(sub, header_len, gid_map, active),
+            _ => Some(Vec::new()),
+        }?;
+        let start = out.len();
+        out.extend_from_slice(&sub[..header_len]);
+        out.extend(body);
+        if out.len() > budget {
+            return None;
+        }
+        let length = out.len() - start;
+        if apple {
+            write_u32_be(&mut out, start, u32::try_from(length).ok()?);
+        } else {
+            write_u16_be(&mut out, start + 2, if last { length as u16 } else { u16::try_from(length).ok()? });
         }
         at = end;
-    }
-
-    if subtables.is_empty() {
-        return None;
-    }
-    let mut out = Vec::new();
-    if apple {
-        out.extend_from_slice(&0x0001_0000u32.to_be_bytes());
-        out.extend_from_slice(&u32::try_from(subtables.len()).ok()?.to_be_bytes());
-    } else {
-        out.extend_from_slice(&0u16.to_be_bytes());
-        out.extend_from_slice(&u16::try_from(subtables.len()).ok()?.to_be_bytes());
-    }
-    for mut sub in subtables {
-        if apple {
-            let length = u32::try_from(sub.len()).ok()?;
-            write_u32_be(&mut sub, 0, length);
-        } else {
-            let length = sub.len() as u16;
-            write_u16_be(&mut sub, 2, length);
-        }
-        out.extend_from_slice(&sub);
     }
     Some(out)
 }
 
-fn remap_kern_format0(sub: &[u8], body: usize, gid_map: &[u16], active: &GlyphSet) -> Option<Vec<u8>> {
+fn remap_kern_format0(sub: &[u8], body: usize, gid_map: &[u32], active: &GlyphSet) -> Option<Vec<u8>> {
     let n_pairs = read_u16_be(sub, body)? as usize;
-    if !records_fit(body + 8, n_pairs, 6, sub.len()) { return None; }
+    let pairs_at = body + 8;
+    if !records_fit(pairs_at, n_pairs, 6, sub.len()) { return None; }
+    let key_at = |i: usize| read_u32_be(sub, pairs_at + i * 6);
 
-    let mut kept: Vec<(u16, u16, i16)> = Vec::with_capacity(n_pairs.min(active.len()));
+    // Each pair with the value the shaper's search finds in the font: a pair the font repeats or misorders may read
+    // another copy's value there, or none.
+    let (mut kept, mut lefts) = (Vec::with_capacity(n_pairs.min(active.len())), BTreeSet::new());
     for i in 0..n_pairs {
-        let rec = body + 8 + i * 6;
-        let (Some(left), Some(right)) = (read_u16_be(sub, rec), read_u16_be(sub, rec + 2)) else { continue };
-        let (Some(left), Some(right)) = (kept_gid(left, gid_map, active), kept_gid(right, gid_map, active)) else { continue };
-        kept.push((left, right, read_i16_be(sub, rec + 4)?));
+        let Some(key) = key_at(i) else { continue };
+        let Some(left) = remap_gid16(active, gid_map, (key >> 16) as u16) else { continue };
+        lefts.insert(left);
+        let Some(right) = remap_gid16(active, gid_map, key as u16) else { continue };
+        let Some(found) = midpoint_search(n_pairs, |j| key_at(j).map(|k| key.cmp(&k))) else { continue };
+        kept.push((left, right, read_i16_be(sub, pairs_at + found * 6 + 4)?));
     }
-    if kept.is_empty() {
-        return None;
-    }
-    // Readers binary-search the pairs, which the font may list out of order or twice: sorted here, each
-    // pair kept once with its first value.
-    kept.sort_by_key(|&(left, right, _)| (left, right));
-    kept.dedup_by_key(|&mut (left, right, _)| (left, right));
+    let kept = format0_pairs(kept, lefts);
 
     let pairs = u16::try_from(kept.len()).ok()?;
-    let entry_selector = u32::from(pairs).ilog2();
-    let search_range = ((1u32 << entry_selector) * 6) & 0xFFFF;
-    let range_shift = (u32::from(pairs) * 6).wrapping_sub(search_range) & 0xFFFF;
     let mut out = Vec::with_capacity(8 + kept.len() * 6);
-    for v in [u32::from(pairs), search_range, entry_selector, range_shift] {
+    for v in [usize::from(pairs)].into_iter().chain(bin_search_header(kept.len(), 6)) {
         out.extend_from_slice(&(v as u16).to_be_bytes());
     }
     for &(left, right, value) in &kept {
@@ -141,6 +116,16 @@ fn remap_kern_format0(sub: &[u8], body: usize, gid_map: &[u16], active: &GlyphSe
     Some(out)
 }
 
+// Pairs sorted and once each. A subtable starts on every pair's left glyph, so a kept left glyph whose pairs all went
+// keeps one to 0xFFFF, which no subset glyph meets: a subset has fewer glyphs, and deletions leave before kerning.
+pub(crate) fn format0_pairs(mut pairs: Vec<(u16, u16, i16)>, mut lefts: BTreeSet<u16>) -> Vec<(u16, u16, i16)> {
+    for &(left, ..) in &pairs { lefts.remove(&left); }
+    pairs.extend(lefts.into_iter().map(|left| (left, 0xFFFF, 0)));
+    pairs.sort_unstable_by_key(|&(left, right, _)| (left, right));
+    pairs.dedup_by_key(|&mut (left, right, _)| (left, right));
+    pairs
+}
+
 // A class table's first glyph and its values, read whole.
 fn kern_classes(sub: &[u8], off: usize) -> Option<(u16, Vec<u16>)> {
     let first = read_u16_be(sub, off)?;
@@ -149,168 +134,175 @@ fn kern_classes(sub: &[u8], off: usize) -> Option<(u16, Vec<u16>)> {
     Some((first, (0..count).filter_map(|i| read_u16_be(sub, off + 4 + i * 2)).collect()))
 }
 
-// Class tables keyed by the kept glyphs, new ids in place of old, and the kerning array copied whole.
-// A left class names its row by offset from the subtable's start, so each moves with the array.
-fn remap_kern_format2(sub: &[u8], body: usize, gid_map: &[u16], active: &GlyphSet) -> Option<Vec<u8>> {
+// The machine as it stands, its class table rebuilt for the kept glyphs after the rest, so no offset, state or value
+// moves. A subset keeps glyph order, so every glyph between kept ones comes from the old table with its class.
+fn remap_kern_format1(sub: &[u8], body: usize, gid_map: &[u32], active: &GlyphSet) -> Option<Vec<u8>> {
+    let class_at = body + usize::from(read_u16_be(sub, body + 2)?);
+    let first = read_u16_be(sub, class_at)?;
+    let count = usize::from(read_u16_be(sub, class_at + 2)?);
+    let classes = sub.get(class_at + 4..class_at + 4 + count)?;
+    let mut kept: Vec<(u16, u8)> = classes.iter().enumerate()
+        .filter_map(|(i, &k)| Some((remap_gid16(active, gid_map, first.checked_add(u16::try_from(i).ok()?)?)?, k)))
+        .collect();
+    kept.sort_unstable();
+    let new_first = kept.first().map_or(0, |k| k.0);
+    let mut row = vec![1u8; kept.last().map_or(0, |k| usize::from(k.0 - new_first) + 1)];
+    kept.iter().for_each(|&(gid, k)| row[usize::from(gid - new_first)] = k);
+
+    let mut out = sub.get(body..)?.to_vec();
+    let at = u16::try_from(out.len()).ok()?;
+    write_u16_be(&mut out, 2, at);
+    out.extend(new_first.to_be_bytes());
+    out.extend(u16::try_from(row.len()).ok()?.to_be_bytes());
+    out.extend(row);
+    Some(out)
+}
+
+// Class tables of the kept glyphs, then the array out to the furthest word a kept pair reaches within the subtable,
+// as a read past it gives 0 in both. A left class, an offset counting the array's, moves with it, never below 0 or
+// onto 1, which reads as none; past 65,535 it's left out. An array past the subtable reads as one at its end.
+fn remap_kern_format2(sub: &[u8], body: usize, gid_map: &[u32], active: &GlyphSet) -> Option<Vec<u8>> {
     let row_width = read_u16_be(sub, body)?;
-    let array = usize::from(read_u16_be(sub, body + 6)?);
-    if array > sub.len() { return None; }
-    let classes = |at: usize, row: bool| -> Option<Vec<(u16, u16)>> {
+    let array = usize::from(read_u16_be(sub, body + 6)?).min(sub.len());
+    let classes = |at: usize| -> Option<Vec<(u16, u16)>> {
         let (first, values) = kern_classes(sub, usize::from(read_u16_be(sub, body + at)?))?;
         let mut kept: Vec<(u16, u16)> = values.iter().enumerate()
-            .filter_map(|(i, &v)| {
-                let gid = kept_gid(first.checked_add(u16::try_from(i).ok()?)?, gid_map, active)?;
-                // A row before the array kerns nothing, as the shaper reads it.
-                (!row || usize::from(v) >= array).then_some((gid, v))
-            })
-            .filter(|&(_, v)| v != 0)
+            .filter(|&(_, &v)| v != 1)
+            .filter_map(|(i, &v)| Some((remap_gid16(active, gid_map, first.checked_add(u16::try_from(i).ok()?)?)?, v)))
             .collect();
         kept.sort_unstable();
         Some(kept)
     };
-    let (left, right) = (classes(2, true)?, classes(4, false)?);
-    let (Some(&(left_first, _)), Some(&(left_last, _))) = (left.first(), left.last()) else { return None };
-    let (Some(&(right_first, _)), Some(&(right_last, _))) = (right.first(), right.last()) else { return None };
+    let (left, right) = (classes(2)?, classes(4)?);
+    let span = |entries: &[(u16, u16)]| match (entries.first(), entries.last()) {
+        (Some(&(first, _)), Some(&(last, _))) => (first, usize::from(last - first) + 1),
+        _ => (0, 0),
+    };
+    let highest = |entries: &[(u16, u16)]| entries.iter().map(|&(_, v)| usize::from(v)).max();
+    let reach = highest(&left).zip(highest(&right)).and_then(|(l, r)| (l + r).checked_sub(array));
+    let words = reach.map_or(0, |reach| reach / 2 + 1).min((sub.len() - array) / 2);
 
-    let table = |first: u16, last: u16, entries: &[(u16, u16)], shift: isize| -> Option<Vec<u8>> {
-        let mut values = vec![0u16; usize::from(last - first) + 1];
+    let table = |entries: &[(u16, u16)], shift: i32| -> Option<Vec<u8>> {
+        let (first, len) = span(entries);
+        let mut values = vec![1u16; len];
         for &(gid, v) in entries {
-            values[usize::from(gid - first)] = u16::try_from(v as isize + shift).ok()?;
+            if let Ok(v) = u16::try_from(i32::from(v) + shift) {
+                values[usize::from(gid - first)] = v;
+            }
         }
-        Some([first.to_be_bytes(), u16::try_from(values.len()).ok()?.to_be_bytes()].concat().into_iter()
+        Some([first.to_be_bytes(), u16::try_from(len).ok()?.to_be_bytes()].concat().into_iter()
             .chain(values.iter().flat_map(|v| v.to_be_bytes())).collect())
     };
     let left_at = body + 8;
-    let right_len = 4 + 2 * (usize::from(right_last - right_first) + 1);
-    let left_len = 4 + 2 * (usize::from(left_last - left_first) + 1);
-    let new_array = left_at + left_len + right_len;
-    let left_table = table(left_first, left_last, &left, new_array as isize - array as isize)?;
-    let right_table = table(right_first, right_last, &right, 0)?;
+    let left_len = 4 + 2 * span(&left).1;
+    let tables_end = left_at + left_len + 4 + 2 * span(&right).1;
+    let mut shift = left.iter().map(|&(_, v)| -i32::from(v)).fold(tables_end as i32 - array as i32, i32::max);
+    if left.iter().any(|&(_, v)| i32::from(v) + shift == 1) { shift += 2; }
+    let new_array = array.checked_add_signed(shift as isize)?;
+    let left_table = table(&left, shift)?;
+    let right_table = table(&right, 0)?;
 
-    let mut out = Vec::with_capacity(new_array - body + sub.len() - array);
-    for v in [row_width, u16::try_from(left_at).ok()?, u16::try_from(left_at + left_len).ok()?, u16::try_from(new_array).ok()?] {
-        out.extend_from_slice(&v.to_be_bytes());
+    let mut out = Vec::with_capacity(new_array - body + 2 * words);
+    out.extend(row_width.to_be_bytes());
+    for at in [left_at, left_at + left_len, new_array] {
+        out.extend(u16::try_from(at).ok()?.to_be_bytes());
     }
     out.extend(left_table);
     out.extend(right_table);
-    out.extend_from_slice(&sub[array..]);
+    out.resize(new_array - body, 0);
+    (0..words).for_each(|i| out.extend(read_i16_be(sub, array + 2 * i).unwrap_or(0).to_be_bytes()));
     Some(out)
 }
 
-pub fn metric_pair(mtx: &[u8], num_long: usize, last_advance: u16, gid: usize) -> (u16, i16) {
-    if gid < num_long {
-        let off = gid * 4;
-        let adv = if off + 2 <= mtx.len() { read_u16_be(mtx, off).unwrap_or(0) } else { 0 };
-        let bearing = if off + 4 <= mtx.len() { read_i16_be(mtx, off + 2).unwrap_or(0) } else { 0 };
-        (adv, bearing)
-    } else {
-        let off = num_long * 4 + (gid - num_long) * 2;
-        let bearing = if off + 2 <= mtx.len() { read_i16_be(mtx, off).unwrap_or(0) } else { 0 };
-        (last_advance, bearing)
+// Only what kept glyphs read, each renumbered in order, so each kept pair reads the value it did. A class or index past
+// its count reads 0, so it takes an in-range 0 where a count can hold one more.
+fn remap_kern_format3(sub: &[u8], body: usize, gid_map: &[u32], active: &GlyphSet) -> Option<Vec<u8>> {
+    let glyphs = usize::from(read_u16_be(sub, body)?);
+    let count = |i: usize| sub.get(body + i).map(|&n| usize::from(n));
+    let (values, lefts, rights) = (count(2)?, count(3)?, count(4)?);
+    let values_at = body + 6;
+    let lefts_at = values_at + values * 2;
+    let rights_at = lefts_at + glyphs;
+    let index_at = rights_at + glyphs;
+    let index = sub.get(index_at..index_at + lefts * rights)?;
+    if glyphs == 0 {
+        return sub.get(body..index_at + index.len()).map(<[u8]>::to_vec);
     }
+
+    let kept: Vec<(u16, u16)> = active.iter().filter_map(|g| {
+        let g = u16::try_from(g).ok()?;
+        Some((g, remap_gid16(active, gid_map, g)?))
+    }).collect();
+    let class = |at: usize, g: u16| if usize::from(g) < glyphs { usize::from(sub[at + usize::from(g)]) } else { 0 };
+    // Each side's classes in use, ascending, and whether a kept glyph reads one past the count.
+    let used = |at: usize, n: usize| {
+        let classes: BTreeSet<usize> = kept.iter().map(|&(old, _)| class(at, old)).collect();
+        let past = classes.last().is_some_and(|&c| c >= n);
+        (classes.into_iter().filter(|&c| c < n).collect::<Vec<_>>(), past)
+    };
+    let ((rows, past_row), (cols, past_col)) = (used(lefts_at, lefts), used(rights_at, rights));
+    let cell = |l: usize, r: usize| Some(usize::from(index[l * rights + r])).filter(|&k| k < values);
+    let named: BTreeSet<usize> = rows.iter().flat_map(|&l| cols.iter().filter_map(move |&r| cell(l, r))).collect();
+    let mut kept_values: Vec<usize> = named.into_iter().collect();
+    // A cell reading 0 names a value of 0 already kept, else one added.
+    let reads_zero = past_row || past_col || rows.iter().any(|&l| cols.iter().any(|&r| cell(l, r).is_none()));
+    let value = |k: usize| read_i16_be(sub, values_at + 2 * k).unwrap_or(0);
+    let zero = match kept_values.iter().position(|&k| value(k) == 0) {
+        Some(z) => z,
+        None => kept_values.len(),
+    };
+    let add_zero = reads_zero && zero == kept_values.len() && zero < 255;
+    if add_zero {
+        kept_values.push(usize::MAX);
+    }
+    // A side past its count reads a row or column of zeros, added where the count can hold it.
+    let (zero_row, zero_col) = (rows.len(), cols.len());
+    let new_lefts = rows.len() + usize::from(past_row && zero_row < 255);
+    let new_rights = cols.len() + usize::from(past_col && zero_col < 255);
+
+    let renumber = |at: usize, kept_classes: &[usize], past: usize| {
+        let mut out = vec![0u8; kept.iter().map(|&(_, new)| usize::from(new) + 1).max().unwrap_or(0)];
+        for &(old, new) in &kept {
+            let c = class(at, old);
+            out[usize::from(new)] = kept_classes.binary_search(&c).unwrap_or(past) as u8;
+        }
+        out
+    };
+    let lefts_out = renumber(lefts_at, &rows, zero_row);
+    let rights_out = renumber(rights_at, &cols, zero_col);
+    let mut out = Vec::with_capacity(6 + 2 * kept_values.len() + 2 * lefts_out.len() + new_lefts * new_rights + 1);
+    out.extend(u16::try_from(lefts_out.len()).ok()?.to_be_bytes());
+    out.extend([kept_values.len() as u8, new_lefts as u8, new_rights as u8, sub[body + 5]]);
+    kept_values.iter().for_each(|&k| out.extend(if k == usize::MAX { 0 } else { value(k) }.to_be_bytes()));
+    out.extend(&lefts_out);
+    out.extend(&rights_out);
+    for l in (0..new_lefts).map(|i| rows.get(i)) {
+        for r in (0..new_rights).map(|i| cols.get(i)) {
+            let k = l.zip(r).and_then(|(&l, &r)| cell(l, r));
+            out.push(k.map_or(zero, |k| kept_values.binary_search(&k).unwrap_or(zero)) as u8);
+        }
+    }
+    Some(out)
 }
 
-pub fn rebuild_metrics(mtx: &[u8], num_long: usize, active_sorted: &[u16]) -> Vec<u8> {
-    let last_advance = if num_long > 0 && num_long * 4 <= mtx.len() {
-        read_u16_be(mtx, (num_long - 1) * 4).unwrap_or(0)
-    } else { 0 };
-
+// Each kept glyph's advance and bearing as shaping reads them, trailing equal advances as bearings, with the long
+// count; none without long records. Past 65,535 a glyph keeps its bearing alone unless `wide` (HMTX, VMTX).
+pub fn rebuild_metrics(
+    mtx: &[u8], num_long: usize, num_glyphs: usize, active_sorted: &[u32], wide: bool,
+) -> (Vec<u8>, usize) {
+    let Some(table) = MetricsTable::read(mtx, num_long, num_glyphs).filter(MetricsTable::has_data) else {
+        return (vec![0; 2 * active_sorted.len()], 0);
+    };
     let mut out = vec![0u8; active_sorted.len() * 4];
     for (compact, &orig_gid) in active_sorted.iter().enumerate() {
-        let (adv, bearing) = metric_pair(mtx, num_long, last_advance, orig_gid as usize);
+        let (adv, bearing) = table.pair(orig_gid as usize);
         write_u16_be(&mut out, compact * 4, adv);
         write_i16_be(&mut out, compact * 4 + 2, bearing);
     }
-    out
+    let (out, long) = compacted(out, active_sorted.len());
+    if wide { (out, long) } else { narrowed(out, long) }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Format 0 pairs out of order, and one pair twice: the subset is sorted, each pair kept once, first
-    // value first, as a reader's binary search needs.
-    #[test]
-    fn kern_pairs_out_of_order_come_back_sorted() {
-        let kern: Vec<u8> = [0u16, 1, 0, 32, 1, 3, 12, 1, 6, 2, 1, 0xFFF6, 1, 2, 0xFFEC, 1, 2, 0xFFE2]
-            .iter().flat_map(|w| w.to_be_bytes()).collect();
-        let mut active = GlyphSet::new();
-        (0..3).for_each(|g| { active.insert(g); });
-        let out = remap_kern(&kern, &[0, 1, 2], &active).expect("a subset kern");
-        let pairs: Vec<(u16, u16, i16)> = (0..usize::from(read_u16_be(&out, 10).expect("a pair count")))
-            .map(|i| (read_u16_be(&out, 18 + 6 * i).unwrap(), read_u16_be(&out, 20 + 6 * i).unwrap(), read_i16_be(&out, 22 + 6 * i).unwrap()))
-            .collect();
-        assert_eq!(pairs, [(1, 2, -20), (2, 1, -10)], "the pairs did not come back sorted, once each");
-    }
-
-    fn u16s(words: &[u16]) -> Vec<u8> {
-        words.iter().flat_map(|w| w.to_be_bytes()).collect()
-    }
-
-    // Glyphs 2 and 3 in rows 0 and 1, 5 and 6 in columns 0 and 1, of a 2 by 2 array: a kern table of
-    // one format 2 subtable, OpenType or Apple. Offsets count from the subtable's start.
-    fn format2(apple: bool) -> Vec<u8> {
-        let h: u16 = if apple { 8 } else { 6 };
-        let array = h + 24;
-        let body = [u16s(&[4, h + 8, h + 16, array, 2, 2, array, array + 4, 5, 2, 0, 2]), u16s(&[0xFFF6, 0xFFEC, 0xFFE2, 0xFFD8])].concat();
-        let length = usize::from(h) + body.len();
-        let header = if apple { [u16s(&[1, 0, 0, 1]), (length as u32).to_be_bytes().to_vec(), u16s(&[2, 0])].concat() }
-            else { u16s(&[0, 1, 0, length as u16, 0x0201]) };
-        [header, body].concat()
-    }
-
-    // The shaper's reading: the left class names a row by offset, the right a column; a row before
-    // the array kerns nothing.
-    fn kerning(kern: &[u8], apple: bool, left: u16, right: u16) -> i16 {
-        let sub = if apple { 8 } else { 4 };
-        let body = sub + if apple { 8 } else { 6 };
-        let at = |k: usize| usize::from(read_u16_be(kern, k).unwrap_or(0));
-        let class = |table: usize, g: u16| {
-            let (first, n) = (at(sub + table) as u16, at(sub + table + 2) as u16);
-            if g < first || g >= first + n { 0 } else { at(sub + table + 4 + 2 * usize::from(g - first)) }
-        };
-        let row = class(at(body + 2), left);
-        if row < at(body + 6) { return 0; }
-        read_i16_be(kern, sub + row + class(at(body + 4), right)).unwrap_or(0)
-    }
-
-    #[test]
-    fn class_kerning_keeps_its_values_on_the_kept_glyphs() {
-        let mut active = GlyphSet::new();
-        [0, 3, 5, 6].into_iter().for_each(|g| { active.insert(g); });
-        let gid_map = [0, 0, 0, 1, 0, 2, 3];
-        for apple in [false, true] {
-            let kern = format2(apple);
-            let out = remap_kern(&kern, &gid_map, &active).expect("the class subtable is kept");
-            for (left, right) in [(3, 5), (3, 6), (5, 3), (3, 3)] {
-                assert_eq!(kerning(&out, apple, gid_map[left], gid_map[right]), kerning(&kern, apple, left as u16, right as u16), "apple {apple}: {left} {right}");
-            }
-            assert_eq!(kerning(&out, apple, 1, 2), -30);
-        }
-    }
-
-    // The last subtable, 11,000 pairs, wraps its 16-bit length and is read to the table's end.
-    #[test]
-    fn the_last_kern_subtable_may_pass_64_kb() {
-        let pairs = |n: u16| [u16s(&[0, (14 + 6 * u32::from(n)) as u16, 0x0001, n, 0, 0, 0]), (0..n).flat_map(|i| u16s(&[1, i + 1, 5])).collect()].concat();
-        let mut active = GlyphSet::new();
-        (0..=11_000).for_each(|g| { active.insert(g); });
-        let gid_map: Vec<u16> = (0..=11_000).collect();
-        let kern = [u16s(&[0, 2]), pairs(2), pairs(11_000)].concat();
-        let out = remap_kern(&kern, &gid_map, &active).expect("a kern");
-        let second = 4 + usize::from(read_u16_be(&out, 6).expect("length"));
-        assert_eq!([read_u16_be(&out, 10), read_u16_be(&out, second + 6)], [Some(2), Some(11_000)]);
-        assert_eq!(out.len(), kern.len());
-    }
-
-    // A record whose glyph the subset holds no place for is left out; the rest stay.
-    #[test]
-    fn a_vorg_record_without_a_place_is_left_out() {
-        let vorg = u16s(&[1, 0, 880, 2, 36, 900, 6_000, 910]);
-        let mut active = GlyphSet::new();
-        [0, 36, 6_000].into_iter().for_each(|g| { active.insert(g); });
-        let mut gid_map = vec![0; 37];
-        gid_map[36] = 1;
-        assert_eq!(remap_vorg(&vorg, &gid_map, &active), Some(u16s(&[1, 0, 880, 1, 1, 900])));
-    }
-}
+#[path = "../../../tests/unit/daetype/subsetter/remap.rs"]
+mod tests;

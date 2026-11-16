@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+use alloc::vec::Vec;
 
-use daegun::daecore::daetype::hinting::{HintContext, HintMode};
-use daegun::daecore::daetype::outline::OutlinePen;
-use daegun::daecore::daetype::TableBytes;
+use crate::daecore::daetype::hinting::{HintContext, HintMode};
+use crate::daecore::daetype::outline::OutlinePen;
+use crate::daecore::daetype::Tables;
 
 #[derive(Default)]
 struct CountPen { ops: usize, acc: f32 }
@@ -20,10 +20,10 @@ impl OutlinePen for CountPen {
 }
 
 fn font_bytes() -> Vec<u8> {
-    match std::env::var("DAEGUN_HINT_FONT") {
-        Ok(p) => std::fs::read(&p).unwrap_or_else(|e| panic!("DAEGUN_HINT_FONT unreadable: {p} ({e})")),
+    match std::env::var("DAEGUN_LATENCY_FONT") {
+        Ok(p) => std::fs::read(&p).unwrap_or_else(|e| panic!("DAEGUN_LATENCY_FONT unreadable: {p} ({e})")),
         Err(_) => {
-            let p = format!("{}/test-fixtures/hinted.ttf", crate::FONTS);
+            let p = format!("{}/test-fixtures/hinted.ttf", super::FONTS);
             std::fs::read(&p).unwrap_or_else(|e| panic!("fixture missing: {p} ({e})"))
         }
     }
@@ -41,16 +41,16 @@ fn report(name: &str, detail: &str, samples: &mut [Duration]) {
     );
 }
 
-fn hinted_gids(map: &BTreeMap<String, TableBytes>, loca: &[usize], n: u16) -> Vec<u16> {
+fn hinted_gids(map: &Tables, loca: &[usize], n: u32) -> Vec<u32> {
     let glyf = map.get("glyf").expect("glyf");
     (0..n)
         .filter(|&g| {
             let (s, e) = (loca[g as usize], loca[g as usize + 1]);
             if e <= s { return false; }
-            let Some(nc) = daegun::daecore::daetype::decoder::read_i16_be(glyf, s) else { return false };
+            let Some(nc) = crate::daecore::daetype::decoder::read_i16_be(glyf, s) else { return false };
             if nc <= 0 { return false; }
             let at = s + 10 + nc as usize * 2;
-            daegun::daecore::daetype::decoder::read_u16_be(glyf, at).is_some_and(|len| len > 0)
+            crate::daecore::daetype::decoder::read_u16_be(glyf, at).is_some_and(|len| len > 0)
         })
         .collect()
 }
@@ -60,25 +60,25 @@ fn hinted_gids(map: &BTreeMap<String, TableBytes>, loca: &[usize], n: u16) -> Ve
 fn hint_glyph_bytecode() {
     const PPEM: u16 = 16;
     let bytes = font_bytes();
-    let map = daegun::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("font parses");
+    let map = crate::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("font parses");
     let head = map.get("head").expect("head");
     let maxp = map.get("maxp").expect("maxp");
-    let upm = daegun::daecore::daetype::decoder::read_u16_be(head, 18).expect("upm");
-    let fmt = daegun::daecore::daetype::decoder::read_i16_be(head, 50).expect("locaFmt");
-    let n = daegun::daecore::daetype::decoder::read_u16_be(maxp, 4).expect("numGlyphs");
-    let loca = daegun::daecore::daetype::instancer::parse_loca(&map, fmt, n as usize).expect("loca");
+    let upm = crate::daecore::daetype::decoder::read_u16_be(head, 18).expect("upm");
+    let fmt = crate::daecore::daetype::decoder::read_i16_be(head, 50).expect("locaFmt");
+    let n = crate::daecore::daetype::decoder::read_u16_be(maxp, 4).map(u32::from).expect("numGlyphs");
+    let loca = crate::daecore::daetype::instancer::parse_loca(&map, fmt, n as usize).expect("loca");
     let glyf = map.get("glyf").expect("glyf").clone();
 
     let gids = hinted_gids(&map, &loca, n);
     assert!(!gids.is_empty(), "font carries no per-glyph instructions to hint");
 
-    let mut ctx = HintContext::new(&map, PPEM.into(), upm, HintMode::Subpixel).expect("font carries hinting");
+    let mut ctx = HintContext::new(&map, PPEM.into(), upm).expect("font carries hinting");
 
     let mut expect = 0usize;
     for &gid in &gids {
         let mut pen = CountPen::default();
         if let Some(out) = ctx.hint_glyph(&glyf, &loca, gid) {
-            daegun::daecore::daetype::hinting::draw_hinted(&out, &mut pen);
+            crate::daecore::daetype::hinting::draw_hinted(out, &mut pen);
         }
         expect += pen.ops;
     }
@@ -92,7 +92,7 @@ fn hint_glyph_bytecode() {
         let t = Instant::now();
         for &gid in &gids {
             if let Some(out) = ctx.hint_glyph(&glyf, &loca, gid) {
-                daegun::daecore::daetype::hinting::draw_hinted(&out, &mut pen);
+                crate::daecore::daetype::hinting::draw_hinted(out, &mut pen);
             }
         }
         samples.push(t.elapsed());
@@ -112,11 +112,11 @@ fn hint_glyph_bytecode() {
 fn hint_glyph_context_per_glyph() {
     const PPEM: u16 = 16;
     let bytes = font_bytes();
-    let map = daegun::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("parses");
-    let upm = daegun::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap();
-    let fmt = daegun::daecore::daetype::decoder::read_i16_be(map.get("head").unwrap(), 50).unwrap();
-    let n = daegun::daecore::daetype::decoder::read_u16_be(map.get("maxp").unwrap(), 4).unwrap();
-    let loca = daegun::daecore::daetype::instancer::parse_loca(&map, fmt, n as usize).expect("loca");
+    let map = crate::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("parses");
+    let upm = crate::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap();
+    let fmt = crate::daecore::daetype::decoder::read_i16_be(map.get("head").unwrap(), 50).unwrap();
+    let n = crate::daecore::daetype::decoder::read_u16_be(map.get("maxp").unwrap(), 4).map(u32::from).unwrap();
+    let loca = crate::daecore::daetype::instancer::parse_loca(&map, fmt, n as usize).expect("loca");
     let glyf = map.get("glyf").expect("glyf").clone();
     let gids = hinted_gids(&map, &loca, n);
 
@@ -126,16 +126,20 @@ fn hint_glyph_context_per_glyph() {
         let mut pen = CountPen::default();
         let t = Instant::now();
         for &gid in &gids {
-            if let Some(mut ctx) = HintContext::new(&map, PPEM.into(), upm, HintMode::Subpixel)
+            if let Some(mut ctx) = HintContext::new(&map, PPEM.into(), upm)
                 && let Some(o) = ctx.hint_glyph(&glyf, &loca, gid)
             {
-                daegun::daecore::daetype::hinting::draw_hinted(&o, &mut pen);
+                crate::daecore::daetype::hinting::draw_hinted(o, &mut pen);
             }
         }
         samples.push(t.elapsed());
         core::hint::black_box(&pen.acc);
     }
-    report("hint_glyph_context_per_glyph", &format!("{} glyphs, HintContext rebuilt each time", gids.len()), &mut samples);
+    report(
+        "hint_glyph_context_per_glyph",
+        &format!("{} glyphs, HintContext rebuilt each time", gids.len()),
+        &mut samples,
+    );
 }
 
 #[test]
@@ -143,14 +147,14 @@ fn hint_glyph_context_per_glyph() {
 fn hint_glyph_context_cached() {
     const PPEM: u16 = 16;
     let bytes = font_bytes();
-    let map = daegun::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("parses");
-    let upm = daegun::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap();
-    let fmt = daegun::daecore::daetype::decoder::read_i16_be(map.get("head").unwrap(), 50).unwrap();
-    let n = daegun::daecore::daetype::decoder::read_u16_be(map.get("maxp").unwrap(), 4).unwrap();
-    let loca = daegun::daecore::daetype::instancer::parse_loca(&map, fmt, n as usize).expect("loca");
+    let map = crate::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("parses");
+    let upm = crate::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap();
+    let fmt = crate::daecore::daetype::decoder::read_i16_be(map.get("head").unwrap(), 50).unwrap();
+    let n = crate::daecore::daetype::decoder::read_u16_be(map.get("maxp").unwrap(), 4).map(u32::from).unwrap();
+    let loca = crate::daecore::daetype::instancer::parse_loca(&map, fmt, n as usize).expect("loca");
     let glyf = map.get("glyf").expect("glyf").clone();
     let gids = hinted_gids(&map, &loca, n);
-    let cache = daegun::daecore::cache::FontCache::new(map);
+    let cache = crate::daecore::daekit::cache::FontCache::new(map).expect("the fixture loads");
 
     let iters = (200_000 / gids.len().max(1)).max(20);
     let mut samples = Vec::with_capacity(iters);
@@ -158,9 +162,8 @@ fn hint_glyph_context_cached() {
         let mut pen = CountPen::default();
         let t = Instant::now();
         for &gid in &gids {
-            if let Some(o) = cache.hint_glyph_cached(&glyf, &loca, gid, PPEM.into(), upm, HintMode::Subpixel) {
-                daegun::daecore::daetype::hinting::draw_hinted(&o, &mut pen);
-            }
+            let draw = |o: &mut _| crate::daecore::daetype::hinting::draw_hinted(o, &mut pen);
+            cache.hint_glyph_cached(&glyf, (&loca).into(), gid, PPEM.into(), upm, HintMode::Font, draw);
         }
         samples.push(t.elapsed());
         core::hint::black_box(&pen.acc);

@@ -1,140 +1,603 @@
+#[cfg(doc)]
+use crate::ErrorKind::{InvalidArgument, LimitExceeded, Overflow};
 use alloc::vec::Vec;
 use core::f32::consts::PI;
+use core::f64::consts::SQRT_2;
 
 #[allow(unused_imports, reason = "the inherent method shadows this whenever std is linked")]
-use crate::daecore::daemachine::float::FloatExt;
-use crate::daecore::daemachine::float::{atan2, sin_cos};
+use crate::daecore::daekit::float::FloatExt;
+use crate::daecore::daekit::float::{atan2, sin_cos};
 
 use super::flatten::MAX_FLATTEN_POINTS;
-use super::{OutlinePen, Path, Verb};
+use super::{OutlinePen, Path, Point, Verb};
+use crate::daecore::daekit::base::error::Result;
+use crate::daecore::{Error, ErrorKind};
 
+/// How a stroke turns a corner.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Join {
-    Miter { limit: f32 },
+    /// A sharp point, beveled where it would reach past `limit` times half the width.
+    Miter {
+        /// How far the point may reach, in half widths; one not above 0 means 4.
+        limit: f32,
+    },
+    /// Rounded.
     Round,
+    /// Cut straight across.
     Bevel,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// How a stroke ends an open contour.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cap {
+    /// Square, at the end.
     Butt,
+    /// Rounded, past the end by half the width.
     Round,
+    /// Square, past the end by half the width.
     Square,
 }
 
-#[derive(Clone, Copy, Debug)]
+/// How a path is stroked.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StrokeStyle {
+    /// The stroke's width, in the path's units: its sign is ignored, and 0 draws nothing.
     pub width: f32,
+    /// How it turns corners.
     pub join: Join,
+    /// How it ends open contours.
     pub cap: Cap,
 }
 
 impl Default for StrokeStyle {
     fn default() -> StrokeStyle {
-        StrokeStyle { width: 1.0, join: Join::Miter { limit: 4.0 }, cap: Cap::Butt }
+        StrokeStyle::new(1.0)
     }
 }
+
+impl StrokeStyle {
+    /// A stroke this wide, mitered at 4 half widths and butt-capped, as the default is at a width of 1.
+    #[must_use]
+    pub const fn new(width: f32) -> StrokeStyle {
+        StrokeStyle { width, join: Join::Miter { limit: DEFAULT_MITER_LIMIT }, cap: Cap::Butt }
+    }
+
+    /// This style with a join.
+    #[must_use]
+    pub const fn with_join(mut self, join: Join) -> StrokeStyle {
+        self.join = join;
+        self
+    }
+
+    /// This style with a cap.
+    #[must_use]
+    pub const fn with_cap(mut self, cap: Cap) -> StrokeStyle {
+        self.cap = cap;
+        self
+    }
+}
+
+// What a miter limit not above 0, or NaN, stands for.
+const DEFAULT_MITER_LIMIT: f32 = 4.0;
 
 type Pt = (f32, f32);
 
-const UNION_REACH: f32 = 4096.0;
+impl Path {
+    /// Strokes the path onto a pen as filled contours, each point reaching the pen as it's worked out, so a stroke of
+    /// any size draws. `tolerance` is how far the flattened curves may sit from the true ones, in the path's units;
+    /// one not above zero, or NaN, means 0.1.
+    ///
+    /// # Errors
+    ///
+    /// Drawing nothing: [`InvalidArgument`] for a width not finite, and [`Overflow`] for a point not finite, as a
+    /// miter's tip overflows long before the width does.
+    pub fn stroke(&self, style: &StrokeStyle, tolerance: f32, pen: &mut dyn OutlinePen) -> Result<()> {
+        Stroke::checked(self, style, tolerance)?.draw(pen);
+        Ok(())
+    }
 
-// `tolerance` is how far the flattened curves may sit from the true ones, in the path's units; one
-// not above zero, or NaN, means 0.1. A curve, round join or cap takes at most 256 segments.
-pub fn stroke(path: &Path, style: &StrokeStyle, tolerance: f32, pen: &mut dyn OutlinePen) {
-    if let Some(s) = Stroked::new(path, style, tolerance)
-        && s.finite()
-    {
-        s.draw(pen);
+    /// Strokes the path as [`stroke`](Path::stroke) does, its self-intersections resolved into one boundary, for a
+    /// filler that doesn't do nonzero winding: a stroke overlaps itself at every join.
+    ///
+    /// # Errors
+    ///
+    /// Drawing nothing: as [`stroke`](Path::stroke) gives them, and [`LimitExceeded`] past [`MAX_FLATTEN_POINTS`]
+    /// points, as the stroke is held whole to be resolved.
+    pub fn stroke_simplified(&self, style: &StrokeStyle, tolerance: f32, pen: &mut dyn OutlinePen) -> Result<()> {
+        let mut whole = Collect::default();
+        Stroke::checked(self, style, tolerance)?.draw(&mut whole);
+        if whole.points > MAX_FLATTEN_POINTS {
+            return Err(Error::limit("the stroke would take more than MAX_FLATTEN_POINTS points"));
+        }
+        for c in super::simplify::union(&whole.contours) {
+            pen.move_to(c[0].0, c[0].1);
+            for &(x, y) in &c[1..] {
+                pen.line_to(x, y);
+            }
+            pen.close();
+        }
+        Ok(())
     }
 }
 
-pub fn stroke_simplified(path: &Path, style: &StrokeStyle, tolerance: f32, pen: &mut dyn OutlinePen) {
-    if let Some(s) = Stroked::new(path, style, tolerance)
-        && s.finite()
-    {
-        s.draw_simplified(pen);
+// What a stroke draws: the stroke itself, or the ring an embolden adds around the fill.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ink {
+    Stroke,
+    Embolden,
+}
+
+// A stroke ready to draw, every point it reaches checked to fit. Past HOLD it keeps a point a segment, flattening each
+// again as it's walked, so no allocation grows with the stroke.
+pub(crate) struct Stroke<'p> {
+    path: &'p Path,
+    style: StrokeStyle,
+    r: f32,
+    tolerance: f32,
+    turned: bool,
+    work: Work,
+}
+
+// The contours, the point each segment's walk starts from, the contours' points while they fit HOLD with each one's
+// normal to the next, and one segment, or one corner or end, at a time.
+#[derive(Default)]
+struct Work {
+    contours: Vec<Contour>,
+    states: Vec<Pt>,
+    held: Vec<Pt>,
+    normals: Vec<Pt>,
+    flat: Vec<Pt>,
+    kept: Vec<Pt>,
+    piece: Vec<Pt>,
+}
+
+// The points a stroke holds with their normals rather than flatten again, all a glyph's at text sizes: 1 MiB.
+const HOLD: usize = 1 << 16;
+
+// A contour's start, verbs, points and first state, where its points are held if they are, and how many it keeps;
+// `dropped` where a closed one's last repeated its first, `last` the last kept.
+#[derive(Clone, Copy)]
+struct Contour {
+    start: Pt,
+    verbs: (usize, usize),
+    points: (usize, usize),
+    state: usize,
+    held: Option<usize>,
+    closed: bool,
+    kept: usize,
+    dropped: bool,
+    last: Pt,
+}
+
+// The lists the thread's last stroke dropped, emptied, lent to its next; one past `SPARE_BYTES` is dropped.
+#[cfg(feature = "std")]
+std::thread_local! {
+    static SPARE: core::cell::Cell<Option<Work>> = const { core::cell::Cell::new(None) };
+}
+
+#[cfg(feature = "std")]
+pub(crate) fn release_thread() {
+    let _ = SPARE.try_with(core::cell::Cell::take);
+}
+
+#[cfg(feature = "std")]
+const SPARE_BYTES: usize = 64 << 10;
+
+// Into an empty slot only: one that holds lists keeps them, so no stroke's drop sets it again.
+impl Drop for Stroke<'_> {
+    fn drop(&mut self) {
+        #[cfg(feature = "std")]
+        let _ = SPARE.try_with(|slot| {
+            use crate::daecore::daekit::base::sync::heap_of;
+            let held = slot.take();
+            let Work { contours, states, held: points, normals, flat, kept, piece } = &mut self.work;
+            let bytes = heap_of(contours) + heap_of(states) + heap_of(points) + heap_of(normals) + heap_of(flat)
+                + heap_of(kept) + heap_of(piece);
+            if held.is_some() || bytes > SPARE_BYTES {
+                return slot.set(held);
+            }
+            contours.clear();
+            states.clear();
+            points.clear();
+            normals.clear();
+            flat.clear();
+            kept.clear();
+            piece.clear();
+            slot.set(Some(core::mem::take(&mut self.work)));
+        });
     }
 }
 
-// A stroke built whole before any of it reaches a pen. A join can add 256 points to each flattened
-// one, so a hostile outline is refused past MAX_FLATTEN_POINTS rather than drawn in part.
-pub(crate) struct Stroked(Vec<Vec<Pt>>);
-
-impl Stroked {
-    pub(crate) fn new(path: &Path, style: &StrokeStyle, tolerance: f32) -> Option<Stroked> {
-        Stroked::build(path, style, tolerance).map(|(s, _)| s)
-    }
-
-    // A ring winds the same way whichever way its contour runs, so an embolden's is turned to wind as
-    // the fill does; a non-zero fill cancels where they disagree, and CFF winds against TrueType.
-    pub(crate) fn embolden(path: &Path, style: &StrokeStyle, tolerance: f32) -> Option<Stroked> {
-        let (mut s, fill) = Stroked::build(path, style, tolerance)?;
-        if fill * s.0.iter().map(|l| area(l)).sum::<f64>() < 0.0 {
-            s.0.iter_mut().for_each(|l| l.reverse());
+impl<'p> Stroke<'p> {
+    // The stroke of `path`, or None where a point it reaches would fail `fits`. The path's reach settles that for any
+    // stroke not near f32's own range; one that is gets worked out once without drawing.
+    pub(crate) fn new(
+        path: &'p Path,
+        style: &StrokeStyle,
+        tolerance: f32,
+        ink: Ink,
+        fits: impl Fn(Pt) -> bool,
+    ) -> Option<Stroke<'p>> {
+        #[cfg(feature = "std")]
+        let work = SPARE.try_with(core::cell::Cell::take).ok().flatten().unwrap_or_default();
+        #[cfg(not(feature = "std"))]
+        let work = Work::default();
+        let r = style.width.abs() * 0.5;
+        let tolerance = if tolerance > 0.0 { tolerance } else { 0.1 };
+        let mut s = Stroke { path, style: *style, r, tolerance, turned: false, work };
+        if !(r > 0.0 && r.is_finite()) {
+            return Some(s);
+        }
+        let fill = s.work.scan(path, tolerance, ink == Ink::Embolden);
+        // Every loop winds clockwise, the rings by construction and the dots by choice, so an embolden's turn where the
+        // fill winds the other way: a non-zero fill cancels where they disagree, and CFF winds against TrueType.
+        s.turned = ink == Ink::Embolden && fill > 0.0;
+        if !reach(path, style, r).is_some_and(|far| fits((far as f32, far as f32))) {
+            let mut check = Check { fits, ok: true };
+            s.walk(&mut check);
+            if !check.ok {
+                return None;
+            }
         }
         Some(s)
     }
 
-    fn build(path: &Path, style: &StrokeStyle, tolerance: f32) -> Option<(Stroked, f64)> {
-        let r = style.width.abs() * 0.5;
-        if r <= 0.0 || !r.is_finite() {
-            return Some((Stroked(Vec::new()), 0.0));
+    pub(crate) fn checked(path: &'p Path, style: &StrokeStyle, tolerance: f32) -> Result<Stroke<'p>> {
+        if !style.width.is_finite() {
+            return Err(Error::invalid("the stroke width must be finite"));
         }
-        let tolerance = if tolerance > 0.0 { tolerance } else { 0.1 };
-        loops_of(path, r, style, tolerance).map(|(loops, fill)| (Stroked(loops), fill))
+        // Checked here, as a NaN point reads as a repeat of the one before and would be dropped unseen.
+        if !path.parts().1.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+            return Err(Error::new(ErrorKind::Overflow, "a point of the path is not finite"));
+        }
+        Stroke::new(path, style, tolerance, Ink::Stroke, |p| p.0.is_finite() && p.1.is_finite())
+            .ok_or(Error::new(ErrorKind::Overflow, "a point of the stroke is not finite"))
     }
 
-    pub(crate) fn points(&self) -> impl Iterator<Item = &Pt> {
-        self.0.iter().flatten()
+    pub(crate) fn draw(mut self, pen: &mut (impl OutlinePen + ?Sized)) {
+        self.walk(&mut Emit { pen, head: [(0.0, 0.0); 3], count: 0, last: (0.0, 0.0), held: (0.0, 0.0) });
     }
 
-    // A miter's tip, at the radius over the cosine of half the turn, overflows long before the width.
-    pub(crate) fn finite(&self) -> bool {
-        self.points().all(|p| p.0.is_finite() && p.1.is_finite())
-    }
-
-    pub(crate) fn draw(&self, pen: &mut dyn OutlinePen) {
-        for l in &self.0 {
-            emit_loop(l, pen);
-        }
-    }
-
-    // `union`'s tolerances are absolute and suit font units, so a stroke is resolved scaled by a power
-    // of two, which f32 undoes exactly, to reach between half UNION_REACH and UNION_REACH.
-    pub(crate) fn draw_simplified(&self, pen: &mut dyn OutlinePen) {
-        let mut collect = Collect::default();
-        self.draw(&mut collect);
-        let reach = self.points().fold(0.0f32, |m, p| m.max(p.0.abs()).max(p.1.abs()));
-        let mut k = 1.0f32;
-        while reach > UNION_REACH * k {
-            k *= 2.0;
-        }
-        while reach > 0.0 && reach <= UNION_REACH * k * 0.5 && k > f32::MIN_POSITIVE {
-            k *= 0.5;
-        }
-        collect.contours.iter_mut().flatten().for_each(|p| *p = (p.0 / k, p.1 / k));
-        for c in super::simplify::union(&collect.contours) {
-            pen.move_to(c[0].0 * k, c[0].1 * k);
-            for p in &c[1..] {
-                pen.line_to(p.0 * k, p.1 * k);
+    // Each contour's loops into `sink`: a closed one's two sides, an open one's way out and back, a lone point's dot.
+    fn walk(&mut self, sink: &mut impl Sink) {
+        let (verbs, points) = self.path.parts();
+        let Work { contours, states, held, normals, flat, kept, piece } = &mut self.work;
+        let mut d = Draw { sink, piece, style: self.style, r: self.r, tolerance: self.tolerance };
+        for c in contours.iter() {
+            let w = Walk { verbs, points, c, states, held, normals, tolerance: self.tolerance };
+            let count = c.kept - usize::from(c.dropped);
+            if count == 1 && !c.closed {
+                d.sink.begin();
+                d.dot(c.start, self.turned);
+                d.sink.end();
+            } else if count >= 2 && c.closed {
+                d.ring(&w, flat, kept, self.turned);
+            } else if count >= 2 {
+                d.open(&w, flat, kept, count, self.turned);
             }
-            pen.close();
         }
     }
 }
 
+impl Work {
+    // The path's contours as it reads them: a move starts one, a segment with none open starts one where the last
+    // ended, a close ends one. Gives the closed contours' signed area where `area` asks for it.
+    fn scan(&mut self, path: &Path, tolerance: f32, area: bool) -> f64 {
+        let (verbs, points) = path.parts();
+        let (mut fill, mut at, mut i) = (0.0, (0.0, 0.0), 0);
+        let mut open: Option<Open> = None;
+        for (v, &verb) in verbs.iter().enumerate() {
+            match verb {
+                Verb::Move => {
+                    if let Some(o) = open.take() {
+                        fill += self.finish(o, v, i, false);
+                    }
+                    at = points[i].into();
+                    i += 1;
+                    open = Some(self.open(at, v + 1, i));
+                }
+                Verb::Close => {
+                    if let Some(o) = open.take() {
+                        at = o.start;
+                        fill += self.finish(o, v, i, true);
+                    }
+                }
+                Verb::Line | Verb::Quad | Verb::Cubic => {
+                    let o = match &mut open {
+                        Some(o) => o,
+                        None => open.insert(self.open(at, v, i)),
+                    };
+                    self.states.push(o.last);
+                    let n = arity(verb);
+                    flatten(verb, at, &points[i..i + n], tolerance, &mut self.flat);
+                    for &p in &self.flat {
+                        if o.keep(p, area)
+                            && let Some(h) = o.held
+                        {
+                            if self.held.len() < HOLD {
+                                self.held.push(p);
+                            } else {
+                                self.held.truncate(h);
+                                o.held = None;
+                            }
+                        }
+                    }
+                    at = points[i + n - 1].into();
+                    i += n;
+                }
+            }
+        }
+        if let Some(o) = open.take() {
+            fill += self.finish(o, verbs.len(), i, false);
+        }
+        fill
+    }
+
+    // A contour opening at `start`, its points held while HOLD has room.
+    fn open(&mut self, start: Pt, verbs: usize, points: usize) -> Open {
+        let held = (self.held.len() < HOLD).then(|| {
+            self.held.push(start);
+            self.held.len() - 1
+        });
+        let state = self.states.len();
+        Open { start, verbs, points, state, held, kept: 1, last: start, before: start, sum: 0.0, term: 0.0 }
+    }
+
+    fn finish(&mut self, o: Open, verbs: usize, points: usize, closed: bool) -> f64 {
+        let dropped = closed && o.kept > 1 && repeats(o.start, o.last);
+        let last = if dropped { o.before } else { o.last };
+        if let Some(h) = o.held {
+            if dropped {
+                self.held.pop();
+            }
+            let end = self.held.len();
+            for k in h..end {
+                self.normals.push(normal(self.held[k], self.held[if k + 1 < end { k + 1 } else { h }]));
+            }
+        }
+        let c = Contour {
+            start: o.start,
+            verbs: (o.verbs, verbs),
+            points: (o.points, points),
+            state: o.state,
+            held: o.held,
+            closed,
+            kept: o.kept,
+            dropped,
+            last,
+        };
+        self.contours.push(c);
+        if !(closed && o.kept - usize::from(dropped) >= 2) {
+            return 0.0;
+        }
+        let sum = if dropped { o.sum } else { o.sum + o.term };
+        sum + cross(last, o.start)
+    }
+}
+
+// A contour being scanned: the points it keeps, counted, the last two, and its area's terms so far, the latest kept
+// back until the next point shows it isn't the last, which a closed contour drops where it repeats the first.
+struct Open {
+    start: Pt,
+    verbs: usize,
+    points: usize,
+    state: usize,
+    held: Option<usize>,
+    kept: usize,
+    last: Pt,
+    before: Pt,
+    sum: f64,
+    term: f64,
+}
+
+impl Open {
+    // Whether `p` is kept, as it isn't where it repeats the last.
+    fn keep(&mut self, p: Pt, area: bool) -> bool {
+        if !distinct(p, self.last) {
+            return false;
+        }
+        if area {
+            if self.kept > 1 {
+                self.sum += self.term;
+            }
+            self.term = cross(self.last, p);
+        }
+        self.kept += 1;
+        self.before = self.last;
+        self.last = p;
+        true
+    }
+}
+
+fn cross(a: Pt, b: Pt) -> f64 {
+    f64::from(a.0) * f64::from(b.1) - f64::from(b.0) * f64::from(a.1)
+}
+
+// One contour's kept points, walked either way: as held, or each segment flattened again as it's reached. Backward, a
+// segment's points are kept by replaying the walk from its state, so both ways keep the same points.
+struct Walk<'a> {
+    verbs: &'a [Verb],
+    points: &'a [Point],
+    c: &'a Contour,
+    states: &'a [Pt],
+    held: &'a [Pt],
+    normals: &'a [Pt],
+    tolerance: f32,
+}
+
+// Each point comes with the normal of the segment from the point before it in the walk, as it runs forward.
+impl Walk<'_> {
+    fn forward(&self, flat: &mut Vec<Pt>, mut f: impl FnMut(Pt, Pt)) {
+        let c = self.c;
+        if let Some(h) = c.held {
+            let end = h + c.kept - usize::from(c.dropped);
+            f(self.held[h], (0.0, 0.0));
+            return (h + 1..end).for_each(|k| f(self.held[k], self.normals[k - 1]));
+        }
+        let (mut last, mut index) = (c.start, 1);
+        f(c.start, (0.0, 0.0));
+        let mut before = c.start;
+        let mut f = |p: Pt| {
+            f(p, normal(before, p));
+            before = p;
+        };
+        let (mut at, mut i) = (c.start, c.points.0);
+        for &v in &self.verbs[c.verbs.0..c.verbs.1] {
+            let n = arity(v);
+            flatten(v, at, &self.points[i..i + n], self.tolerance, flat);
+            for &p in flat.iter() {
+                if distinct(p, last) {
+                    last = p;
+                    if !(c.dropped && index == c.kept - 1) {
+                        f(p);
+                    }
+                    index += 1;
+                }
+            }
+            at = self.points[i + n - 1].into();
+            i += n;
+        }
+    }
+
+    fn backward(&self, flat: &mut Vec<Pt>, kept: &mut Vec<Pt>, mut f: impl FnMut(Pt, Pt)) {
+        let c = self.c;
+        if let Some(h) = c.held {
+            let end = h + c.kept - usize::from(c.dropped);
+            f(self.held[end - 1], (0.0, 0.0));
+            return (h..end - 1).rev().for_each(|k| f(self.held[k], self.normals[k]));
+        }
+        let mut after = None;
+        let mut f = |p: Pt| {
+            f(p, after.map_or((0.0, 0.0), |q| normal(p, q)));
+            after = Some(p);
+        };
+        let (mut index, mut end) = (c.kept, c.points.1);
+        for (k, &v) in self.verbs[c.verbs.0..c.verbs.1].iter().enumerate().rev() {
+            let begin = end - arity(v);
+            let at = if k == 0 { c.start } else { self.points[begin - 1].into() };
+            flatten(v, at, &self.points[begin..end], self.tolerance, flat);
+            kept.clear();
+            let mut last = self.states[c.state + k];
+            for &p in flat.iter() {
+                if distinct(p, last) {
+                    last = p;
+                    kept.push(p);
+                }
+            }
+            for &p in kept.iter().rev() {
+                index -= 1;
+                if !(c.dropped && index == c.kept - 1) {
+                    f(p);
+                }
+            }
+            end = begin;
+        }
+        f(c.start);
+    }
+}
+
+// Where the loops go: drawn, or checked.
+trait Sink {
+    fn begin(&mut self) {}
+    fn piece(&mut self, piece: &[Pt]);
+    fn end(&mut self) {}
+}
+
+// Each loop onto the pen as it comes, repeats dropped, a closing point that repeats the first left off, and one of
+// fewer than three points left out: the first three are held until a fourth shows the loop draws.
+struct Emit<'a, P: ?Sized> {
+    pen: &'a mut P,
+    head: [Pt; 3],
+    count: usize,
+    last: Pt,
+    held: Pt,
+}
+
+impl<P: OutlinePen + ?Sized> Sink for Emit<'_, P> {
+    fn begin(&mut self) {
+        self.count = 0;
+    }
+
+    // The state in locals while the pen is called, which could otherwise reload it for every point.
+    fn piece(&mut self, piece: &[Pt]) {
+        let (mut count, mut last, mut held) = (self.count, self.last, self.held);
+        for &p in piece {
+            if count > 0 && !distinct(p, last) {
+                continue;
+            }
+            last = p;
+            match count {
+                0..=2 => self.head[count] = p,
+                3 => {
+                    self.pen.move_to(self.head[0].0, self.head[0].1);
+                    self.pen.line_to(self.head[1].0, self.head[1].1);
+                    self.pen.line_to(self.head[2].0, self.head[2].1);
+                    held = p;
+                }
+                _ => {
+                    self.pen.line_to(held.0, held.1);
+                    held = p;
+                }
+            }
+            count += 1;
+        }
+        (self.count, self.last, self.held) = (count, last, held);
+    }
+
+    fn end(&mut self) {
+        if self.count > 3 {
+            if !repeats(self.head[0], self.held) {
+                self.pen.line_to(self.held.0, self.held.1);
+            }
+            self.pen.close();
+            return;
+        }
+        let mut count = self.count;
+        if count > 1 && repeats(self.head[0], self.head[count - 1]) {
+            count -= 1;
+        }
+        if count == 3 {
+            self.pen.move_to(self.head[0].0, self.head[0].1);
+            self.pen.line_to(self.head[1].0, self.head[1].1);
+            self.pen.line_to(self.head[2].0, self.head[2].1);
+            self.pen.close();
+        }
+    }
+}
+
+struct Check<F> {
+    fits: F,
+    ok: bool,
+}
+
+impl<F: Fn(Pt) -> bool> Sink for Check<F> {
+    fn piece(&mut self, piece: &[Pt]) {
+        self.ok &= piece.iter().all(|&p| (self.fits)(p));
+    }
+}
+
+// The stroke's loops, held to be resolved together; past MAX_FLATTEN_POINTS it only counts them.
 #[derive(Default)]
 struct Collect {
     contours: Vec<Vec<Pt>>,
+    points: usize,
 }
 
 impl OutlinePen for Collect {
     fn move_to(&mut self, x: f32, y: f32) {
-        self.contours.push(alloc::vec![(x, y)]);
+        self.points += 1;
+        if self.points <= MAX_FLATTEN_POINTS {
+            self.contours.push(alloc::vec![(x, y)]);
+        }
     }
     fn line_to(&mut self, x: f32, y: f32) {
-        if let Some(c) = self.contours.last_mut() {
+        self.points += 1;
+        if self.points <= MAX_FLATTEN_POINTS
+            && let Some(c) = self.contours.last_mut()
+        {
             c.push((x, y));
         }
     }
@@ -147,105 +610,210 @@ impl OutlinePen for Collect {
     fn close(&mut self) {}
 }
 
-// The loops, and the signed area the closed contours enclose.
-fn loops_of(path: &Path, r: f32, style: &StrokeStyle, tolerance: f32) -> Option<(Vec<Vec<Pt>>, f64)> {
-    let mut loops: Vec<Vec<Pt>> = Vec::new();
-    let mut room = MAX_FLATTEN_POINTS;
-    let mut fill = 0.0;
-    for (pts, closed) in flatten(path, tolerance)? {
-        let pts = dedup(&pts, closed);
-        if pts.len() == 1 && !closed {
-            keep(&mut loops, &mut room, dot(pts[0], r, style, tolerance))?;
-        } else if pts.len() >= 2 && closed {
-            fill += area(&pts);
-            let n = pts.len();
-            let normals: Vec<Pt> = (0..n).map(|i| normal(pts[i], pts[(i + 1) % n])).collect();
-            let front = side(&pts, &normals, false, r, style, tolerance, room)?;
-            keep(&mut loops, &mut room, front)?;
-            let back = side(&pts, &normals, true, r, style, tolerance, room)?;
-            keep(&mut loops, &mut room, back)?;
-        } else if pts.len() >= 2 {
-            let both = open(&pts, r, style, tolerance, room)?;
-            keep(&mut loops, &mut room, both)?;
+// Each corner, end and dot as it's worked out, into the sink, backward where its loop is turned.
+struct Draw<'a, S> {
+    sink: &'a mut S,
+    piece: &'a mut Vec<Pt>,
+    style: StrokeStyle,
+    r: f32,
+    tolerance: f32,
+}
+
+impl<S: Sink> Draw<'_, S> {
+    // Out of line, so each walk's closure calling it is small enough to inline: a tenth off a stroke at text sizes.
+    #[inline(never)]
+    fn join(&mut self, prev: Pt, at: Pt, next: Pt, n_in: Pt, n_out: Pt, back: bool) {
+        self.piece.clear();
+        push_join(self.piece, prev, at, next, n_in, n_out, self.r, &self.style, self.tolerance);
+        self.put(back);
+    }
+
+    fn offset(&mut self, at: Pt, n: Pt) {
+        self.sink.piece(&[offset(at, n, self.r)]);
+    }
+
+    fn cap(&mut self, at: Pt, n: Pt, dir: Pt, back: bool) {
+        self.piece.clear();
+        push_cap(self.piece, at, n, dir, self.r, &self.style, self.tolerance);
+        self.put(back);
+    }
+
+    fn dot(&mut self, at: Pt, back: bool) {
+        self.piece.clear();
+        dot(self.piece, at, self.r, &self.style, self.tolerance);
+        self.put(back);
+    }
+
+    fn put(&mut self, back: bool) {
+        if back {
+            self.piece.reverse();
         }
+        self.sink.piece(self.piece);
     }
-    Some((loops, fill))
-}
 
-fn area(pts: &[Pt]) -> f64 {
-    let mut sum = 0.0;
-    for (i, &(x0, y0)) in pts.iter().enumerate() {
-        let (x1, y1) = pts[(i + 1) % pts.len()];
-        sum += f64::from(x0) * f64::from(y1) - f64::from(x1) * f64::from(y0);
+    // A closed contour's two loops: the side to the left of its walk forward, corner by corner, then the side to the
+    // left of its walk back. Turned, each is drawn from its end, its corners walked the other way.
+    fn ring(&mut self, w: &Walk, flat: &mut Vec<Pt>, kept: &mut Vec<Pt>, turned: bool) {
+        let (first, last) = (w.c.start, w.c.last);
+        self.sink.begin();
+        let mut at = None;
+        if turned {
+            let (mut next, mut n_out) = (first, None);
+            w.backward(flat, kept, |p, n_in| {
+                if let Some(at) = at {
+                    let n = n_out.unwrap_or_else(|| normal(at, next));
+                    self.join(mid(p, at), at, mid(at, next), n_in, n, true);
+                    (next, n_out) = (at, Some(n_in));
+                }
+                at = Some(p);
+            });
+            let n_out = n_out.unwrap_or_else(|| normal(first, next));
+            self.join(mid(last, first), first, mid(first, next), normal(last, first), n_out, true);
+        } else {
+            let (mut prev, mut n_in) = (last, None);
+            w.forward(flat, |p, n_out| {
+                if let Some(at) = at {
+                    let n = n_in.unwrap_or_else(|| normal(prev, at));
+                    self.join(mid(prev, at), at, mid(at, p), n, n_out, false);
+                    (prev, n_in) = (at, Some(n_out));
+                }
+                at = Some(p);
+            });
+            let n_in = n_in.unwrap_or_else(|| normal(prev, last));
+            self.join(mid(prev, last), last, mid(last, first), n_in, normal(last, first), false);
+        }
+        self.sink.end();
+
+        self.sink.begin();
+        let mut at = None;
+        if turned {
+            let (mut next, mut n_out) = (last, None);
+            w.forward(flat, |p, n| {
+                if let Some(at) = at {
+                    let n_in = neg(n);
+                    let n = n_out.unwrap_or_else(|| neg(normal(next, at)));
+                    self.join(mid(p, at), at, mid(at, next), n_in, n, true);
+                    (next, n_out) = (at, Some(n_in));
+                }
+                at = Some(p);
+            });
+            let n_out = n_out.unwrap_or_else(|| neg(normal(next, last)));
+            self.join(mid(first, last), last, mid(last, next), neg(normal(last, first)), n_out, true);
+        } else {
+            let (mut prev, mut n_in) = (first, None);
+            w.backward(flat, kept, |p, n| {
+                if let Some(at) = at {
+                    let n_out = neg(n);
+                    let n = n_in.unwrap_or_else(|| neg(normal(at, prev)));
+                    self.join(mid(prev, at), at, mid(at, p), n, n_out, false);
+                    (prev, n_in) = (at, Some(n_out));
+                }
+                at = Some(p);
+            });
+            let n_in = n_in.unwrap_or_else(|| neg(normal(first, prev)));
+            self.join(mid(prev, first), first, mid(first, last), n_in, neg(normal(last, first)), false);
+        }
+        self.sink.end();
     }
-    sum
+
+    // An open contour's one loop: out along its left side, round its end, back along its other side and round its
+    // start. Turned, the same pieces from the start's cap back, each drawn backward.
+    fn open(&mut self, w: &Walk, flat: &mut Vec<Pt>, kept: &mut Vec<Pt>, count: usize, turned: bool) {
+        self.sink.begin();
+        let (mut seen, mut before, mut at, mut n_in) = (0, (0.0, 0.0), (0.0, 0.0), (0.0, 0.0));
+        w.forward(flat, |p, n| {
+            if seen == 1 {
+                n_in = n;
+                if turned {
+                    self.cap(at, neg(n_in), direction(p, at), true);
+                    self.offset(at, neg(n_in));
+                } else {
+                    self.offset(at, n_in);
+                }
+            } else if seen >= 2 {
+                // The corner at `at`, trimmed no further back than halfway along a segment another corner shares.
+                let n_out = n;
+                let from = if seen == 2 { before } else { mid(before, at) };
+                let to = if seen == count - 1 { p } else { mid(p, at) };
+                if turned {
+                    self.join(to, at, from, neg(n_out), neg(n_in), true);
+                } else {
+                    self.join(from, at, to, n_in, n_out, false);
+                }
+                n_in = n_out;
+            }
+            (before, at, seen) = (at, p, seen + 1);
+        });
+        let cut = self.style.cap != Cap::Round;
+        if turned {
+            if cut {
+                self.offset(at, neg(n_in));
+            }
+            self.cap(at, n_in, direction(before, at), true);
+            self.offset(at, n_in);
+        } else {
+            self.offset(at, n_in);
+            self.cap(at, n_in, direction(before, at), false);
+            if cut {
+                self.offset(at, neg(n_in));
+            }
+        }
+
+        let (mut seen, mut after, mut at, mut n_out) = (0, (0.0, 0.0), (0.0, 0.0), (0.0, 0.0));
+        w.backward(flat, kept, |p, n| {
+            if seen == 1 {
+                n_out = n;
+            } else if seen >= 2 {
+                let n_in = n;
+                let to = if seen == 2 { after } else { mid(after, at) };
+                let from = if seen == count - 1 { p } else { mid(p, at) };
+                if turned {
+                    self.join(from, at, to, n_in, n_out, true);
+                } else {
+                    self.join(to, at, from, neg(n_out), neg(n_in), false);
+                }
+                n_out = n_in;
+            }
+            (after, at, seen) = (at, p, seen + 1);
+        });
+        if turned {
+            self.offset(at, n_out);
+        } else {
+            self.offset(at, neg(n_out));
+            self.cap(at, neg(n_out), direction(after, at), false);
+        }
+        self.sink.end();
+    }
 }
 
-fn keep(loops: &mut Vec<Vec<Pt>>, room: &mut usize, l: Vec<Pt>) -> Option<()> {
-    *room = room.checked_sub(l.len())?;
-    loops.push(l);
-    Some(())
-}
-
-// One side of a closed contour, walked forward or back, `normals[i]` running from point i to the next.
-// A segment walked back has the negated normal, which `normal` gives exactly.
-#[allow(clippy::too_many_arguments, reason = "a side is its contour, its direction and the stroke's style")]
-fn side(pts: &[Pt], normals: &[Pt], back: bool, r: f32, style: &StrokeStyle, tolerance: f32, room: usize) -> Option<Vec<Pt>> {
-    let n = pts.len();
-    let at = |i: usize| if back { pts[n - 1 - i] } else { pts[i] };
-    let segment = |i: usize| if back { neg(normals[(2 * n - 2 - i) % n]) } else { normals[i] };
-    let mut out: Vec<Pt> = Vec::with_capacity(n * 2);
-    for i in 0..n {
-        let prev = at((i + n - 1) % n);
-        let cur = at(i);
-        let next = at((i + 1) % n);
-        let (n_in, n_out) = (segment((i + n - 1) % n), segment(i));
-        push_join(&mut out, mid(prev, cur), cur, mid(cur, next), n_in, n_out, r, style, tolerance);
-        if out.len() > room {
+// How far from 0 a point of the stroke may lie: past the path's farthest coordinate, a radius for an offset, arc or cut
+// corner, √2 for a square end, the limit for a miter's tip; doubled for rounding. None where a step on the way could
+// pass f32: a segment's squared length, a miter's r / (2 cos²), a cut corner's r / (1 + cos), within 10^6 of a segment.
+fn reach(path: &Path, style: &StrokeStyle, r: f32) -> Option<f64> {
+    let mut far = 0.0f64;
+    for p in path.parts().1 {
+        if !(p.x.is_finite() && p.y.is_finite()) {
             return None;
         }
+        far = far.max(f64::from(p.x.abs())).max(f64::from(p.y.abs()));
     }
-    Some(out)
+    let r = f64::from(r);
+    let (tip, scale) = match style.join {
+        Join::Miter { limit } => {
+            let limit = f64::from(if limit > 0.0 { limit } else { DEFAULT_MITER_LIMIT }).max(1.0);
+            (limit.min(1e6), r * (limit * limit).min(1e12))
+        }
+        Join::Round | Join::Bevel => (1.0, 0.0),
+    };
+    let reach = 2.0 * (far + r * tip.max(SQRT_2));
+    let steps = [reach, 2.0 * scale, 6e6 * far, 16.0 * far * far];
+    steps.iter().all(|&v| v <= f64::from(f32::MAX)).then_some(reach)
 }
 
-fn open(pts: &[Pt], r: f32, style: &StrokeStyle, tolerance: f32, room: usize) -> Option<Vec<Pt>> {
-    let n = pts.len();
-    let mut out: Vec<Pt> = Vec::with_capacity(n * 4);
-    let normals: Vec<Pt> = (0..n - 1).map(|i| normal(pts[i], pts[i + 1])).collect();
-
-    // How far an inner corner may trim each segment: all of one that ends in a cap, half of one
-    // shared with another corner.
-    let reach = |from: usize, to: usize| if from == 0 || from == n - 1 { pts[from] } else { mid(pts[from], pts[to]) };
-    out.push(offset(pts[0], normals[0], r));
-    for i in 1..n - 1 {
-        let (prev, next) = (reach(i - 1, i), reach(i + 1, i));
-        push_join(&mut out, prev, pts[i], next, normals[i - 1], normals[i], r, style, tolerance);
-        if out.len() > room {
-            return None;
-        }
-    }
-    let end_n = normals[n - 2];
-    out.push(offset(pts[n - 1], end_n, r));
-    push_cap(&mut out, pts[n - 1], end_n, direction(pts[n - 2], pts[n - 1]), r, style, tolerance);
-
-    if style.cap != Cap::Round {
-        out.push(offset(pts[n - 1], neg(end_n), r));
-    }
-    for i in (1..n - 1).rev() {
-        let (prev, next) = (reach(i + 1, i), reach(i - 1, i));
-        push_join(&mut out, prev, pts[i], next, neg(normals[i]), neg(normals[i - 1]), r, style, tolerance);
-        if out.len() > room {
-            return None;
-        }
-    }
-    let start_n = normals[0];
-    out.push(offset(pts[0], neg(start_n), r));
-    push_cap(&mut out, pts[0], neg(start_n), direction(pts[1], pts[0]), r, style, tolerance);
-    (out.len() <= room).then_some(out)
-}
-
-// `prev` and `next` bound how far back along each segment an inner corner may be trimmed.
+// `prev` and `next` bound how far back along each segment an inner corner may be trimmed. Inlined into its one
+// caller, `Draw::join`, so a corner's dozen floats are passed once: 9% of a stroke at text sizes.
 #[allow(clippy::too_many_arguments, reason = "a corner is its two neighbors as well as itself")]
+#[inline(always)]
 fn push_join(
     out: &mut Vec<Pt>,
     prev: Pt,
@@ -278,11 +846,11 @@ fn push_join(
         }
         return;
     }
-    // The offsets meet r * tan(half the turn) back along each segment (from the normals: intersecting loses
-    // a slight turn). Past that they have crossed, so the side runs through the corner, as Skia's does.
+    // The offsets meet r * tan(half the turn) back along each segment (from the normals: intersecting loses a slight
+    // turn). Past that, or where 1 + cos rounds to 0 at a fold, they have crossed and the side runs through the corner.
     if turn > 0.0 {
         let trim = r * turn / (1.0 + cos_turn);
-        if trim <= dist(prev, at) && trim <= dist(at, next) {
+        if 1.0 + cos_turn > 0.0 && trim <= dist(prev, at) && trim <= dist(at, next) {
             let k = r / (1.0 + cos_turn);
             out.push((at.0 + (n_in.0 + n_out.0) * k, at.1 + (n_in.1 + n_out.1) * k));
         } else {
@@ -299,6 +867,7 @@ fn push_join(
             // The tip sits r / cos(half the turn) out along (sx, sy), whose length is 2 cos(half).
             let (sx, sy) = (n_in.0 + n_out.0, n_in.1 + n_out.1);
             let cos_half = ((sx * sx + sy * sy) * 0.25).sqrt();
+            let limit = if limit > 0.0 { limit } else { DEFAULT_MITER_LIMIT };
             if cos_half > 1e-6 && 1.0 / cos_half <= limit.max(1.0) {
                 let scale = r / (2.0 * cos_half * cos_half);
                 out.push((at.0 + sx * scale, at.1 + sy * scale));
@@ -324,8 +893,7 @@ fn push_cap(out: &mut Vec<Pt>, at: Pt, n: Pt, dir: Pt, r: f32, style: &StrokeSty
 }
 
 // Clockwise, as every other loop's ink winds, so a dot on a line adds to it rather than canceling.
-fn dot(at: Pt, r: f32, style: &StrokeStyle, tolerance: f32) -> Vec<Pt> {
-    let mut out = Vec::new();
+fn dot(out: &mut Vec<Pt>, at: Pt, r: f32, style: &StrokeStyle, tolerance: f32) {
     match style.cap {
         Cap::Butt => {}
         Cap::Round => {
@@ -333,7 +901,7 @@ fn dot(at: Pt, r: f32, style: &StrokeStyle, tolerance: f32) -> Vec<Pt> {
             for k in 0..4 {
                 let from = (at.0 + q[k].0, at.1 + q[k].1);
                 let to = (at.0 + q[(k + 1) % 4].0, at.1 + q[(k + 1) % 4].1);
-                arc(&mut out, at, from, to, r, tolerance);
+                arc(out, at, from, to, r, tolerance);
             }
         }
         Cap::Square => out.extend_from_slice(&[
@@ -343,7 +911,6 @@ fn dot(at: Pt, r: f32, style: &StrokeStyle, tolerance: f32) -> Vec<Pt> {
             (at.0 + r, at.1 - r),
         ]),
     }
-    out
 }
 
 fn arc(out: &mut Vec<Pt>, center: Pt, a: Pt, b: Pt, r: f32, tolerance: f32) {
@@ -366,30 +933,6 @@ fn arc(out: &mut Vec<Pt>, center: Pt, a: Pt, b: Pt, r: f32, tolerance: f32) {
     out.push(b);
 }
 
-// The loop as `dedup` leaves it, emitted as it is walked rather than copied first.
-fn emit_loop(pts: &[Pt], pen: &mut dyn OutlinePen) {
-    let kept = || pts.iter().copied().scan(None, |last: &mut Option<Pt>, p| {
-        let keep = last.is_none_or(|q| distinct(p, q));
-        if keep { *last = Some(p); }
-        Some(keep.then_some(p))
-    }).flatten();
-    let (mut count, mut first, mut end) = (0usize, None, None);
-    for p in kept() {
-        count += 1;
-        first.get_or_insert(p);
-        end = Some(p);
-    }
-    if let (Some(f), Some(l)) = (first, end) && count > 1 && repeats(f, l) {
-        count -= 1;
-    }
-    if count < 3 {
-        return;
-    }
-    for (k, p) in kept().take(count).enumerate() {
-        if k == 0 { pen.move_to(p.0, p.1) } else { pen.line_to(p.0, p.1) }
-    }
-    pen.close();
-}
 
 fn distinct(p: Pt, q: Pt) -> bool {
     (p.0 - q.0).abs() > 1e-6 || (p.1 - q.1).abs() > 1e-6
@@ -399,22 +942,49 @@ fn repeats(p: Pt, q: Pt) -> bool {
     (p.0 - q.0).abs() <= 1e-6 && (p.1 - q.1).abs() <= 1e-6
 }
 
-// Repeated points dropped, and on a closed contour a last point that repeats the first.
-fn dedup(pts: &[Pt], closed: bool) -> Vec<Pt> {
-    let mut out: Vec<Pt> = Vec::with_capacity(pts.len());
-    for &p in pts {
-        if out.last().is_none_or(|&q| distinct(p, q)) {
-            out.push(p);
+
+// A segment flattened from `at` into `out`: a line's end, or a curve's points as its length over the tolerance asks,
+// 256 at most.
+fn flatten(verb: Verb, at: Pt, p: &[Point], tolerance: f32, out: &mut Vec<Pt>) {
+    out.clear();
+    let pt = |k: usize| -> Pt { p[k].into() };
+    match verb {
+        Verb::Line => out.push(pt(0)),
+        Verb::Quad => {
+            let (c, e) = (pt(0), pt(1));
+            let n = steps(dist(at, c) + dist(c, e), tolerance);
+            for k in 1..=n {
+                let t = k as f32 / n as f32;
+                let u = 1.0 - t;
+                out.push((
+                    u * u * at.0 + 2.0 * u * t * c.0 + t * t * e.0,
+                    u * u * at.1 + 2.0 * u * t * c.1 + t * t * e.1,
+                ));
+            }
         }
+        Verb::Cubic => {
+            let (c1, c2, e) = (pt(0), pt(1), pt(2));
+            let n = steps(dist(at, c1) + dist(c1, c2) + dist(c2, e), tolerance);
+            for k in 1..=n {
+                let t = k as f32 / n as f32;
+                let u = 1.0 - t;
+                out.push((
+                    u * u * u * at.0 + 3.0 * u * u * t * c1.0 + 3.0 * u * t * t * c2.0 + t * t * t * e.0,
+                    u * u * u * at.1 + 3.0 * u * u * t * c1.1 + 3.0 * u * t * t * c2.1 + t * t * t * e.1,
+                ));
+            }
+        }
+        Verb::Move | Verb::Close => {}
     }
-    if closed
-        && out.len() > 1
-        && let (Some(&f), Some(&l)) = (out.first(), out.last())
-        && repeats(f, l)
-    {
-        out.pop();
+}
+
+fn arity(verb: Verb) -> usize {
+    match verb {
+        Verb::Move | Verb::Line => 1,
+        Verb::Quad => 2,
+        Verb::Cubic => 3,
+        Verb::Close => 0,
     }
-    out
 }
 
 fn direction(a: Pt, b: Pt) -> Pt {
@@ -429,7 +999,7 @@ fn direction(a: Pt, b: Pt) -> Pt {
     ((dx / len) as f32, (dy / len) as f32)
 }
 
-fn normal(a: Pt, b: Pt) -> Pt {
+pub(super) fn normal(a: Pt, b: Pt) -> Pt {
     let d = direction(a, b);
     (-d.1, d.0)
 }
@@ -446,82 +1016,6 @@ fn offset(at: Pt, n: Pt, r: f32) -> Pt {
     (at.0 + n.0 * r, at.1 + n.1 * r)
 }
 
-fn flatten(path: &Path, tolerance: f32) -> Option<Vec<(Vec<Pt>, bool)>> {
-    let (verbs, points) = path.parts();
-    let mut out: Vec<(Vec<Pt>, bool)> = Vec::new();
-    let mut cur: Vec<Pt> = Vec::new();
-    let mut at: Pt = (0.0, 0.0);
-    let mut i = 0usize;
-    let mut kept = 0usize;
-
-    for &v in verbs {
-        if kept + cur.len() > MAX_FLATTEN_POINTS {
-            return None;
-        }
-        // A contour drawn without a move starts where the last one ended, as `flatten` reads it.
-        if matches!(v, Verb::Line | Verb::Quad | Verb::Cubic) && cur.is_empty() {
-            cur.push(at);
-        }
-        match v {
-            Verb::Move => {
-                if !cur.is_empty() {
-                    kept += cur.len();
-                    out.push((core::mem::take(&mut cur), false));
-                }
-                at = points[i];
-                cur.push(at);
-                i += 1;
-            }
-            Verb::Line => {
-                at = points[i];
-                cur.push(at);
-                i += 1;
-            }
-            Verb::Quad => {
-                let (c, e) = (points[i], points[i + 1]);
-                let n = steps(dist(at, c) + dist(c, e), tolerance);
-                for k in 1..=n {
-                    let t = k as f32 / n as f32;
-                    let u = 1.0 - t;
-                    cur.push((
-                        u * u * at.0 + 2.0 * u * t * c.0 + t * t * e.0,
-                        u * u * at.1 + 2.0 * u * t * c.1 + t * t * e.1,
-                    ));
-                }
-                at = e;
-                i += 2;
-            }
-            Verb::Cubic => {
-                let (c1, c2, e) = (points[i], points[i + 1], points[i + 2]);
-                let n = steps(dist(at, c1) + dist(c1, c2) + dist(c2, e), tolerance);
-                for k in 1..=n {
-                    let t = k as f32 / n as f32;
-                    let u = 1.0 - t;
-                    cur.push((
-                        u * u * u * at.0 + 3.0 * u * u * t * c1.0 + 3.0 * u * t * t * c2.0 + t * t * t * e.0,
-                        u * u * u * at.1 + 3.0 * u * u * t * c1.1 + 3.0 * u * t * t * c2.1 + t * t * t * e.1,
-                    ));
-                }
-                at = e;
-                i += 3;
-            }
-            Verb::Close => {
-                if !cur.is_empty() {
-                    at = cur[0];
-                    kept += cur.len();
-                    out.push((core::mem::take(&mut cur), true));
-                }
-            }
-        }
-    }
-    if kept + cur.len() > MAX_FLATTEN_POINTS {
-        return None;
-    }
-    if !cur.is_empty() {
-        out.push((cur, false));
-    }
-    Some(out)
-}
 
 fn dist(a: Pt, b: Pt) -> f32 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);

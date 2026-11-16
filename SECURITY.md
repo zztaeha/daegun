@@ -21,8 +21,8 @@ as it takes, and you will be told which it is rather than left waiting.
 
 | Version | Supported |
 |---|---|
-| 1.2.x | Yes |
-| 1.0.x, 1.1.x | No – upgrade to 1.2 for fixes |
+| 2.0.x | Yes |
+| 1.x | No – upgrade to 2.0 for fixes |
 | < 1.0 | No – `0.0.1` was a name reservation and contains no engine |
 
 ## The threat model
@@ -46,35 +46,38 @@ So the questions this project treats as security-relevant are:
 These are properties the build enforces, not intentions:
 
 **Unsafe is denied by default, and exactly one subtree opts back in.** The crate root is
-`#![deny(unsafe_code)]`. `daecore` – the whole engine, every parser, every table reader, the shaper –
-is `#![forbid(unsafe_code)]`, which no inner `#[allow]` can override; the compiler rejects it as
-`E0453`. The one that allows it says so in its own files: `ffi`, which turns C pointers back into
-references. `unsafe_op_in_unsafe_fn` is denied crate-wide, so an `unsafe fn` gets no implicit unsafe
-body.
+`#![deny(unsafe_code)]`. `daecore` – the whole engine, every parser, every table reader, the shaper
+– is `#![forbid(unsafe_code)]`, which no inner `#[allow]` can override; the compiler rejects it as
+`E0453`. So is the rasterizer. The one that allows it says so in its own files: `ffi`, which turns C
+pointers back into references. `unsafe_op_in_unsafe_fn` is denied crate-wide, so an `unsafe fn` gets
+no implicit unsafe body.
 
 **Nothing is read without a bounds check.** Every integer read from a font goes through a checked
 reader that answers `None` rather than reading past the end. Offset arithmetic uses checked
 addition, so an offset near `usize::MAX` declines instead of wrapping.
 
 **Every unbounded thing has a bound.** Component recursion depth, charstring step count, points per
-glyph, curves per glyph, closure passes, combining marks per cluster, and so on down: each is a named
-constant in the source rather than a number inline. A table directory that claims to extract more
-than four times its own file size, or 64 KB, whichever is larger, is refused outright, which is what
-stops overlapping table entries from being a memory amplifier.
+glyph, curves per glyph, closure passes, combining marks per cluster, the bytes one draw holds, and
+so on down: each is a named constant in the source rather than a number inline. A font's tables are
+windows onto its file, so entries that overlap cost nothing to read; a file written from them copies
+each table it carries, so an instance, or a subset carrying the font's tables along, that would copy
+more than four times the file, or twice the bytes they cover plus 64 KB where that is more, is
+refused, which is what stops overlapping table entries from being a memory amplifier.
 
 **The public path does not panic.** `clippy::unwrap_used` and `expect_used` are warned on every
 non-test build and clippy runs in the gate. Where an `expect` survives, it carries a `reason`
 explaining why the `None` arm is unreachable rather than merely unlikely.
 
-**Fuzzed on every build.** The gate runs 500 mutated fonts, deterministically, each reproducible by
-seed – a regression check rather than a search. `sh scripts/tools/fuzz/run.sh 40000` is the search.
+**Fuzzed on every build.** The gate runs 2,000 mutated fonts, deterministically, each reproducible by
+seed, and replays every input that found a bug in fuzzing – a regression check rather than a search.
+`sh scripts/tools/fuzz/run.sh 40000` is the search.
 
 **No dependencies.** daegun has none at all, so its supply chain is the Rust toolchain and nothing
 else. There is no transitive crate to audit and none to be compromised.
 
 ## The C ABI, which is different
 
-`daegun.h` is memory-safe on daegun's side and cannot be on yours. C has no borrow checker, so the
+The C ABI is memory-safe on daegun's side and cannot be on yours. C has no borrow checker, so the
 ABI is built so that a caller who follows five rules cannot get memory wrong, and a caller who does
 not, can:
 

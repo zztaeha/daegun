@@ -1,12 +1,14 @@
-use daegun::daecore::daetype::outline::OutlinePen;
-use daegun::Font;
+use crate::outline::OutlinePen;
+use crate::shape::ShapeOptions;
+use crate::{Font, GlyphId, Location};
+use alloc::vec::Vec;
 
 const BOTH_OUTLINES: &str = "structure/TestSFNTTwo.ttf";
 const MAC_TURKISH: &str = "structure/TestCMAPMacTurkish.ttf";
 const SHORT_AXIS_TAGS: &str = "structure/TestGVAREight.ttf";
 
 fn with_font<R>(rel: &str, body: impl FnOnce(&Font) -> R) -> R {
-    let path = format!("{}/{}", crate::FONTS, rel);
+    let path = format!("{}/{}", super::FONTS, rel);
     let bytes = std::fs::read(&path).expect("font opens");
     let font = Font::from_bytes(&bytes).expect("font parses");
     body(&font)
@@ -35,9 +37,9 @@ impl OutlinePen for Verbs {
 #[test]
 fn sfnt_version_picks_the_outline_table() {
     with_font(BOTH_OUTLINES, |font| {
-        let gid = font.glyph_id('A' as u32).expect("font has A");
+        let gid = font.glyph_id('A').expect("font has A");
         let mut verbs = Verbs::default();
-        font.outline_glyph(gid, &mut verbs).expect("A outlines");
+        font.outline(gid, &Location::default(), &mut verbs).expect("A outlines");
         assert!(verbs.quads > 0, "expected glyf quadratics, got none");
         assert_eq!(verbs.cubics, 0, "cubics mean the CFF table was read instead");
     });
@@ -56,9 +58,9 @@ fn mac_turkish_cmap_resolves_turkish_letters() {
             ('Ş', 0xDE),
             ('ş', 0xDF),
         ] {
-            let gid = font.glyph_id(ch as u32);
+            let gid = font.glyph_id(ch);
             assert!(
-                gid.is_some_and(|g| g != 0),
+                gid.is_some_and(|g| g.0 != 0),
                 "{ch} (byte 0x{byte:02X}) resolved to {gid:?}, expected a real glyph"
             );
         }
@@ -71,7 +73,7 @@ fn mac_turkish_cmap_keeps_the_shared_range() {
     with_font(MAC_TURKISH, |font| {
         for ch in ['A', 'z', '0'] {
             assert!(
-                font.glyph_id(ch as u32).is_some_and(|g| g != 0),
+                font.glyph_id(ch).is_some_and(|g| g.0 != 0),
                 "{ch} lost its glyph"
             );
         }
@@ -102,11 +104,10 @@ impl OutlinePen for Points {
 #[test]
 fn short_axis_tags_are_padded_to_four_bytes() {
     with_font(SHORT_AXIS_TAGS, |font| {
-        let gid = font.glyph_id('H' as u32).expect("font has H");
+        let gid = font.glyph_id('H').expect("font has H");
         let outline = |axes: &[(&str, f64)]| {
             let mut pen = Points::default();
-            font.outline_glyph_instanced(gid, axes, &mut pen)
-                .expect("H outlines");
+            font.outline(gid, &super::located(font, axes), &mut pen).expect("H outlines");
             pen
         };
 
@@ -121,8 +122,8 @@ fn short_axis_tags_are_padded_to_four_bytes() {
 
 const TAI_THAM: &str = "structure/TestShapeLana.ttf";
 
-fn shaped(font: &Font, text: &str) -> Vec<u16> {
-    font.shape(text, &[], false).expect("shapes").glyphs.clone()
+fn shaped(font: &Font, text: &str) -> Vec<GlyphId> {
+    font.shape(text, &Location::default(), &ShapeOptions::default()).glyphs.clone()
 }
 
 // The USE pattern orders a cluster's vowels by position and Tai Tham does not, so the
@@ -130,7 +131,7 @@ fn shaped(font: &Font, text: &str) -> Vec<u16> {
 #[test]
 fn tai_tham_vowel_orders_are_not_broken_clusters() {
     with_font(TAI_THAM, |font| {
-        let dotted = font.glyph_id(0x25CC).expect("font has a dotted circle");
+        let dotted = font.glyph_id('\u{25CC}').expect("font has a dotted circle");
         // U+1A20 HIGH KA, U+1A6E VOWEL SIGN E, U+1A6C VOWEL SIGN OA BELOW, U+1A68 VOWEL SIGN UUE:
         // a Top vowel after a Bottom one, which the specification's pattern forbids.
         for text in ["\u{1A20}\u{1A6E}\u{1A6C}\u{1A68}", "\u{1A36}\u{1A76}\u{1A63}\u{1A74}"] {
@@ -147,7 +148,7 @@ fn tai_tham_vowel_orders_are_not_broken_clusters() {
 #[test]
 fn tai_tham_still_marks_a_baseless_cluster() {
     with_font(TAI_THAM, |font| {
-        let dotted = font.glyph_id(0x25CC).expect("font has a dotted circle");
+        let dotted = font.glyph_id('\u{25CC}').expect("font has a dotted circle");
         let glyphs = shaped(font, "\u{1A6C}");
         assert!(
             glyphs.contains(&dotted),

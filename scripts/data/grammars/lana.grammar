@@ -8,8 +8,8 @@
 #   https://learn.microsoft.com/en-us/typography/script-development/use
 #
 # Richard Wordingham proposed the generalisation on the Unicode list in February 2017, from
-# `base subscript* vowel* final*` to `base (subscript* vowel* final2*)*`. It has not been adopted
-# upstream, and HarfBuzz issues 170 and 364 are both closed without it.
+# `base subscript* vowel* final*` to `base (subscript* vowel* final2*)*`. The specification hasn't
+# adopted it.
 #
 #   https://www.unicode.org/mail-arch/unicode-ml/y2017-m02/0001.html
 #
@@ -20,50 +20,50 @@
 # share their syllable numbering so a caller can swap tables without translating the result.
 
 categories:
-  O     = 0
-  B     = 1
-  N     = 4
-  GB    = 5
-  CGJ   = 6     # also carries the spec's VS and ZWJ
-  SUB   = 11
-  H     = 12
-  HN    = 13
-  ZWNJ  = 14
-  WJ    = 16
-  R     = 18
-  VPre  = 22
-  VMPre = 23
-  FAbv  = 24
-  FBlw  = 25
-  FPst  = 26
-  MAbv  = 27
-  MBlw  = 28
-  MPst  = 29
-  MPre  = 30
-  CMAbv = 31
-  CMBlw = 32
-  VAbv  = 33
-  VBlw  = 34
-  VPst  = 35
-  VMAbv = 37
-  VMBlw = 38
-  VMPst = 39
-  SMAbv = 41
-  SMBlw = 42
-  CS    = 43
-  IS    = 44    # invisible stacker, an override: it stacks without being a virama
-  FMAbv = 45
-  FMBlw = 46
-  FMPst = 47
-  Sk    = 48    # Tai Tham's sakot, likewise
-  G     = 49
-  J     = 50
-  SB    = 51
-  SE    = 52
-  HVM   = 53    # Sinhala's virama, which doubles as a vowel modifier
-  HM    = 54
-  HR    = 55
-  RK    = 56
+  O           = 0    # also the spec's IND, Rsv and S
+  B           = 1
+  CGJ         = 2    # also the spec's VS and ZWJ
+  CS          = 3
+  G           = 4
+  GB          = 5
+  H           = 6
+  HM          = 7
+  HN          = 8
+  HR          = 9
+  J           = 10
+  N           = 11
+  R           = 12
+  RK          = 13
+  SB          = 14
+  SE          = 15
+  SUB         = 16
+  WJ          = 17
+  ZWNJ        = 18
+  CMAbv       = 19
+  CMBlw       = 20
+  FAbv        = 21
+  FBlw        = 22
+  FPst        = 23
+  FMAbv       = 24
+  FMBlw       = 25
+  FMPst       = 26
+  MAbv        = 27
+  MBlw        = 28
+  MPre        = 29
+  MPst        = 30
+  VAbv        = 31
+  VBlw        = 32
+  VPre        = 33
+  VPst        = 34
+  VMAbv       = 35
+  VMBlw       = 36
+  VMPre       = 37
+  VMPst       = 38
+  IS          = 39
+  SMAbv       = 40
+  SMBlw       = 41
+  Sakot       = 42
+  VowelVirama = 43
 
 definitions:
   # The spec's `[VS]` appears nowhere below, and deliberately: `universal.rs::included` drops CGJ
@@ -86,9 +86,9 @@ definitions:
   # halant followed by GB is not a stack and the cluster ends at the halant.
   # What may sit between a base and the one stacked under it. Either virama may be followed by a
   # sakot; the invisible stacker and a bare sakot stand alone. Nothing longer stacks.
-  stacker = (H | HVM) Sk? | IS | Sk
+  stacker = (H | VowelVirama) Sakot? | IS | Sakot
   # A plain stack, which the cluster carries on from as if nothing happened.
-  stacker_plain = H | IS | Sk | HVM
+  stacker_plain = H | IS | Sakot | VowelVirama
   stacked = ((stacker_plain B | SUB) cons_mods)*
 
   # `[MPre] [MAbv] [MBlw] [MPst]`
@@ -97,7 +97,8 @@ definitions:
   # Order-free, which is the whole divergence. Tai Tham writes a Top vowel after a Bottom one, and
   # writes vowels after the modifiers and finals the specification puts last, so one class covers
   # all three and the run may hold them in any order.
-  tail_mark = VPre | VAbv | VBlw | VPst | VMPre | VMAbv | VMBlw | VMPst | FAbv | FBlw | FPst | MPre | MAbv | MBlw | MPst | SUB | FMAbv | FMBlw | FMPst
+  vowel_or_mod = VPre | VAbv | VBlw | VPst | VMPre | VMAbv | VMBlw | VMPst
+  tail_mark = vowel_or_mod | FAbv | FBlw | FPst | MPre | MAbv | MBlw | MPst | SUB | FMAbv | FMBlw | FMPst
   vowels = tail_mark*
   # `(VMPre)* (VMAbv)* (VMBlw)* (VMPst)*`
   vowel_mods = tail_mark*
@@ -108,7 +109,7 @@ definitions:
   finals = tail_mark* fm
 
   # Everything a standard cluster carries once its base and stack are settled. A visible virama or
-  # Sinhala's HVM may precede it: the spec's `< H | RK >` terminator covers Virama *and*
+  # Sinhala's VowelVirama may precede it: the spec's `< H | RK >` terminator covers Virama *and*
   # Invisible_Stacker under one class, and the table separates them – the invisible one terminates,
   # the visible one is drawn and stays inside the cluster.
   # One or more vowels, and one or more vowel modifiers – spelled out because a sakot may only follow
@@ -116,40 +117,41 @@ definitions:
   v_run  = tail_mark+
   vm_run = tail_mark+
 
-  # What a sakot may close. A drawn virama is **not** among them: `H Sk` is the stacker prefix above
+  # What a sakot may close. A drawn virama is **not** among them: `H Sakot` is the stacker prefix above
   # waiting for a base, so nothing may follow it but that base.
-  before_sakot = v_run HVM? vowel_mods | HVM vowel_mods | vm_run | H HVM vowel_mods | H HVM? vm_run
+  after_virama = VowelVirama vowel_mods | H VowelVirama vowel_mods | H VowelVirama? vm_run
+  before_sakot = v_run VowelVirama? vowel_mods | vm_run | after_virama
 
   # One or more medials, for the same reason `v_run` is spelled out.
   m_run = MPre MAbv? MBlw? MPst? | MAbv MBlw? MPst? | MBlw MPst? | MPst
 
   # A sakot closes a cluster that has something in it. With nothing before it, a sakot is a cluster on
-  # its own – which is why the empty branch here carries no `Sk?`.
+  # its own – which is why the empty branch here carries no `Sakot?`.
   # A sakot never has finals after it: it either stacks the next base or ends the cluster. So the two
-  # shapes are kept apart rather than folded into one `Sk?`.
-  tail_plain = finals | m_run finals | m_run dangling_halant finals | m_run before_sakot finals | dangling_halant finals | before_sakot finals
+  # shapes are kept apart rather than folded into one `Sakot?`.
+  tail_plain = m_run? (dangling_halant | before_sakot)? finals
   # Everything a sakot may close, when something precedes it.
-  sakot_prefix = m_run before_sakot? | m_run (H | HVM) | before_sakot
-  tail_sakot = sakot_prefix Sk
+  sakot_prefix = m_run before_sakot? | m_run (H | VowelVirama) | before_sakot
+  tail_sakot = sakot_prefix Sakot
   # A stack reached *through* a sakot is terminal: after it only the finals and another such stack
-  # follow, never more medials or vowels. That is what separates `Sk B` – a plain stack – from
-  # `H Sk B`, which ends the cluster's structure and leaves only its finals.
-  sakot_entry = (H | HVM | sakot_prefix) Sk
+  # follow, never more medials or vowels. That is what separates `Sakot B` – a plain stack – from
+  # `H Sakot B`, which ends the cluster's structure and leaves only its finals.
+  sakot_entry = (H | VowelVirama | sakot_prefix) Sakot
   # Wordingham's other case: a subjoined consonant may be followed by vowels, not only finals.
   # `tail_plain` is that whole tail, so the cluster returns to it instead of ending at the stack.
   # A further round: Tai Tham writes a second subjoined stack after the vowels of the first, so the
   # stack and its tail repeat rather than the cluster ending at the first tail.
-  sakot_more = tail_plain? Sk B (Sk B)*
-  sakot_stack = sakot_entry B (Sk B)* sakot_more* (Sk | tail_plain)
+  sakot_more = tail_plain? Sakot B (Sakot B)*
+  sakot_stack = sakot_entry B (Sakot B)* sakot_more* (Sakot | tail_plain)
   # Every shape that ends on a sakot, so one production can name them all.
-  sakot_ending = ((H | HVM)? | sakot_prefix) Sk | sakot_entry B (Sk B)* Sk
+  sakot_ending = ((H | VowelVirama)? | sakot_prefix) Sakot | sakot_entry B (Sakot B)* Sakot
 
   after_stack = tail_plain | tail_sakot | sakot_stack
 
   # A halant with no base after it cannot be a stack, so the cluster ends there – but it is still a
   # drawn virama inside the cluster, not a terminator, and what may follow is only what comes after
   # the vowels.
-  dangling_halant = H HVM? vowel_mods
+  dangling_halant = H VowelVirama? vowel_mods
 
   # The shared opening of patterns 2 and 3.
   cluster_head = prefix base cons_mods stacked
@@ -158,8 +160,8 @@ definitions:
   # spec's own rule, stated in prose rather than in the patterns: "the zero-width non-joiner ...
   # continues a preceding cluster but causes a cluster break after itself when the following
   # character is not a mark character".
-  # A cluster may also end on a stacker with no base under it, which is the `H`, `H Sk`, `IS` and
-  # `Sk` shapes – terminal, so nothing follows them.
+  # A cluster may also end on a stacker with no base under it, which is the `H`, `H Sakot`, `IS` and
+  # `Sakot` shapes – terminal, so nothing follows them.
   after_head = cons_mods stacked (stacker | RK | after_stack) ZWNJ?
 
   # `SB* G [VS] [HR] [HM] SE*` – one hieroglyph with its modifiers and segment brackets.
@@ -195,6 +197,6 @@ syllables:
   # cluster's tail with no base to carry it.
   # A dangling halant is its own broken shape: the spec stacks `H B`, so an H with no base after it
   # cannot be a stack, and what may still follow is only what comes after the vowels.
-  broken_cluster                   = R? (ZWNJ | Sk ZWNJ? | HN (N HN)* N? ZWNJ? | sym_mods ZWNJ? | after_head)
+  broken_cluster                   = R? (ZWNJ | Sakot ZWNJ? | HN (N HN)* N? ZWNJ? | sym_mods ZWNJ? | after_head)
   # The spec's independent cluster, plus everything that reaches the shaper matching nothing at all.
   non_cluster                      = any

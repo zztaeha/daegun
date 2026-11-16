@@ -1,27 +1,5 @@
-# Indic syllables, from Microsoft's OpenType script development specification.
-#
-#   https://learn.microsoft.com/en-us/typography/script-development/devanagari
-#
-# Under "Find next syllable in the input" that page publishes three patterns outright, with a
-# notation legend and a class list. This grammar is those patterns in the notation
-# gen-syllable-machines.py accepts:
-#
-#   Consonant syllable
-#     {C+[N]+<H+[<ZWNJ|ZWJ>] | <ZWNJ|ZWJ>+H>} + C+[N]+[A]
-#       + [<H+[<ZWNJ|ZWJ>] | {M}+[N]+[H]>] + [SM] + [(VD)]
-#   Vowel-based syllable
-#     [Ra+H] + V+[N] + [<[<ZWJ|ZWNJ>]+H+C | ZWJ+C>] + [{M}+[N]+[H]] + [SM] + [(VD)]
-#   Stand Alone cluster (at the start of the word only)
-#     [Ra+H] + NBSP+[N] + [<[<ZWJ|ZWNJ>]+H+C>] + [{M}+[N]+[H]] + [SM] + [(VD)]
-#
-# **The table draws distinctions the spec's class list does not.** The spec has one C; the table
-# separates Ra, because Ra before a halant becomes a reph and moves. It has one M; the table
-# separates MPst, a matra that follows its consonant. And it adds Repha, CS, CM, RS and Symbol,
-# which are properties of how OpenType models the writing system rather than of the spec's own
-# alphabet. Each is noted where it is used.
-#
-# The category numbers are not free: they have to match `category` in src/daeshaper/script/indic_category.rs,
-# because the table is indexed by the category a codepoint was assigned.
+# Indic syllables: the three patterns of Microsoft's Devanagari specification ("Find next syllable"), with what its
+# own text and Unicode's Indic properties add, each noted where it's used. Numbers are categories.py's.
 
 categories:
   X            = 0
@@ -33,57 +11,46 @@ categories:
   ZWJ          = 6
   M            = 7
   SM           = 8
-  A            = 9    # the spec's VD, the vedic signs, which trail the syllable
-  PLACEHOLDER  = 10   # the spec's NBSP, and anything else standing in for a base
-  DOTTEDCIRCLE = 11
-  RS           = 12   # register shifter, which groups with the nukta
-  MPst         = 13   # a matra written after its consonant, which the table keeps apart from M
-  Repha        = 14   # a reph already encoded as one character, rather than written Ra + halant
-  Ra           = 15   # the consonant that becomes a reph
-  CM           = 16   # consonant medial
-  Symbol       = 17
-  CS           = 18   # consonant with stacker
-  SMPst        = 34   # a syllable modifier written as a digit; see `syllable_modifier` below
+  A            = 9
+  Placeholder  = 10
+  DottedCircle = 11
+  Ra           = 12
+  Repha        = 13
+  Medial       = 14
+  Stacker      = 15
+  Symbol       = 16
+  MPost        = 17
+  SMDigit      = 18
 
 definitions:
-  # The spec's C. Ra is a consonant like any other except where a reph is being formed.
-  c = C | Ra
-  # Either joiner: the spec's `<ZWNJ | ZWJ>`.
-  z = ZWJ | ZWNJ
-  # The spec's `[N]`, widened by the two categories the table adds around it.
-  n = (ZWNJ? RS)? (N N?)?
-  # The spec's `[Ra+H]`, plus the single-character form the table calls Repha.
-  reph = (Ra H) | Repha
-
-  consonant_with_marks = c ZWJ? n?
-  symbol_base = Symbol N?
-  # The spec's `[SM]`, which the table splits in two: the ordinary marks, and the digit-shaped ones
-  # the `syllable_modifier` production below picks out. Inside a syllable they behave alike.
-  sm = SM | SMPst
-  # The spec's `{M}+[N]+[H]`, with MPst admitted alongside M.
-  matras = z* (M | (sm? MPst)) N? H?
-  # The spec's `[SM] + [(VD)]` – `( )` is its notation for one or two occurrences.
-  trailing_signs = (z? sm sm? ZWNJ?)? A*
-  # The spec's `H+[<ZWNJ|ZWJ>]`.
-  halant_run = z? H (ZWJ N?)?
-  closing_halant = halant_run | (H ZWNJ)
-  medials = CM?
-  halant_or_matras = closing_halant | matras*
-
-  after_base = (halant_run consonant_with_marks)* medials halant_or_matras trailing_signs
+  # The spec's C; Ra is told apart because it becomes a reph.
+  consonant = C | Ra
+  joiner = ZWJ | ZWNJ
+  # The spec's [Ra+H], or a reph Unicode encodes as one character.
+  reph = Ra H | Repha
+  modifier = SM | SMDigit
+  # The spec's C+[N]+<H+[<ZWNJ|ZWJ>]|<ZWNJ|ZWJ>+H>, but a ZWNJ after the halant ends the syllable: it "inhibits
+  # connection", and fonts shape the next consonant on its own. A second N is a mark the table classes with nukta.
+  half = consonant N? N? (H ZWJ? | joiner H)
+  # The spec's {M}+[N]+[H]. Each matra may take a nukta, as the spec lets it; a joiner may stand before one, asking
+  # for or keeping from a join; and Gurmukhi's bindi may come before its ii.
+  matras = (joiner? (M | modifier? MPost) N?)+ H?
+  # The spec's [SM]+[(VD)]; Tamil writes Grantha's candrabindu and visarga together, so two may stand, and a ZWNJ
+  # after them keeps them from what follows.
+  signs = (joiner? modifier modifier? ZWNJ?)? (A A?)?
+  # After a base: Unicode's medial consonant, a closing halant or the matras, the signs, and a ZWJ ending it. A ZWNJ
+  # anywhere else stands apart, as the spec has it.
+  tail = Medial? (H joiner? | matras)? signs ZWJ?
 
 syllables:
-  # Order is priority: where two match the same length, the first listed wins.
-  consonant_syllable = (Repha | CS)? consonant_with_marks after_base
-  vowel_syllable     = reph? V n? (ZWJ | after_base)
-  standalone_cluster = ((Repha | CS)? PLACEHOLDER | reph? DOTTEDCIRCLE) n? after_base
-  symbol_cluster     = symbol_base trailing_signs
-  # A lone digit-shaped syllable modifier is a syllable, not a broken one. It is not a mark and has
-  # nothing to attach to, so a dotted circle in front of it would be inventing a base for something
-  # that never wanted one. Listed above `broken_cluster`, which also matches it, and one character
-  # long either way – so the order is what decides it.
-  non_indic_cluster  = SMPst
-  # Not in the spec, and forced by it: text that matches none of the three patterns still has to be
-  # divided into something. A broken cluster is a syllable with its base missing.
-  broken_cluster     = reph? n? after_base
+  # Order is priority where two match the same length. Unicode's repha or consonant with stacker may open a syllable.
+  consonant_syllable = (Repha | Stacker)? half* consonant N? N? A? tail
+  vowel_syllable     = reph? V N? ((joiner? H | ZWJ) consonant N?)? matras? signs ZWJ?
+  # The spec's stand-alone cluster, the dotted circle a base like its NBSP: either shows a mark on its own.
+  standalone_cluster = reph? (Placeholder | DottedCircle) (joiner? H consonant)? N? tail
+  symbol_cluster     = Symbol N? signs ZWJ?
+  # A modifier written as a digit, or a joiner, standing alone isn't a mark missing its base.
+  non_indic_cluster  = SMDigit | joiner
+  # Marks with no base, which the spec has a dotted circle carry.
+  broken_cluster     = reph? N? tail
   non_indic_cluster  = any

@@ -1,175 +1,140 @@
 use alloc::vec::Vec;
 
-use super::is_extended_pictographic;
+use super::props;
+use crate::daecore::daeshaper::generated::unicode_tables::{
+    flag, grapheme_break as gcb, indic_conjunct_break as incb, word_break as wb, Props,
+};
 
-mod gcb {
-    pub(super) const CR: u8 = 1;
-    pub(super) const LF: u8 = 2;
-    pub(super) const CONTROL: u8 = 3;
-    pub(super) const EXTEND: u8 = 4;
-    pub(super) const ZWJ: u8 = 5;
-    pub(super) const REGIONAL_INDICATOR: u8 = 6;
-    pub(super) const PREPEND: u8 = 7;
-    pub(super) const SPACING_MARK: u8 = 8;
-    pub(super) const L: u8 = 9;
-    pub(super) const V: u8 = 10;
-    pub(super) const T: u8 = 11;
-    pub(super) const LV: u8 = 12;
-    pub(super) const LVT: u8 = 13;
+fn pictograph(p: &Props) -> bool {
+    p.flags & flag::EXTENDED_PICTOGRAPHIC != 0
 }
 
-mod wb {
-    pub(super) const OTHER: u8 = 0;
-    pub(super) const CR: u8 = 1;
-    pub(super) const LF: u8 = 2;
-    pub(super) const NEWLINE: u8 = 3;
-    pub(super) const EXTEND: u8 = 4;
-    pub(super) const ZWJ: u8 = 5;
-    pub(super) const REGIONAL_INDICATOR: u8 = 6;
-    pub(super) const FORMAT: u8 = 7;
-    pub(super) const KATAKANA: u8 = 8;
-    pub(super) const HEBREW_LETTER: u8 = 9;
-    pub(super) const ALETTER: u8 = 10;
-    pub(super) const SINGLE_QUOTE: u8 = 11;
-    pub(super) const DOUBLE_QUOTE: u8 = 12;
-    pub(super) const MID_NUM_LET: u8 = 13;
-    pub(super) const MID_LETTER: u8 = 14;
-    pub(super) const MID_NUM: u8 = 15;
-    pub(super) const NUMERIC: u8 = 16;
-    pub(super) const EXTEND_NUM_LET: u8 = 17;
-    pub(super) const WSEG_SPACE: u8 = 18;
+// Where `each_grapheme_boundary` puts each offset: Rust's list, or C's count and buffer.
+pub(crate) trait Boundaries {
+    fn put(&mut self, at: usize);
 }
 
-pub(crate) fn grapheme_break(c: char) -> u8 {
-    super::props(c).grapheme_break
-}
-
-pub(crate) fn word_break(c: char) -> u8 {
-    super::props(c).word_break
-}
-
-fn conjunct_break(c: char) -> u8 {
-    super::props(c).indic_conjunct_break
-}
-
-mod incb {
-    pub(super) const CONSONANT: u8 = 1;
-    pub(super) const EXTEND: u8 = 2;
-    pub(super) const LINKER: u8 = 3;
+impl Boundaries for Vec<usize> {
+    fn put(&mut self, at: usize) {
+        self.push(at);
+    }
 }
 
 pub fn grapheme_boundaries(text: &str) -> Vec<usize> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = alloc::vec![0usize];
-    if chars.is_empty() { return out; }
-
-    for i in 1..chars.len() {
-        if grapheme_break_between(&chars, i) {
-            out.push(i);
-        }
-    }
-    out.push(chars.len());
+    let mut out = Vec::with_capacity(text.chars().count() + 1);
+    each_grapheme_boundary(text, &mut out);
     out
 }
 
-fn grapheme_break_between(chars: &[char], i: usize) -> bool {
-    let before = grapheme_break(chars[i - 1]);
-    let after = grapheme_break(chars[i]);
+// Byte offsets, each at a char boundary, as every position in the API is: each read from the text left before a
+// character is taken, which costs less than char_indices' own count.
+pub(crate) fn each_grapheme_boundary(text: &str, out: &mut impl Boundaries) {
+    out.put(0);
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else { return };
+
+    // What GB11, GB9c and GB12/13 read behind a position, carried so none counts back: a pictograph before
+    // `before`'s Extends, a linker past the conjunct Extends through `before`, and the RI run ending at `before`.
+    let (mut before, mut pictograph_behind, mut linked, mut ri_run) = (props(first), false, false, 0usize);
+    let second = first.len_utf8();
+    loop {
+        let at = text.len() - chars.as_str().len();
+        let Some(c) = chars.next() else { break };
+        let after = props(c);
+        ri_run = if before.grapheme_break == gcb::REGIONAL_INDICATOR { ri_run + 1 } else { 0 };
+        if before.indic_conjunct_break != incb::EXTEND {
+            linked = before.indic_conjunct_break == incb::LINKER;
+        }
+        if grapheme_break_between(before, after, pictograph_behind, linked, ri_run) {
+            out.put(at);
+        }
+        if before.grapheme_break != gcb::EXTEND || at == second {
+            pictograph_behind = pictograph(before);
+        }
+        before = after;
+    }
+    out.put(text.len());
+}
+
+fn grapheme_break_between(before: &Props, after: &Props, pictograph_behind: bool, linked: bool, ri_run: usize) -> bool {
+    let (b, a) = (before.grapheme_break, after.grapheme_break);
 
     // GB3, GB4, GB5: CRLF is indivisible, and any other control breaks on both sides.
-    if before == gcb::CR && after == gcb::LF { return false; }
-    if matches!(before, gcb::CONTROL | gcb::CR | gcb::LF) { return true; }
-    if matches!(after, gcb::CONTROL | gcb::CR | gcb::LF) { return true; }
+    if b == gcb::CR && a == gcb::LF { return false; }
+    if matches!(b, gcb::CONTROL | gcb::CR | gcb::LF) { return true; }
+    if matches!(a, gcb::CONTROL | gcb::CR | gcb::LF) { return true; }
 
     // GB6, GB7, GB8: Hangul syllable sequences.
-    if before == gcb::L && matches!(after, gcb::L | gcb::V | gcb::LV | gcb::LVT) { return false; }
-    if matches!(before, gcb::LV | gcb::V) && matches!(after, gcb::V | gcb::T) { return false; }
-    if matches!(before, gcb::LVT | gcb::T) && after == gcb::T { return false; }
+    if b == gcb::L && matches!(a, gcb::L | gcb::V | gcb::LV | gcb::LVT) { return false; }
+    if matches!(b, gcb::LV | gcb::V) && matches!(a, gcb::V | gcb::T) { return false; }
+    if matches!(b, gcb::LVT | gcb::T) && a == gcb::T { return false; }
 
     // GB9, GB9a, GB9b: marks and Prepend attach to their neighbor.
-    if matches!(after, gcb::EXTEND | gcb::ZWJ) { return false; }
-    if after == gcb::SPACING_MARK { return false; }
-    if before == gcb::PREPEND { return false; }
+    if matches!(a, gcb::EXTEND | gcb::ZWJ) { return false; }
+    if a == gcb::SPACING_MARK { return false; }
+    if b == gcb::PREPEND { return false; }
 
-    // GB11: an emoji ZWJ sequence continues only if the ZWJ was preceded by a pictograph, possibly
-    // through a run of Extends. Needs history, not just the adjacent pair.
-    if before == gcb::ZWJ && is_extended_pictographic(chars[i]) {
-        let mut j = i - 1;
-        while j > 0 {
-            j -= 1;
-            match grapheme_break(chars[j]) {
-                gcb::EXTEND => continue,
-                _ => break,
-            }
-        }
-        if is_extended_pictographic(chars[j]) { return false; }
-    }
+    // GB11: an emoji ZWJ sequence continues only if the ZWJ was preceded by a pictograph, possibly through a run of
+    // Extends.
+    if b == gcb::ZWJ && pictograph(after) && pictograph_behind { return false; }
 
-    // GB9c: a Devanagari-style conjunct holds together – consonant, then linkers and extends with
-    // at least one linker among them, then consonant. Added in Unicode 15.1, and the only rule here
-    // that has to look back past an arbitrary run for a *specific* property rather than any of them.
-    if conjunct_break(chars[i]) == incb::CONSONANT {
-        let mut j = i;
-        let mut seen_linker = false;
-        while j > 0 {
-            j -= 1;
-            match conjunct_break(chars[j]) {
-                incb::LINKER => seen_linker = true,
-                incb::EXTEND => {}
-                incb::CONSONANT => {
-                    if seen_linker { return false; }
-                    break;
-                }
-                _ => break,
-            }
-        }
-    }
+    // GB9c: a linker, past any extends, holds the consonant after it to its conjunct.
+    if after.indic_conjunct_break == incb::CONSONANT && linked { return false; }
 
-    // GB12, GB13: regional indicators pair up, so a break falls between pairs rather than between
-    // every two. Counting back over an unbroken run is what distinguishes the second RI from the
-    // third.
-    if before == gcb::REGIONAL_INDICATOR && after == gcb::REGIONAL_INDICATOR {
-        let mut count = 0usize;
-        let mut j = i;
-        while j > 0 && grapheme_break(chars[j - 1]) == gcb::REGIONAL_INDICATOR {
-            count += 1;
-            j -= 1;
-        }
-        return count.is_multiple_of(2);
+    // GB12, GB13: regional indicators pair up, so a break falls between pairs rather than between every two.
+    if b == gcb::REGIONAL_INDICATOR && a == gcb::REGIONAL_INDICATOR {
+        return ri_run.is_multiple_of(2);
     }
 
     // GB999.
     true
 }
 
+// Byte offsets, read as `grapheme_boundaries` reads them, in one pass; the class past the ignorables ahead is found
+// when a rule reads it.
 pub fn word_boundaries(text: &str) -> Vec<usize> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = alloc::vec![0usize];
-    if chars.is_empty() { return out; }
+    let mut out = Vec::with_capacity(text.chars().count() + 1);
+    out.push(0);
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else { return out };
 
-    // WB4 says Extend, Format and ZWJ are invisible to almost every other rule, so the rules run
-    // over the *significant* characters and the boundaries are then mapped back to real indices.
-    // Doing it any other way means every rule below repeating the same skip logic.
-    let significant: Vec<usize> = (0..chars.len())
-        .filter(|&i| {
-            let w = word_break(chars[i]);
-            let ignorable = matches!(w, wb::EXTEND | wb::FORMAT | wb::ZWJ);
-            !ignorable || i == 0 || matches!(word_break(chars[i - 1]), wb::CR | wb::LF | wb::NEWLINE)
-        })
-        .collect();
-
-    for i in 1..chars.len() {
-        if word_break_at(&chars, &significant, i) {
-            out.push(i);
+    // WB4 makes Extend, Format and ZWJ invisible to almost every rule, so the rules read *significant* characters:
+    // the two behind and WB15/16's RI run carried forward, beside the class just behind, ignorable or not.
+    let ignorable = |k: u8| matches!(k, wb::EXTEND | wb::FORMAT | wb::ZWJ);
+    let after_newline = |k: u8| matches!(k, wb::CR | wb::LF | wb::NEWLINE);
+    let mut prev_raw = props(first).word_break;
+    let (mut prev, mut prev2) = (prev_raw, wb::OTHER);
+    let mut ri_run = usize::from(prev == wb::REGIONAL_INDICATOR);
+    loop {
+        let at = text.len() - chars.as_str().len();
+        let Some(c) = chars.next() else { break };
+        let cur = props(c);
+        let next = || {
+            let mut before = cur.word_break;
+            for c in chars.clone() {
+                let k = props(c).word_break;
+                if !ignorable(k) || after_newline(before) {
+                    return k;
+                }
+                before = k;
+            }
+            wb::OTHER
+        };
+        if word_break_at(prev_raw, cur, prev, prev2, ri_run, next) {
+            out.push(at);
         }
+        if !ignorable(cur.word_break) || after_newline(prev_raw) {
+            (prev2, prev) = (prev, cur.word_break);
+            ri_run = if prev == wb::REGIONAL_INDICATOR { ri_run + 1 } else { 0 };
+        }
+        prev_raw = cur.word_break;
     }
-    out.push(chars.len());
+    out.push(text.len());
     out
 }
 
-fn word_break_at(chars: &[char], significant: &[usize], i: usize) -> bool {
-    let prev_raw = word_break(chars[i - 1]);
-    let cur_raw = word_break(chars[i]);
+fn word_break_at(prev_raw: u8, cur: &Props, prev: u8, prev2: u8, ri_run: usize, next: impl Fn() -> u8) -> bool {
+    let cur_raw = cur.word_break;
 
     // WB3, WB3a, WB3b: CRLF is indivisible; anything else newline-ish breaks on both sides.
     if prev_raw == wb::CR && cur_raw == wb::LF { return false; }
@@ -177,26 +142,22 @@ fn word_break_at(chars: &[char], significant: &[usize], i: usize) -> bool {
     if matches!(cur_raw, wb::NEWLINE | wb::CR | wb::LF) { return true; }
 
     // WB3c: ZWJ followed by a pictograph stays joined.
-    if prev_raw == wb::ZWJ && is_extended_pictographic(chars[i]) { return false; }
+    if prev_raw == wb::ZWJ && pictograph(cur) { return false; }
 
     // WB3d: a run of whitespace is one unit.
-    if prev_raw == wb::WSEG_SPACE && cur_raw == wb::WSEG_SPACE { return false; }
+    if prev_raw == wb::W_SEG_SPACE && cur_raw == wb::W_SEG_SPACE { return false; }
 
-    // WB4: an ignorable never introduces a break of its own.
+    // WB4: an ignorable never introduces a break of its own, and past it every character here is significant.
     if matches!(cur_raw, wb::EXTEND | wb::FORMAT | wb::ZWJ) { return false; }
 
-    let Ok(pos) = significant.binary_search(&i) else {
-        return false;
+    let cur = cur_raw;
+    let next = if matches!(cur, wb::MID_LETTER | wb::MID_NUM_LET | wb::SINGLE_QUOTE | wb::DOUBLE_QUOTE | wb::MID_NUM) {
+        next()
+    } else {
+        wb::OTHER
     };
-    if pos == 0 { return true; }
 
-    let at = |k: usize| word_break(chars[significant[k]]);
-    let prev = at(pos - 1);
-    let cur = at(pos);
-    let next = if pos + 1 < significant.len() { at(pos + 1) } else { wb::OTHER };
-    let prev2 = if pos >= 2 { at(pos - 2) } else { wb::OTHER };
-
-    let is_letter = |w: u8| matches!(w, wb::ALETTER | wb::HEBREW_LETTER);
+    let is_letter = |w: u8| matches!(w, wb::A_LETTER | wb::HEBREW_LETTER);
 
     // WB5.
     if is_letter(prev) && is_letter(cur) { return false; }
@@ -220,20 +181,14 @@ fn word_break_at(chars: &[char], significant: &[usize], i: usize) -> bool {
         && next == wb::NUMERIC { return false; }
     // WB13, WB13a, WB13b: Katakana, and ExtendNumLet gluing either side.
     if prev == wb::KATAKANA && cur == wb::KATAKANA { return false; }
-    if matches!(prev, wb::ALETTER | wb::HEBREW_LETTER | wb::NUMERIC | wb::KATAKANA | wb::EXTEND_NUM_LET)
+    if matches!(prev, wb::A_LETTER | wb::HEBREW_LETTER | wb::NUMERIC | wb::KATAKANA | wb::EXTEND_NUM_LET)
         && cur == wb::EXTEND_NUM_LET { return false; }
     if prev == wb::EXTEND_NUM_LET
-        && matches!(cur, wb::ALETTER | wb::HEBREW_LETTER | wb::NUMERIC | wb::KATAKANA) { return false; }
+        && matches!(cur, wb::A_LETTER | wb::HEBREW_LETTER | wb::NUMERIC | wb::KATAKANA) { return false; }
 
     // WB15, WB16: regional indicators pair up, counted over significant characters only.
     if prev == wb::REGIONAL_INDICATOR && cur == wb::REGIONAL_INDICATOR {
-        let mut count = 0usize;
-        let mut k = pos;
-        while k > 0 && at(k - 1) == wb::REGIONAL_INDICATOR {
-            count += 1;
-            k -= 1;
-        }
-        return count.is_multiple_of(2);
+        return ri_run.is_multiple_of(2);
     }
 
     // WB999.

@@ -1,4 +1,5 @@
-use daegun::daecore::daetype::outline::{stroke, Cap, Join, OutlinePen, Path, StrokeStyle};
+use crate::daecore::daetype::outline::{Cap, Join, OutlinePen, Path, StrokeStyle};
+use alloc::vec::Vec;
 
 #[derive(Default)]
 struct Recorder {
@@ -65,7 +66,7 @@ fn square_path(s: f32) -> Path {
 
 fn run(path: &Path, style: &StrokeStyle) -> Recorder {
     let mut r = Recorder::default();
-    stroke(path, style, 0.05, &mut r);
+    path.stroke(style, 0.05, &mut r).expect("strokes");
     r
 }
 
@@ -165,7 +166,7 @@ fn a_tighter_tolerance_flattens_a_curve_more_finely() {
 
     let count = |tol: f32| {
         let mut r = Recorder::default();
-        stroke(&p, &StrokeStyle { width: 1.0, join: Join::Bevel, cap: Cap::Butt }, tol, &mut r);
+        p.stroke(&StrokeStyle { width: 1.0, join: Join::Bevel, cap: Cap::Butt }, tol, &mut r).expect("strokes");
         r.contours.iter().map(Vec::len).sum::<usize>()
     };
     assert!(count(0.01) > count(1.0), "tolerance must drive the segment count");
@@ -241,7 +242,7 @@ fn simplifying_removes_the_global_overlap_a_plain_stroke_leaves() {
 
     let plain = run(&p, &style);
     let mut simple = Recorder::default();
-    daegun::daecore::daetype::outline::stroke_simplified(&p, &style, 0.05, &mut simple);
+    p.stroke_simplified(&style, 0.05, &mut simple).expect("strokes");
 
     let crossings = |r: &Recorder| {
         let mut n = 0;
@@ -279,10 +280,33 @@ fn simplifying_removes_the_global_overlap_a_plain_stroke_leaves() {
 fn simplifying_a_non_overlapping_stroke_preserves_it() {
     let style = StrokeStyle { width: 2.0, join: Join::Bevel, cap: Cap::Butt };
     let mut simple = Recorder::default();
-    daegun::daecore::daetype::outline::stroke_simplified(&line_path((0.0, 0.0), (10.0, 0.0)), &style, 0.05, &mut simple);
+    let line = line_path((0.0, 0.0), (10.0, 0.0));
+    line.stroke_simplified(&style, 0.05, &mut simple).expect("strokes");
 
     assert_eq!(simple.contours.len(), 1, "a plain line is one loop before and after");
     let (x0, y0, x1, y1) = simple.bounds();
     assert!((x1 - x0 - 10.0).abs() < 1e-2, "length changed: {}", x1 - x0);
     assert!((y1 - y0 - 2.0).abs() < 1e-2, "width changed: {}", y1 - y0);
+}
+
+// A sliver a few f32 steps wide still unites with what it crosses, its tip kept.
+#[test]
+fn a_sliver_unites_however_narrow() {
+    let square = vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)];
+    let sliver = vec![(50.0, 90.0), (50.0005, 90.0), (50.00025, 150.0)];
+    let united = crate::daecore::daetype::outline::simplify::union(&[square, sliver]);
+    assert_eq!(united.len(), 1, "{united:?}");
+    let (top, at) = united[0].iter().fold((0.0f32, 0.0f32), |m, &(x, y)| if y > m.0 { (y, x) } else { m });
+    assert_eq!(top, 150.0);
+    assert!((at - 50.00025).abs() < 1e-4, "the tip moved to {at}");
+}
+
+// Edges crossing at under a millionth of a radian meet too close to call, so the union comes back as its input
+// rather than as a guess.
+#[test]
+fn a_union_too_close_to_call_returns_its_input() {
+    let square = vec![(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0)];
+    let above = vec![(-500.0, 999.9995), (1500.0, 1000.0005), (1500.0, 1200.0), (-500.0, 1200.0)];
+    let input = vec![square, above];
+    assert_eq!(crate::daecore::daetype::outline::simplify::union(&input), input);
 }

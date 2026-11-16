@@ -1,48 +1,81 @@
-use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
-use super::decoder::{read_u16_be, records_fit};
-use crate::daecore::daetype::TableBytes;
+use super::decoder::{read_u16_be, read_uint, records_fit};
+use crate::daecore::daetype::Tables;
 
-fn find_jstf_script_table(jstf: &[u8], script_tag: &str) -> Option<usize> {
-    if jstf.len() < 6 { return None; }
-    let script_count = read_u16_be(jstf, 4)? as usize;
-    for i in 0..script_count {
-        let rec = 6 + i * 6;
-        if jstf.get(rec..rec + 4)? != script_tag.as_bytes() { continue; }
-        return Some(read_u16_be(jstf, rec + 4)? as usize);
-    }
-    None
+// The scripts a reader takes: version 1.1's scriptList2 where it names any, read in its wide layout (its records'
+// offsets and its scripts' extender and default offsets 32-bit, extender glyphs 24-bit); else 1.0's list.
+pub(crate) struct ScriptList {
+    pub(crate) records: usize,
+    pub(crate) count: usize,
+    pub(crate) wide: bool,
 }
 
-pub fn jstf_extender_glyphs(table_map: &BTreeMap<String, TableBytes>, script_tag: &str) -> Option<Vec<u16>> {
+impl ScriptList {
+    // None for a table of a major version but 1, the one the spec defines. A scriptList2 past the table is absent,
+    // and the 1.0 list read in its place.
+    pub(crate) fn read(jstf: &[u8]) -> Option<ScriptList> {
+        if read_u16_be(jstf, 0)? != 1 { return None; }
+        let count = usize::from(read_u16_be(jstf, 4)?);
+        let list2 = 6 + 6 * count;
+        let count2 = match read_u16_be(jstf, 2)? {
+            0 => 0,
+            _ => read_u16_be(jstf, list2).map_or(0, usize::from),
+        };
+        if count2 != 0 {
+            return Some(ScriptList { records: list2 + 2, count: count2, wide: true });
+        }
+        Some(ScriptList { records: 6, count, wide: false })
+    }
+
+    pub(crate) fn stride(&self) -> usize { if self.wide { 8 } else { 6 } }
+    pub(crate) fn offset_width(&self) -> usize { if self.wide { 4 } else { 2 } }
+    pub(crate) fn glyph_width(&self) -> usize { if self.wide { 3 } else { 2 } }
+
+    // Record `i`'s tag and its script's place in the table, None where its offset is NULL.
+    pub(crate) fn record<'a>(&self, jstf: &'a [u8], i: usize) -> Option<(&'a [u8], usize)> {
+        let rec = self.records + i * self.stride();
+        let script = read_uint(jstf, rec + 4, self.offset_width()).filter(|&rel| rel != 0)?;
+        Some((jstf.get(rec..rec + 4)?, (script as usize).min(jstf.len())))
+    }
+}
+
+fn find_jstf_script_table(jstf: &[u8], script_tag: [u8; 4]) -> Option<(usize, ScriptList)> {
+    let list = ScriptList::read(jstf)?;
+    let script = (0..list.count).find_map(|i| list.record(jstf, i).filter(|&(tag, _)| tag == script_tag))?.1;
+    Some((script, list))
+}
+
+pub fn jstf_extender_glyphs(table_map: &Tables, script_tag: [u8; 4]) -> Option<Vec<u32>> {
     let jstf = table_map.get("JSTF")?;
-    let jstf_script_table = find_jstf_script_table(jstf, script_tag)?;
-
-    let extender_off = read_u16_be(jstf, jstf_script_table)? as usize;
-    if extender_off == 0 { return None; }
-    let extender_table = jstf_script_table + extender_off;
-
-    let glyph_count = read_u16_be(jstf, extender_table)? as usize;
-    if !records_fit(extender_table + 2, glyph_count, 2, jstf.len()) { return None; }
-    let mut glyphs = Vec::with_capacity(glyph_count);
-    for i in 0..glyph_count {
-        glyphs.push(read_u16_be(jstf, extender_table + 2 + i * 2)?);
-    }
-    Some(glyphs)
+    let (script, list) = find_jstf_script_table(jstf, script_tag)?;
+    let (o, w) = (list.offset_width(), list.glyph_width());
+    let extenders = script.checked_add(read_uint(jstf, script, o).filter(|&rel| rel != 0)? as usize)?;
+    let count = usize::from(read_u16_be(jstf, extenders)?);
+    if !records_fit(extenders + 2, count, w, jstf.len()) { return None; }
+    (0..count).map(|i| read_uint(jstf, extenders + 2 + i * w, w)).collect()
 }
 
-// A priority level's GSUB and GPOS lookups to enable and disable. Its JstfMax, limits on spacing a
-// justifier adds itself, is not read: no shipping software applies it.
-#[derive(Debug, PartialEq)]
+/// A JSTF priority level: the GSUB and GPOS lookups, by index, it enables and disables to shrink a line or to
+/// extend one. Each list is none where the level names none, which isn't a list naming no lookups.
+// Its JstfMax, limits on spacing a justifier adds itself, is not read: no shipping software applies it.
+#[non_exhaustive]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct JstfModLists {
-    pub shrinkage_enable_gsub:  Option<Vec<u16>>,
+    /// The GSUB lookups to enable to shrink a line.
+    pub shrinkage_enable_gsub: Option<Vec<u16>>,
+    /// The GSUB lookups to disable to shrink a line.
     pub shrinkage_disable_gsub: Option<Vec<u16>>,
-    pub shrinkage_enable_gpos:  Option<Vec<u16>>,
+    /// The GPOS lookups to enable to shrink a line.
+    pub shrinkage_enable_gpos: Option<Vec<u16>>,
+    /// The GPOS lookups to disable to shrink a line.
     pub shrinkage_disable_gpos: Option<Vec<u16>>,
-    pub extension_enable_gsub:  Option<Vec<u16>>,
+    /// The GSUB lookups to enable to extend a line.
+    pub extension_enable_gsub: Option<Vec<u16>>,
+    /// The GSUB lookups to disable to extend a line.
     pub extension_disable_gsub: Option<Vec<u16>>,
-    pub extension_enable_gpos:  Option<Vec<u16>>,
+    /// The GPOS lookups to enable to extend a line.
+    pub extension_enable_gpos: Option<Vec<u16>>,
+    /// The GPOS lookups to disable to extend a line.
     pub extension_disable_gpos: Option<Vec<u16>>,
 }
 
@@ -79,28 +112,29 @@ fn read_jstf_priority(jstf: &[u8], priority_table: usize, indices_left: &mut usi
 }
 
 pub fn jstf_priorities(
-    table_map: &BTreeMap<String, TableBytes>,
-    script_tag: &str,
-    lang_sys_tag: Option<&str>,
+    table_map: &Tables,
+    script_tag: [u8; 4],
+    lang_sys_tag: Option<[u8; 4]>,
 ) -> Option<Vec<JstfModLists>> {
     let jstf = table_map.get("JSTF")?;
-    let jstf_script_table = find_jstf_script_table(jstf, script_tag)?;
+    let (jstf_script_table, list) = find_jstf_script_table(jstf, script_tag)?;
+    let o = list.offset_width();
 
-    let def_lang_sys_off = read_u16_be(jstf, jstf_script_table + 2)? as usize;
-    let lang_sys_count   = read_u16_be(jstf, jstf_script_table + 4)? as usize;
+    let def_lang_sys_off = read_uint(jstf, jstf_script_table + o, o)? as usize;
+    let lang_sys_count   = read_u16_be(jstf, jstf_script_table + 2 * o)? as usize;
 
     // A language without its own record takes the script's default, which the spec says applies in
     // the absence of language-specific data.
     let language = lang_sys_tag.and_then(|tag| {
         (0..lang_sys_count)
-            .map(|i| jstf_script_table + 6 + i * 6)
-            .find(|&rec| jstf.get(rec..rec + 4) == Some(tag.as_bytes()))
+            .map(|i| jstf_script_table + 2 * o + 2 + i * 6)
+            .find(|&rec| jstf.get(rec..rec + 4) == Some(&tag[..]))
             .and_then(|rec| read_u16_be(jstf, rec + 4))
             .filter(|&off| off != 0)
     });
     let jstf_lang_sys_table = match language {
         Some(off) => jstf_script_table + usize::from(off),
-        None if def_lang_sys_off != 0 => jstf_script_table + def_lang_sys_off,
+        None if def_lang_sys_off != 0 => jstf_script_table.checked_add(def_lang_sys_off)?,
         None => return None,
     };
 
@@ -108,9 +142,6 @@ pub fn jstf_priorities(
     if !records_fit(jstf_lang_sys_table + 2, priority_count, 2, jstf.len()) {
         return None;
     }
-    // Each level tried costs a reshape of the line; the first are the highest priorities.
-    const MAX_PRIORITY_LEVELS: usize = 64;
-    let priority_count = priority_count.min(MAX_PRIORITY_LEVELS);
     let mut indices_left = jstf.len() / 2;
 
     let mut levels = Vec::with_capacity(priority_count);
@@ -124,37 +155,5 @@ pub fn jstf_priorities(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // A JSTF of the one script `tag`, with no language records and a default of `levels` priority
-    // levels that all name one level enabling nothing.
-    fn jstf(tag: &[u8; 4], levels: u16) -> BTreeMap<String, TableBytes> {
-        let mut t: Vec<u8> = [1u16, 0, 1].iter().flat_map(|v| v.to_be_bytes()).collect();
-        t.extend(tag);
-        t.extend([12u16, 0, 6, 0, levels].iter().flat_map(|v| v.to_be_bytes()));
-        (0..levels).for_each(|_| t.extend((2 + 2 * levels).to_be_bytes()));
-        t.extend([0u8; 20]);
-        [(String::from("JSTF"), TableBytes::from(t))].into_iter().collect()
-    }
-
-    // The spec's default applies in the absence of language data, so a language asked for by name that
-    // has none takes the script's default levels.
-    #[test]
-    fn a_language_without_data_takes_the_scripts_default() {
-        let map = jstf(b"latn", 1);
-        assert_eq!(jstf_priorities(&map, "latn", Some("ENG ")).map(|l| l.len()), Some(1));
-    }
-
-    // Tags compare as bytes, so one that is not UTF-8 never matches the empty tag.
-    #[test]
-    fn an_empty_tag_names_no_script() {
-        assert_eq!(jstf_priorities(&jstf(&[0xFF; 4], 1), "", None), None);
-    }
-
-    // Past 64 levels a font keeps its first 64, the highest priorities.
-    #[test]
-    fn past_64_levels_the_first_64_stay() {
-        assert_eq!(jstf_priorities(&jstf(b"latn", 65), "latn", None).map(|l| l.len()), Some(64));
-    }
-}
+#[path = "../../tests/unit/daetype/jstf.rs"]
+mod tests;

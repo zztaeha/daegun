@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
-use super::expert_charsets::{EXPERT_CHARSET, EXPERT_SUBSET_CHARSET};
-use super::parse::{walk_charset, CharsetFlow};
-use crate::daecore::daetype::outline::CffOutlines;
+use super::expert_charsets::predefined_charset_sid;
+use super::parse::walk_charset;
+use crate::daecore::daetype::format::cff::Charset;
+use crate::daecore::daetype::outline::{CffOutlines, SubrsGathered};
 use crate::daecore::daetype::subsetter::GlyphSet;
 
 pub(crate) fn standard_encoding_sid(code: u8) -> u16 {
@@ -25,29 +26,18 @@ pub(crate) fn standard_encoding_sid(code: u8) -> u16 {
 pub(crate) struct SidMap(Vec<(u16, u16)>);
 
 impl SidMap {
-    pub(crate) fn new(cff: &[u8], charset_off: Option<usize>, predefined: u8, n_glyphs: usize) -> SidMap {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        crate::daecore::daekit::base::sync::heap_of(&self.0)
+    }
+
+    pub(crate) fn new(cff: &[u8], charset: Charset, n_glyphs: usize) -> SidMap {
         let mut pairs: Vec<(u16, u16)> = alloc::vec![(0, 0)];
-        match charset_off {
-            Some(off) => {
-                let _ = walk_charset(cff, off, n_glyphs, |gid, sid| {
-                    pairs.push((sid, gid));
-                    CharsetFlow::Continue
-                });
+        match charset {
+            Charset::At(off) => {
+                let _ = walk_charset(cff, off, n_glyphs, |gid, sid| pairs.push((sid, gid)));
             }
-            None => {
-                let table: Option<&[u16]> = match predefined {
-                    1 => Some(&EXPERT_CHARSET),
-                    2 => Some(&EXPERT_SUBSET_CHARSET),
-                    _ => None,
-                };
-                for gid in 1..n_glyphs.min(usize::from(u16::MAX) + 1) {
-                    let sid = match table {
-                        Some(t) => match t.get(gid) { Some(&sid) => sid, None => break },
-                        None => gid as u16,
-                    };
-                    pairs.push((sid, gid as u16));
-                }
-            }
+            Charset::Predefined(id) => pairs.extend((1..=u16::MAX).take(n_glyphs.saturating_sub(1))
+                .map_while(|gid| Some((predefined_charset_sid(id, gid.into(), n_glyphs)?, gid)))),
         }
         pairs.sort_by_key(|&(sid, gid)| (sid, gid));
         pairs.dedup_by_key(|&mut (sid, _)| sid);
@@ -59,36 +49,22 @@ impl SidMap {
     }
 }
 
-// Adds to `set` the base and accent glyphs the frontier's seacs draw, and theirs in turn.
-pub(crate) fn close_over_seacs(outlines: &CffOutlines, cff: &[u8], mut frontier: Vec<u16>, set: &mut GlyphSet) {
+// Adds to `set` the base and accent glyphs the frontier's seacs draw, and theirs in turn, each glyph's subroutine
+// calls gathered.
+pub(crate) fn close_over_seacs(
+    outlines: &CffOutlines, cff: &[u8], mut frontier: Vec<u32>, set: &mut GlyphSet, gathered: &mut SubrsGathered,
+) {
     while !frontier.is_empty() {
         frontier = frontier.iter()
-            .filter_map(|&g| outlines.seac_glyphs(cff, g))
+            .filter_map(|&g| outlines.seac_glyphs(cff, g, gathered))
             .flatten()
             .flatten()
+            .map(u32::from)
             .filter(|&c| set.insert(c))
             .collect();
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Charsets in each format, and the predefined ones: SID to glyph, the first glyph naming a SID.
-    #[test]
-    fn a_sid_finds_its_glyph_through_every_charset() {
-        let format0 = [0u8, 0, 34, 0, 125, 0, 34];
-        let map = SidMap::new(&format0, Some(0), 0, 4);
-        assert_eq!((map.gid(34), map.gid(125), map.gid(0), map.gid(35)), (Some(1), Some(2), Some(0), None));
-
-        let format1 = [1u8, 1, 0x87, 2];
-        assert_eq!(SidMap::new(&format1, Some(0), 0, 4).gid(0x189), Some(3));
-        let format2 = [2u8, 1, 0x87, 0, 2];
-        assert_eq!(SidMap::new(&format2, Some(0), 0, 4).gid(0x188), Some(2));
-
-        assert_eq!(SidMap::new(&[], None, 0, 40).gid(34), Some(34), "ISOAdobe is SID for glyph");
-        assert_eq!(SidMap::new(&[], None, 1, 6).gid(229), Some(2), "Expert names exclamsmall second after space");
-        assert_eq!(SidMap::new(&[], None, 2, 6).gid(231), Some(2), "ExpertSubset starts dollaroldstyle there");
-    }
-}
+#[path = "../../../../tests/unit/daetype/subsetter/cff/seac.rs"]
+mod tests;

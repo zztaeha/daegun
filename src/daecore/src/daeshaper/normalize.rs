@@ -1,381 +1,320 @@
-use super::buffer::{Buffer, GlyphInfo};
+// Normalization as the font can draw it (UAX #15, Unicode 3.11): a character it lacks splits into parts it has, marks
+// sort by class and rejoin their base where the font has the composite. Every character leaves with `mapped` set.
 use super::face::Face;
+use super::run::{text, Fact, Glyph, Run};
+use super::script::{Model, Normalization};
 use super::unicode;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) enum Mode {
-    None,
-    Decomposed,
-    ComposedDiacritics,
-    ComposedDiacriticsNoShortCircuit,
-    #[default]
-    Auto,
-}
+// A run of marks longer than this keeps its order: the sort is quadratic in it, and text stays far below it (UAX #15's
+// stream-safe format allows 30).
+const MOST_MARKS_SORTED: usize = 32;
 
-pub(crate) const MAX_COMBINING_MARKS: usize = 32;
+// How many levels a decomposition is followed down. Unicode's go three deep, and the models' own no deeper.
+const MOST_LEVELS: usize = 4;
 
-pub(crate) struct Context {
-    pub(crate) has_gpos_mark: bool,
-}
+const COMBINING_GRAPHEME_JOINER: u32 = 0x034F;
 
-pub(crate) type DecomposeFn = fn(&Context, char) -> Option<(char, Option<char>)>;
-pub(crate) type ComposeFn = fn(&Context, char, char) -> Option<char>;
-
-fn unicode_decompose(_: &Context, ab: char) -> Option<(char, Option<char>)> {
-    unicode::decompose(ab)
-}
-
-fn unicode_compose(_: &Context, a: char, b: char) -> Option<char> {
-    unicode::compose(a, b)
-}
-
-pub(crate) struct Hooks {
-    pub(crate) mode: Mode,
-    pub(crate) decompose: DecomposeFn,
-    pub(crate) compose: ComposeFn,
-    pub(crate) reorder_marks: Option<fn(&mut Buffer, usize, usize)>,
-}
-
-impl Default for Hooks {
-    fn default() -> Self {
-        Hooks {
-            mode: Mode::Auto,
-            decompose: unicode_decompose,
-            compose: unicode_compose,
-            reorder_marks: None,
-        }
-    }
-}
-
-struct Ctx<'a, 'b> {
-    buffer: &'a mut Buffer,
-    face: &'a Face<'b>,
-    hooks: &'a Hooks,
-    has_gpos_mark: bool,
-}
-
-impl Ctx<'_, '_> {
-    fn hook_context(&self) -> Context {
-        Context { has_gpos_mark: self.has_gpos_mark }
-    }
-
-    fn output_char(&mut self, unichar: u32, glyph: u32) {
-        self.buffer.cur_mut(0).glyph_index = glyph;
-        self.buffer.output_glyph(unichar);
-        let mut flags = self.buffer.scratch_flags;
-        self.buffer.prev_mut().init_unicode_props(&mut flags);
-        self.buffer.scratch_flags = flags;
-    }
-
-    fn next_char(&mut self, glyph: u32) {
-        self.buffer.cur_mut(0).glyph_index = glyph;
-        self.buffer.next_glyph();
-    }
-
-    fn glyph_of(&self, c: char) -> Option<u16> {
-        self.face.glyph_index(c as u32)
-    }
-}
-
-fn decompose(ctx: &mut Ctx, shortest: bool, ab: char) -> u32 {
-    let Some((a, b)) = (ctx.hooks.decompose)(&ctx.hook_context(), ab) else { return 0 };
-
-    let a_glyph = ctx.glyph_of(a);
-    let b_glyph = match b {
-        Some(b) => match ctx.glyph_of(b) {
-            Some(g) => Some(g),
-            None => return 0,
-        },
-        None => None,
-    };
-
-    if !shortest || a_glyph.is_none() {
-        let ret = decompose(ctx, shortest, a);
-        if ret != 0 {
-            if let (Some(b), Some(b_glyph)) = (b, b_glyph) {
-                ctx.output_char(b as u32, u32::from(b_glyph));
-                return ret + 1;
-            }
-            return ret;
-        }
-    }
-
-    if let Some(a_glyph) = a_glyph {
-        ctx.output_char(a as u32, u32::from(a_glyph));
-        if let (Some(b), Some(b_glyph)) = (b, b_glyph) {
-            ctx.output_char(b as u32, u32::from(b_glyph));
-            return 2;
-        }
-        return 1;
-    }
-
-    0
-}
-
-fn decompose_current_character(ctx: &mut Ctx, shortest: bool) {
-    let Some(u) = char::from_u32(ctx.buffer.cur(0).id) else {
-        ctx.next_char(0);
-        return;
-    };
-    let glyph = ctx.glyph_of(u);
-
-    if (!shortest || glyph.is_none()) && decompose(ctx, shortest, u) > 0 {
-        ctx.buffer.skip_glyph();
+pub(crate) fn normalize(run: &mut Run, face: &Face, model: &dyn Model, marks_positioned: bool) {
+    if run.len == 0 {
         return;
     }
-
-    if let Some(glyph) = glyph {
-        ctx.next_char(u32::from(glyph));
+    let how = model.normalization();
+    let marked = split_run(run, face, model, how);
+    // A failed run is left as it stands.
+    if run.failed {
         return;
     }
-
-    if let Some(kind) = unicode::space_fallback(u)
-        && let Some(space) = ctx.glyph_of(' ').or(ctx.buffer.invisible) {
-            ctx.buffer.cur_mut(0).set_space_fallback(kind);
-            ctx.next_char(u32::from(space));
-            ctx.buffer.scratch_flags |= super::buffer::scratch_flags::HAS_SPACE_FALLBACK;
-            return;
-        }
-
-    if u == '\u{2011}'
-        && let Some(other) = ctx.glyph_of('\u{2010}') {
-            ctx.next_char(u32::from(other));
-            return;
-        }
-
-    ctx.next_char(0);
+    if marked {
+        sort_marks(run, model);
+    }
+    if run.facts.has(Fact::Cgj) {
+        show_idle_joiners(run);
+    }
+    if marked && how != Normalization::Unrecomposed {
+        recompose(run, face, model, marks_positioned);
+    }
 }
 
-fn handle_variation_selector_cluster(ctx: &mut Ctx, end: usize) {
-    while ctx.buffer.idx + 1 < end && ctx.buffer.successful {
-        let next = char::from_u32(ctx.buffer.cur(1).id);
-        if next.is_some_and(unicode::is_variation_selector) {
-            let base = char::from_u32(ctx.buffer.cur(0).id);
-            let selected = base
-                .zip(next)
-                .and_then(|(b, s)| ctx.face.glyph_variation_index(b as u32, s as u32));
+// A non-breaking hyphen the font lacks is drawn as a hyphen.
+pub(crate) fn hyphen_stand_in(c: char) -> Option<char> {
+    (c == '\u{2011}').then_some('\u{2010}')
+}
 
-            if let Some(glyph) = selected {
-                ctx.buffer.cur_mut(0).glyph_index = u32::from(glyph);
-                let unicode = ctx.buffer.cur(0).id;
-                ctx.buffer.replace_glyphs(2, &[unicode]);
-            } else {
-                set_glyph(ctx);
-                ctx.buffer.next_glyph();
+// Which level of its decomposition a character takes: the first the font draws, which is the character itself where
+// the font maps it, or the last, so its marks come apart to be sorted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Level {
+    Shallowest,
+    Deepest,
+}
 
-                ctx.buffer.scratch_flags |=
-                    super::buffer::scratch_flags::HAS_VARIATION_SELECTOR_FALLBACK;
-                ctx.buffer.cur_mut(0).set_variation_selector(true);
-                if ctx.buffer.not_found_variation_selector.is_some() {
-                    ctx.buffer.cur_mut(0).clear_default_ignorable();
-                }
+// The levels a character alone and one with marks after it take.
+fn levels(how: Normalization) -> (Level, Level) {
+    match how {
+        Normalization::Precomposed => (Level::Shallowest, Level::Deepest),
+        Normalization::Recomposed => (Level::Deepest, Level::Deepest),
+        Normalization::Unrecomposed => (Level::Shallowest, Level::Shallowest),
+    }
+}
 
-                set_glyph(ctx);
-                ctx.buffer.next_glyph();
-            }
-
-            while ctx.buffer.idx < end
-                && char::from_u32(ctx.buffer.cur(0).id).is_some_and(unicode::is_variation_selector)
-            {
-                set_glyph(ctx);
-                ctx.buffer.next_glyph();
-            }
+// The first pass, a character and the marks after it at a time; true where any had marks or came apart, so the
+// recomposing pass, which runs over the whole run or not at all, gives a character alike whatever stands beside it.
+fn split_run(run: &mut Run, face: &Face, model: &dyn Model, how: Normalization) -> bool {
+    let (alone, with_marks) = levels(how);
+    let mut marked = false;
+    run.start_rewrite();
+    let mapped = if alone == Level::Shallowest { map_in_place(run, face) } else { 0 };
+    run.keep_n(mapped);
+    while run.cursor < run.len && !run.failed {
+        let start = run.cursor;
+        let end = start + 1 + run.glyphs[start + 1..run.len].iter().take_while(|g| g.is_mark_char()).count();
+        if end == start + 1 {
+            marked |= take(run, face, model, alone);
+            continue;
+        }
+        marked = true;
+        if run.glyphs[start..end].iter().any(|g| unicode::is_variation_selector(g.id)) {
+            take_selected(run, face, end);
         } else {
-            set_glyph(ctx);
-            ctx.buffer.next_glyph();
+            while run.cursor < end && !run.failed {
+                take(run, face, model, with_marks);
+            }
         }
     }
+    run.finish_rewrite();
+    marked
+}
 
-    if ctx.buffer.idx < end {
-        set_glyph(ctx);
-        ctx.buffer.next_glyph();
+// The leading characters `take` would keep as they stand, each the font's glyph and no mark after it, mapped where they
+// are, so the rewrite reads only from the first that splits, stands in or carries marks. How many.
+fn map_in_place(run: &mut Run, face: &Face) -> usize {
+    let glyphs = &mut run.glyphs[..run.len];
+    for i in 0..glyphs.len() {
+        let marked = glyphs.get(i + 1).is_some_and(|g| g.is_mark_char());
+        let own = char::from_u32(glyphs[i].id).and_then(|c| face.glyph_of(u32::from(c)));
+        match own {
+            Some(glyph) if !marked => glyphs[i].mapped = glyph,
+            _ => return i,
+        }
+    }
+    glyphs.len()
+}
+
+// One level of a character's canonical decomposition: each level splits the last one's first part in two. A level
+// counts only where the font maps its first part and every second part above it.
+#[derive(Clone, Copy)]
+struct Parts {
+    first: (char, u32),
+    // The second parts met on the way down, with their glyphs, the shallowest first.
+    seconds: [(char, u32); MOST_LEVELS],
+    count: usize,
+}
+
+impl Parts {
+    // The shallowest or deepest level below `c` the font draws.
+    fn below(c: char, face: &Face, model: &dyn Model, wanted: Level) -> Option<Parts> {
+        let mut at = Parts { first: (c, 0), seconds: [('\0', 0); MOST_LEVELS], count: 0 };
+        let mut found = None;
+        for _ in 0..MOST_LEVELS {
+            let Some((first, second)) = model.decompose(at.first.0) else { break };
+            if let Some(second) = second {
+                // A second part the font lacks leaves this level undrawn, and every level below it.
+                let Some(glyph) = face.glyph_of(u32::from(second)) else { break };
+                at.seconds[at.count] = (second, glyph);
+                at.count += 1;
+            }
+            at.first = (first, 0);
+            if let Some(glyph) = face.glyph_of(u32::from(first)) {
+                found = Some(Parts { first: (first, glyph), ..at });
+                if wanted == Level::Shallowest {
+                    break;
+                }
+            }
+        }
+        found
+    }
+
+    // In text order: the first part, then the second parts from the deepest up.
+    fn in_order(&self) -> impl Iterator<Item = (char, u32)> + '_ {
+        core::iter::once(self.first).chain(self.seconds[..self.count].iter().rev().copied())
     }
 }
 
-fn set_glyph(ctx: &mut Ctx) {
-    let id = ctx.buffer.cur(0).id;
-    if let Some(glyph) = ctx.face.glyph_index(id) {
-        ctx.buffer.cur_mut(0).glyph_index = u32::from(glyph);
+// The current character at the level wanted, itself counting as the shallowest; else a stand-in. True where it came
+// apart.
+fn take(run: &mut Run, face: &Face, model: &dyn Model, wanted: Level) -> bool {
+    let missing = run.settings.missing;
+    let Some(c) = char::from_u32(run.current().id) else {
+        keep_as(run, missing);
+        return false;
+    };
+    let own = face.glyph_of(u32::from(c));
+    if let Some(glyph) = own.filter(|_| wanted == Level::Shallowest) {
+        keep_as(run, glyph);
+        return false;
     }
+    match (Parts::below(c, face, model, wanted), own) {
+        (Some(parts), _) => {
+            write_parts(run, &parts);
+            return parts.count > 0;
+        }
+        (None, Some(glyph)) => keep_as(run, glyph),
+        (None, None) => stand_in(run, face, c),
+    }
+    false
 }
 
-fn decompose_multi_char_cluster(ctx: &mut Ctx, end: usize, short_circuit: bool) {
-    for i in ctx.buffer.idx..end {
-        if char::from_u32(ctx.buffer.info[i].id).is_some_and(unicode::is_variation_selector) {
-            handle_variation_selector_cluster(ctx, end);
+fn keep_as(run: &mut Run, glyph: u32) {
+    run.current_mut().mapped = glyph;
+    run.keep();
+}
+
+// Each part goes out as a copy of the character with its own Unicode facts, and the character is passed over.
+fn write_parts(run: &mut Run, parts: &Parts) {
+    for (c, glyph) in parts.in_order() {
+        let at = run.written;
+        run.insert(u32::from(c));
+        if run.written == at {
             return;
         }
+        let part = &mut run.out_mut()[at];
+        part.mapped = glyph;
+        let facts = part.read_char();
+        run.facts.add(facts);
     }
+    run.pass_over();
+}
 
-    while ctx.buffer.idx < end && ctx.buffer.successful {
-        decompose_current_character(ctx, short_circuit);
+// A character the font can't draw any way: a space with the font's space or the invisible glyph, sized later by its
+// kind; a non-breaking hyphen as a hyphen; anything else as the missing glyph.
+fn stand_in(run: &mut Run, face: &Face, c: char) {
+    let space = face.glyph_of(0x20).or(run.settings.invisible);
+    if let Some((kind, glyph)) = unicode::space_fallback(c).zip(space) {
+        run.current_mut().set_space_fallback(kind);
+        run.facts.note(Fact::SpaceStandIns);
+        return keep_as(run, glyph);
+    }
+    let hyphen = hyphen_stand_in(c).and_then(|h| face.glyph_of(u32::from(h)));
+    keep_as(run, hyphen.unwrap_or(run.settings.missing));
+}
+
+// A variation selector picks a glyph for the character as written, so nothing decomposes: the font's glyph for the
+// pair takes both, and where it has none, both stay and the selector is marked for its stand-in.
+fn take_selected(run: &mut Run, face: &Face, end: usize) {
+    while run.cursor < end && !run.failed {
+        let base = run.current().id;
+        let next = (run.cursor + 1 < end).then(|| run.glyphs[run.cursor + 1].id);
+        let Some(selector) = next.filter(|&id| unicode::is_variation_selector(id)) else {
+            keep_mapped(run, face);
+            continue;
+        };
+        match face.variant_of(base, selector) {
+            Some(glyph) => {
+                run.current_mut().mapped = glyph;
+                run.replace_span(2, &[base]);
+            }
+            None => {
+                keep_mapped(run, face);
+                if run.failed {
+                    return;
+                }
+                run.facts.note(Fact::SelectorFallback);
+                let keeps_stand_in = run.settings.missing_selector.is_some();
+                let lone = run.current_mut();
+                lone.set_selector_fallback(true);
+                if keeps_stand_in {
+                    lone.text &= !text::IGNORABLE;
+                }
+                keep_mapped(run, face);
+            }
+        }
+        while run.cursor < end && !run.failed && unicode::is_variation_selector(run.current().id) {
+            keep_mapped(run, face);
+        }
     }
 }
 
-fn higher_combining_class(a: &GlyphInfo, b: &GlyphInfo) -> bool {
-    a.modified_combining_class() > b.modified_combining_class()
+fn keep_mapped(run: &mut Run, face: &Face) {
+    let glyph = face.glyph_of(run.current().id).unwrap_or(run.settings.missing);
+    keep_as(run, glyph);
 }
 
-pub(crate) fn normalize(buffer: &mut Buffer, face: &Face, hooks: &Hooks, has_gpos_mark: bool) {
-    if buffer.is_empty() {
+// Canonical ordering (Unicode 3.11) by mark class: each run of marks sorted stably, then handed to the model, which
+// may move them further.
+fn sort_marks(run: &mut Run, model: &dyn Model) {
+    let classed = |g: &Glyph| g.mark_class() != 0;
+    let mut from = 0;
+    while let Some(skipped) = run.glyphs[from..run.len].iter().position(classed) {
+        let start = from + skipped;
+        let end = start + run.glyphs[start..run.len].iter().take_while(|g| classed(g)).count();
+        if end - start <= MOST_MARKS_SORTED {
+            run.sort_span_by(start..end, Glyph::mark_class);
+            model.reorder_marks(run, start..end);
+        }
+        from = end;
+    }
+}
+
+// A CGJ keeps the marks either side of it from reordering across it. Where they were in order anyway it held nothing
+// apart, so it stops hiding from GSUB, where it would only stand between them.
+fn show_idle_joiners(run: &mut Run) {
+    for i in 1..run.len.saturating_sub(1) {
+        if run.glyphs[i].id != COMBINING_GRAPHEME_JOINER {
+            continue;
+        }
+        let (before, after) = (run.glyphs[i - 1].mark_class(), run.glyphs[i + 1].mark_class());
+        let held_apart = after != 0 && before > after;
+        if !held_apart {
+            run.glyphs[i].text &= !text::HIDDEN;
+        }
+    }
+}
+
+// Canonical composition (UAX #15): a mark joins the last starter before it where no mark between has a class as high
+// and the model composes the two into a character the font maps.
+fn recompose(run: &mut Run, face: &Face, model: &dyn Model, marks_positioned: bool) {
+    run.start_rewrite();
+    run.keep();
+    let mut starter = 0;
+    while run.cursor < run.len && !run.failed {
+        let mark = *run.current();
+        let blocked = run.written - 1 != starter && run.last_out().mark_class() >= mark.mark_class();
+        let composite = (mark.is_mark_char() && !blocked)
+            .then(|| composite_of(run.out()[starter].id, mark.id, face, model, marks_positioned))
+            .flatten();
+        match composite {
+            Some((c, glyph)) => absorb(run, starter, c, glyph),
+            None => {
+                run.keep();
+                if run.last_out().mark_class() == 0 {
+                    starter = run.written - 1;
+                }
+            }
+        }
+    }
+    run.finish_rewrite();
+}
+
+fn composite_of(a: u32, b: u32, face: &Face, model: &dyn Model, marks_positioned: bool) -> Option<(char, u32)> {
+    let c = model.compose(char::from_u32(a)?, char::from_u32(b)?, marks_positioned)?;
+    Some((c, face.glyph_of(u32::from(c))?))
+}
+
+// The current mark goes into the starter, which becomes the composite: written and joined in cluster with it, then
+// taken back.
+fn absorb(run: &mut Run, starter: usize, c: char, glyph: u32) {
+    if !run.keep() {
         return;
     }
-
-    let mode = match hooks.mode {
-        Mode::Auto if has_gpos_mark => Mode::ComposedDiacritics,
-        Mode::Auto => Mode::ComposedDiacritics,
-        m => m,
-    };
-
-    let always_short_circuit = mode == Mode::None;
-    let might_short_circuit = always_short_circuit
-        || (mode != Mode::Decomposed && mode != Mode::ComposedDiacriticsNoShortCircuit);
-
-    let mut ctx = Ctx { buffer, face, hooks, has_gpos_mark };
-    let mut all_simple = true;
-
-    {
-        ctx.buffer.clear_output();
-        let count = ctx.buffer.len;
-        ctx.buffer.idx = 0;
-
-        loop {
-            let mut end = ctx.buffer.idx + 1;
-            while end < count && !is_unicode_mark(&ctx.buffer.info[end]) {
-                end += 1;
-            }
-            if end < count {
-                end -= 1;
-            }
-
-            if might_short_circuit {
-                let len = end - ctx.buffer.idx;
-                let mut done = 0;
-                while done < len {
-                    let id = ctx.buffer.cur(done).id;
-                    match ctx.face.glyph_index(id) {
-                        Some(g) => ctx.buffer.cur_mut(done).glyph_index = u32::from(g),
-                        None => break,
-                    }
-                    done += 1;
-                }
-                ctx.buffer.next_glyphs(done);
-            }
-
-            while ctx.buffer.idx < end && ctx.buffer.successful {
-                decompose_current_character(&mut ctx, might_short_circuit);
-            }
-
-            if ctx.buffer.idx == count || !ctx.buffer.successful {
-                break;
-            }
-
-            all_simple = false;
-
-            end = ctx.buffer.idx + 1;
-            while end < count && is_unicode_mark(&ctx.buffer.info[end]) {
-                end += 1;
-            }
-
-            decompose_multi_char_cluster(&mut ctx, end, always_short_circuit);
-
-            if ctx.buffer.idx >= count || !ctx.buffer.successful {
-                break;
-            }
-        }
-
-        ctx.buffer.sync();
-    }
-    if !all_simple {
-        let count = ctx.buffer.len;
-        let mut i = 0;
-        while i < count {
-            if ctx.buffer.info[i].modified_combining_class() == 0 {
-                i += 1;
-                continue;
-            }
-
-            let mut end = i + 1;
-            while end < count && ctx.buffer.info[end].modified_combining_class() != 0 {
-                end += 1;
-            }
-
-            if end - i <= MAX_COMBINING_MARKS {
-                ctx.buffer.sort(i, end, higher_combining_class);
-                if let Some(reorder) = hooks.reorder_marks {
-                    reorder(ctx.buffer, i, end);
-                }
-            }
-
-            i = end + 1;
-        }
-    }
-
-    if ctx.buffer.scratch_flags & super::buffer::scratch_flags::HAS_CGJ != 0 {
-        for i in 1..ctx.buffer.len.saturating_sub(1) {
-            if ctx.buffer.info[i].id == 0x034F {
-                let last = ctx.buffer.info[i - 1].modified_combining_class();
-                let next = ctx.buffer.info[i + 1].modified_combining_class();
-                if next == 0 || last <= next {
-                    // A CGJ is there to block reordering, so one the sort would not have moved
-                    // anything across did no work – and leaving it hidden from GSUB breaks matching
-                    // for nothing.
-                    ctx.buffer.info[i].unhide();
-                }
-            }
-        }
-    }
-
-    let recompose = mode == Mode::ComposedDiacritics || mode == Mode::ComposedDiacriticsNoShortCircuit;
-    if !all_simple && ctx.buffer.successful && recompose {
-        let count = ctx.buffer.len;
-        let mut starter = 0;
-        ctx.buffer.clear_output();
-        ctx.buffer.next_glyph();
-
-        while ctx.buffer.idx < count && ctx.buffer.successful {
-            let cur = *ctx.buffer.cur(0);
-            let blocked = starter != ctx.buffer.out_len - 1
-                && ctx.buffer.prev().modified_combining_class() >= cur.modified_combining_class();
-
-            if is_unicode_mark(&cur) && !blocked {
-                let a = char::from_u32(ctx.buffer.out_info()[starter].id);
-                let b = char::from_u32(cur.id);
-                let hook = ctx.hook_context();
-                let composed = a.zip(b).and_then(|(a, b)| (hooks.compose)(&hook, a, b));
-
-                if let Some(composed) = composed
-                    && let Some(glyph) = ctx.face.glyph_index(composed as u32) {
-                        ctx.buffer.next_glyph();
-                        if !ctx.buffer.successful {
-                            return;
-                        }
-
-                        let out_len = ctx.buffer.out_len;
-                        ctx.buffer.merge_out_clusters(starter, out_len);
-                        ctx.buffer.out_len -= 1;
-
-                        let mut flags = ctx.buffer.scratch_flags;
-                        let info = &mut ctx.buffer.out_info_mut()[starter];
-                        info.id = composed as u32;
-                        info.glyph_index = u32::from(glyph);
-                        info.init_unicode_props(&mut flags);
-                        ctx.buffer.scratch_flags = flags;
-
-                        continue;
-                    }
-            }
-
-            ctx.buffer.next_glyph();
-            if ctx.buffer.prev().modified_combining_class() == 0 {
-                starter = ctx.buffer.out_len - 1;
-            }
-        }
-
-        ctx.buffer.sync();
-    }
+    run.join_out_clusters(starter..run.written);
+    run.written -= 1;
+    let composite = &mut run.out_mut()[starter];
+    composite.id = u32::from(c);
+    composite.mapped = glyph;
+    let facts = composite.read_char();
+    run.facts.add(facts);
 }
 
-fn is_unicode_mark(info: &GlyphInfo) -> bool {
-    unicode::GeneralCategory::from_stored(info.general_category()).is_mark()
-}
+#[cfg(test)]
+#[path = "../../tests/unit/daeshaper/normalize.rs"]
+mod tests;

@@ -1,0 +1,12 @@
+[package]
+name = "daegun-fuzz-harness"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[features]
+threading = ["daegun/threading"]
+
+[dependencies]
+daegun = { path = "../../../.." }
+libc = "0.2"

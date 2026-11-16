@@ -1,159 +1,123 @@
-use alloc::string::String;
+#[cfg(doc)]
+use crate::ErrorKind::{Malformed, Unsupported};
 use alloc::vec::Vec;
-use super::super::decoder::{read_u16_be, read_u32_be, read_i16_be, records_fit};
+use super::super::decoder::{read_f2dot14, read_i16_be, read_u16_be, read_u32_be, records_fit};
+use super::round::ot_round;
+use crate::daecore::daetype::TableBytes;
+use crate::daecore::Error;
 
+/// An ItemVariationStore: the regions of a variable font's design space, and the deltas each item takes in them.
+#[non_exhaustive]
+#[derive(Clone, Default, Debug)]
 pub struct ItemVariationStore {
+    /// Each region, one axis range a font axis.
     pub regions:    Vec<Vec<RegionAxis>>,
+    /// Its subtables, the outer index of a delta-set index.
     pub ivd_data:   Vec<Ivd>,
+    /// How many axes each region spans.
     pub axis_count: usize,
 }
 
-pub struct RegionAxis { pub start: f64, pub peak: f64, pub end: f64 }
+/// One axis of a region, in normalized coordinates: its influence rises from `start` to 1 at `peak` and falls back
+/// to 0 at `end`. Laid out as C reads it.
+#[expect(clippy::exhaustive_structs, reason = "the spec's record, field for field")]
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+pub struct RegionAxis {
+    /// Where its influence starts.
+    pub start: f64,
+    /// Where its influence is whole.
+    pub peak: f64,
+    /// Where its influence ends.
+    pub end: f64,
+}
 
-#[derive(Default)]
+/// An ItemVariationData subtable: rows of deltas, one an item, a column a region it names.
+#[derive(Clone, Default)]
 pub struct Ivd {
+    /// The regions its columns name, by index into the store's.
     pub region_indices: Vec<usize>,
     deltas: Vec<i32>,
+    items: usize,
+}
+
+impl core::fmt::Debug for Ivd {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut s = f.debug_struct("Ivd");
+        s.field("region_indices", &self.region_indices).field("items", &self.items).finish_non_exhaustive()
+    }
 }
 
 impl Ivd {
+    /// Item `inner`'s deltas, one a region; None past its items. With no regions, each item is a row of none.
     pub fn row(&self, inner: usize) -> Option<&[i32]> {
+        if inner >= self.items {
+            return None;
+        }
         let width = self.region_indices.len();
-        if width == 0 { return None; }
         let start = inner.checked_mul(width)?;
         self.deltas.get(start..start.checked_add(width)?)
     }
 
-    pub fn rows(&self) -> usize {
-        self.deltas.len().checked_div(self.region_indices.len()).unwrap_or(0)
+    /// How many items it holds.
+    pub const fn rows(&self) -> usize {
+        self.items
     }
 }
 
-pub fn parse_item_variation_store(buf: &[u8], base: usize) -> Result<ItemVariationStore, String> {
-    // The base can come from C. Inside the buffer, the few bytes added to it below cannot overflow.
-    if base >= buf.len() {
-        return Err("IVS: base past the end".into());
-    }
-    if read_u16_be(buf, base) != Some(1) {
-        return Err("IVS: unknown format".into());
-    }
-    let region_list_off = read_u32_be(buf, base + 2).ok_or("IVS: header truncated")? as usize;
-    let ivd_count       = read_u16_be(buf, base + 6).ok_or("IVS: header truncated")? as usize;
-
-    let region_list_base = base.checked_add(region_list_off).ok_or("IVS: region list offset overflows")?;
-    let axis_count       = read_u16_be(buf, region_list_base).ok_or("IVS: region list truncated")? as usize;
-    let region_count     = read_u16_be(buf, region_list_base + 2).ok_or("IVS: region list truncated")? as usize;
-
-    let stride = axis_count.checked_mul(6).ok_or("IVS: region stride overflows")?;
-    let regions_at = region_list_base.checked_add(4).ok_or("IVS: region list base overflows")?;
-    if !records_fit(regions_at, region_count, stride, buf.len()) {
-        return Err("IVS: region list does not fit the table".into());
-    }
-
-    let mut regions: Vec<Vec<RegionAxis>> = Vec::with_capacity(region_count);
-    for i in 0..region_count {
-        let r_off = regions_at + i * stride;
-        let mut axes = Vec::with_capacity(axis_count);
-        for j in 0..axis_count {
-            let start = read_i16_be(buf, r_off + j * 6).ok_or("IVS: region axis truncated")?;
-            let peak  = read_i16_be(buf, r_off + j * 6 + 2).ok_or("IVS: region axis truncated")?;
-            let end   = read_i16_be(buf, r_off + j * 6 + 4).ok_or("IVS: region axis truncated")?;
-            axes.push(RegionAxis {
-                start: start as f64 / 16384.0,
-                peak:  peak  as f64 / 16384.0,
-                end:   end   as f64 / 16384.0,
-            });
+impl ItemVariationStore {
+    /// The ItemVariationStore at `base`.
+    ///
+    /// # Errors
+    ///
+    /// [`Malformed`] for one cut short or past the end, [`Unsupported`] for a format other than 1.
+    #[doc(alias("parse_item_variation_store"))]
+    pub fn parse(buf: &[u8], base: usize) -> Result<ItemVariationStore, Error> {
+        // The base can come from C. Inside the buffer, the few bytes added to it below cannot overflow.
+        if base >= buf.len() {
+            return Err(Error::malformed("IVS: base past the end"));
         }
-        regions.push(axes);
+        if read_u16_be(buf, base) != Some(1) {
+            return Err(Error::unsupported("IVS: unknown format"));
+        }
+        let layout = Layout::read(buf, base).ok_or(Error::malformed("IVS: header truncated"))?;
+        let axis = |at: usize| {
+            let field = |k: usize| read_f2dot14(buf, at + k).unwrap_or(0.0);
+            RegionAxis { start: field(0), peak: field(2), end: field(4) }
+        };
+        let regions = (0..layout.region_count)
+            .map(|i| (0..layout.axis_count).map(|j| axis(layout.region_at(i) + j * 6)).collect())
+            .collect();
+        let ivd_data = layout.subtables.iter().map(|s| s.decode(buf)).collect();
+        Ok(ItemVariationStore { regions, ivd_data, axis_count: layout.axis_count })
     }
-
-    if !records_fit(base + 8, ivd_count, 4, buf.len()) {
-        return Err("IVS: IVD offset table does not fit".into());
-    }
-    let mut ivd_offsets: Vec<usize> = Vec::with_capacity(ivd_count);
-    for i in 0..ivd_count {
-        let off = read_u32_be(buf, base + 8 + i * 4).ok_or("IVS: IVD offset table truncated")?;
-        ivd_offsets.push(off as usize);
-    }
-
-    // Offsets may repeat, so each copy is held: four values per byte from the store's start, which is
-    // all its offsets reach, with rows budgeted apart, as an empty row costs none.
-    const MAX_DELTA_ROWS: usize = 1_000_000;
-    const VALUES_PER_BYTE: usize = 4;
-    const MIN_VALUES: usize = 1 << 16;
-    let mut rows_left = MAX_DELTA_ROWS;
-    let mut values_left = buf.len().saturating_sub(base).saturating_mul(VALUES_PER_BYTE).max(MIN_VALUES);
-
-    let mut ivd_data: Vec<Ivd> = Vec::with_capacity(ivd_count.min(256));
-    for off in ivd_offsets {
-        // A NULL offset is data with no variation, whatever inner index names it.
-        if off == 0 {
-            ivd_data.push(Ivd::default());
-            continue;
-        }
-        let ivd      = base.checked_add(off).ok_or("IVS: IVD offset overflows")?;
-        let items    = read_u16_be(buf, ivd).ok_or("IVS: IVD header truncated")? as usize;
-        let word_cnt = read_u16_be(buf, ivd + 2).ok_or("IVS: IVD header truncated")? as usize;
-        let reg_cnt  = read_u16_be(buf, ivd + 4).ok_or("IVS: IVD header truncated")? as usize;
-        rows_left = rows_left
-            .checked_sub(items)
-            .ok_or("IVS: delta row budget exhausted")?;
-        values_left = items
-            .checked_mul(reg_cnt)
-            .and_then(|deltas| deltas.checked_add(reg_cnt))
-            .and_then(|values| values_left.checked_sub(values))
-            .ok_or("IVS: value budget exhausted")?;
-        if !records_fit(ivd + 6, reg_cnt, 2, buf.len()) {
-            return Err("IVS: IVD region index array does not fit".into());
-        }
-        let mut reg_idxs = Vec::with_capacity(reg_cnt);
-        for j in 0..reg_cnt {
-            let idx = read_u16_be(buf, ivd + 6 + j * 2).ok_or("IVS: IVD region index truncated")?;
-            reg_idxs.push(idx as usize);
-        }
-        let long_words  = (word_cnt & 0x8000) != 0;
-        let wc          = word_cnt & 0x7FFF;
-        if wc > reg_cnt {
-            return Err("IVS: IVD wordDeltaCount exceeds regionIndexCount".into());
-        }
-        let wide_size   = if long_words { 4 } else { 2 };
-        let narrow_size = if long_words { 2 } else { 1 };
-        let row_bytes   = wc * wide_size + (reg_cnt - wc) * narrow_size;
-        let data_start  = ivd + 6 + reg_cnt * 2;
-
-        let mut deltas: Vec<i32> = Vec::with_capacity(
-            items.min(256).saturating_mul(reg_cnt).min(buf.len()),
-        );
-        for r in 0..items {
-            let row_off = r.checked_mul(row_bytes).and_then(|d| data_start.checked_add(d))
-                .ok_or("IVS: delta row offset overflows")?;
-            let row = buf.get(row_off..row_off.checked_add(row_bytes).ok_or("IVS: delta row truncated")?)
-                .ok_or("IVS: delta row truncated")?;
-            let (wide, narrow) = row.split_at_checked(wc * wide_size).ok_or("IVS: delta row truncated")?;
-            if long_words {
-                deltas.extend(wide.as_chunks::<4>().0.iter().map(|c| i32::from_be_bytes([c[0], c[1], c[2], c[3]])));
-                deltas.extend(narrow.as_chunks::<2>().0.iter().map(|c| i16::from_be_bytes([c[0], c[1]]) as i32));
-            } else {
-                deltas.extend(wide.as_chunks::<2>().0.iter().map(|c| i16::from_be_bytes([c[0], c[1]]) as i32));
-                deltas.extend(narrow.iter().map(|&b| b as i8 as i32));
-            }
-        }
-        ivd_data.push(Ivd { region_indices: reg_idxs, deltas });
-    }
-
-    Ok(ItemVariationStore { regions, ivd_data, axis_count })
 }
 
-pub fn parse_delta_set_index_map(buf: &[u8], base: usize) -> Result<Vec<(u32, u32)>, String> {
-    let fmt       = *buf.get(base).ok_or("IVS: delta set index map truncated")?;
+/// Where an item's deltas lie in an ItemVariationStore: its ItemVariationData subtable and its row there.
+#[expect(clippy::exhaustive_structs, reason = "the spec's pair, field for field")]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct DeltaSetIndex {
+    /// The ItemVariationData subtable.
+    pub outer: u32,
+    /// The row within it.
+    pub inner: u32,
+}
+
+/// The DeltaSetIndexMap at `base`, an entry an item.
+///
+/// # Errors
+///
+/// [`Malformed`] for one cut short, [`Unsupported`] for a format past 1.
+pub fn parse_delta_set_index_map(buf: &[u8], base: usize) -> Result<Vec<DeltaSetIndex>, Error> {
+    let fmt       = *buf.get(base).ok_or(Error::malformed("IVS: delta set index map truncated"))?;
     if fmt > 1 {
-        return Err("IVS: unknown delta set index map format".into());
+        return Err(Error::unsupported("IVS: unknown delta set index map format"));
     }
-    let entry_fmt = *buf.get(base + 1).ok_or("IVS: delta set index map truncated")?;
+    let entry_fmt = *buf.get(base + 1).ok_or(Error::malformed("IVS: delta set index map truncated"))?;
     let map_count: usize = if fmt == 0 {
-        read_u16_be(buf, base + 2).ok_or("IVS: delta set index map truncated")? as usize
+        read_u16_be(buf, base + 2).ok_or(Error::malformed("IVS: delta set index map truncated"))? as usize
     } else {
-        read_u32_be(buf, base + 2).ok_or("IVS: delta set index map truncated")? as usize
+        read_u32_be(buf, base + 2).ok_or(Error::malformed("IVS: delta set index map truncated"))? as usize
     };
     let inner_bits = (entry_fmt & 0x0F) as usize + 1;
     let entry_size = ((entry_fmt >> 4) & 0x3) as usize + 1;
@@ -162,50 +126,436 @@ pub fn parse_delta_set_index_map(buf: &[u8], base: usize) -> Result<Vec<(u32, u3
 
     let need = map_count.checked_mul(entry_size)
         .and_then(|n| n.checked_add(base + data_off))
-        .ok_or("IVS: delta set index map too large")?;
-    if need > buf.len() { return Err("IVS: delta set index map truncated".into()); }
+        .ok_or(Error::malformed("IVS: delta set index map too large"))?;
+    if need > buf.len() { return Err(Error::malformed("IVS: delta set index map truncated")); }
 
-    let entries = buf.get(base + data_off..need).ok_or("IVS: delta set index map truncated")?;
-    let map: Vec<(u32, u32)> = entries
+    let entries = buf.get(base + data_off..need).ok_or(Error::malformed("IVS: delta set index map truncated"))?;
+    let map: Vec<DeltaSetIndex> = entries
         .chunks_exact(entry_size)
         .map(|e| {
             let val = e.iter().fold(0usize, |acc, &b| (acc << 8) | b as usize);
-            ((val >> inner_bits) as u32, (val & inner_mask) as u32)
+            DeltaSetIndex { outer: (val >> inner_bits) as u32, inner: (val & inner_mask) as u32 }
         })
         .collect();
 
     Ok(map)
 }
 
-// Past the end, the last entry answers. An empty map is no map, as HarfBuzz and FreeType read it.
-pub fn delta_set_index_map_lookup(map: &[(u32, u32)], idx: usize) -> (usize, usize) {
-    match map.get(idx).or(map.last()) {
-        Some(&(o, i)) => (o as usize, i as usize),
-        None => (0, idx),
+/// Item `idx`'s delta-set index in a map: the last entry past its end, and outer 0, inner `idx` for an empty map,
+/// which is no map.
+pub fn delta_set_index_map_lookup(map: &[DeltaSetIndex], idx: usize) -> DeltaSetIndex {
+    map.get(idx).or(map.last()).copied().unwrap_or(DeltaSetIndex { outer: 0, inner: saturated(idx) })
+}
+
+// An index past u32 names no row, as u32::MAX doesn't.
+fn saturated(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
+}
+
+// A table's ItemVariationStore and the DeltaSetIndexMap it names, if any: what its variation indices
+// resolve to. An empty map is no map.
+pub struct DeltaSource {
+    pub store: ItemVariationStore,
+    map: Option<Vec<DeltaSetIndex>>,
+}
+
+impl DeltaSource {
+    pub fn read(table: &[u8], store_at: usize, map_at: Option<usize>) -> Result<Self, Error> {
+        let store = ItemVariationStore::parse(table, store_at)?;
+        let map = map_at.map(|at| parse_delta_set_index_map(table, at)).transpose()?.filter(|m| !m.is_empty());
+        Ok(DeltaSource { store, map })
+    }
+
+    // Each region's scalar at `location`, which `delta` takes.
+    pub fn scalars(&self, location: &[f64]) -> Vec<i64> {
+        store_scalars(&self.store, location)
+    }
+
+    // The delta `index` names in 16.16: through the map, where past the end the last entry answers, or through
+    // the table's own `implicit` (outer, inner) where it has none.
+    pub fn delta(&self, index: usize, implicit: (usize, usize), scalars: &[i64]) -> i64 {
+        let (outer, inner) = match self.map.as_deref() {
+            Some(map) => delta_set_index_map_lookup(map, index).into(),
+            None => implicit,
+        };
+        store_delta(&self.store, outer, inner, scalars)
+    }
+
+    // `delta` for glyphs, each implicitly (0, glyph), a long row worked out once: a map can name one for every glyph,
+    // which a pass over them would otherwise read whole for each.
+    pub(crate) fn glyph_deltas<'s>(&'s self, scalars: &'s [i64]) -> impl FnMut(usize) -> i64 + 's {
+        let mut worked = alloc::collections::BTreeMap::new();
+        move |gid| {
+            let (outer, inner) = match self.map.as_deref() {
+                Some(map) => delta_set_index_map_lookup(map, gid).into(),
+                None => (0, gid),
+            };
+            let delta = || store_delta(&self.store, outer, inner, scalars);
+            match self.store.ivd_data.get(outer).is_some_and(|set| set.region_indices.len() > SHORT_ROW) {
+                true => *worked.entry((outer, inner)).or_insert_with(delta),
+                false => delta(),
+            }
+        }
+    }
+
+    // How many leading indices can each have a delta of their own, through the map or the implicit (0, index);
+    // all indices past them share one.
+    pub fn extent(&self) -> usize {
+        self.map.as_ref().map_or_else(|| self.store.ivd_data.first().map_or(0, Ivd::rows), Vec::len)
     }
 }
 
-pub fn precompute_region_scalars(store: &ItemVariationStore, location: &[f64]) -> Vec<f64> {
-    (0..store.regions.len()).map(|reg_idx| region_scalar(store, reg_idx, location)).collect()
+// A store's structure, which every reader takes: nothing past the table, a failing region list, data set or row absent
+// (deltas 0), not the store. None without a store: past the table, another format, or its header cut short.
+struct Layout {
+    regions_at: usize,
+    axis_count: usize,
+    region_count: usize,
+    subtables: Vec<SubtableView>,
 }
 
-pub fn compute_ivs_delta_f64(store: &ItemVariationStore, outer_idx: usize, inner_idx: usize, region_scalars: &[f64]) -> f64 {
-    let ivd       = match store.ivd_data.get(outer_idx) { Some(v) => v, None => return 0.0 };
-    let delta_set = match ivd.row(inner_idx) { Some(v) => v, None => return 0.0 };
-    let mut delta = 0.0f64;
-    for (i, &reg_idx) in ivd.region_indices.iter().enumerate() {
-        let scalar = region_scalars.get(reg_idx).copied().unwrap_or(0.0);
-        delta += scalar * delta_set.get(i).copied().unwrap_or(0) as f64;
+impl Layout {
+    fn read(buf: &[u8], base: usize) -> Option<Layout> {
+        if base >= buf.len() || read_u16_be(buf, base) != Some(1) {
+            return None;
+        }
+        let (list_at, ivd_count) = (read_u32_be(buf, base + 2)? as usize, usize::from(read_u16_be(buf, base + 6)?));
+        let list = base.checked_add(list_at).and_then(|at| {
+            let (axes, count) = (usize::from(read_u16_be(buf, at)?), usize::from(read_u16_be(buf, at + 2)?));
+            records_fit(at + 4, count, axes * 6, buf.len()).then_some((at + 4, axes, count))
+        });
+        let (regions_at, axis_count, region_count) = list.unwrap_or_default();
+        // Offsets may repeat, so a set past these budgets is absent: four values per byte from the store's start,
+        // which is all its offsets reach, and rows budgeted apart, as an empty row costs none.
+        let mut rows_left: usize = 1_000_000;
+        let mut values_left = buf.len().saturating_sub(base).saturating_mul(4).max(1 << 16);
+        let mut subtables = Vec::with_capacity(ivd_count.min(256));
+        for i in 0..ivd_count {
+            let at = read_u32_be(buf, base + 8 + i * 4).filter(|&off| off != 0);
+            let set = at.and_then(|off| SubtableView::read(buf, base.checked_add(off as usize)?)).filter(|set| {
+                let values = set.items.checked_mul(set.regions).and_then(|v| v.checked_add(set.regions));
+                let left = rows_left.checked_sub(set.items).zip(values.and_then(|v| values_left.checked_sub(v)));
+                left.map(|(rows, values)| (rows_left, values_left) = (rows, values)).is_some()
+            });
+            subtables.push(set.unwrap_or_default());
+        }
+        Some(Layout { regions_at, axis_count, region_count, subtables })
     }
-    delta
+
+    fn region_at(&self, i: usize) -> usize {
+        self.regions_at + i * self.axis_count * 6
+    }
 }
 
-// What a Device or VariationIndex table adds at a location, from the ItemVariationStore of the table
+// An ItemVariationData's region indices, then its rows: `word_count` deltas `wide` bytes each, the rest half that.
+#[derive(Default)]
+struct SubtableView {
+    indices_at: usize,
+    regions: usize,
+    word_count: usize,
+    wide: usize,
+    rows_at: usize,
+    row_bytes: usize,
+    items: usize,
+}
+
+impl SubtableView {
+    // None where its header or region indices run past the table, or it says more word deltas than regions.
+    fn read(buf: &[u8], ivd: usize) -> Option<SubtableView> {
+        let field = |at: usize| read_u16_be(buf, ivd.checked_add(at)?).map(usize::from);
+        let (items, word_count, regions) = (field(0)?, field(2)?, field(4)?);
+        let wide = if word_count & 0x8000 != 0 { 4 } else { 2 };
+        let word_count = word_count & 0x7FFF;
+        if !records_fit(ivd + 6, regions, 2, buf.len()) || word_count > regions {
+            return None;
+        }
+        let row_bytes = word_count * wide + (regions - word_count) * wide / 2;
+        let rows_at = ivd + 6 + regions * 2;
+        Some(SubtableView { indices_at: ivd + 6, regions, word_count, wide, rows_at, row_bytes, items })
+    }
+
+    // Row `inner`'s bytes, None past its items or the table.
+    fn row<'b>(&self, buf: &'b [u8], inner: usize) -> Option<&'b [u8]> {
+        let at = inner.checked_mul(self.row_bytes)?.checked_add(self.rows_at)?;
+        buf.get(at..at.checked_add(self.row_bytes)?).filter(|_| inner < self.items)
+    }
+
+    // Region index `j`'s delta in a row.
+    fn value(&self, row: &[u8], j: usize) -> i32 {
+        let (at, size) = match j < self.word_count {
+            true => (j * self.wide, self.wide),
+            false => (self.word_count * self.wide + (j - self.word_count) * self.wide / 2, self.wide / 2),
+        };
+        match (size, row.get(at..at + size)) {
+            (4, Some(&[a, b, c, d])) => i32::from_be_bytes([a, b, c, d]),
+            (2, Some(&[a, b])) => i32::from(i16::from_be_bytes([a, b])),
+            (1, Some(&[a])) => i32::from(a as i8),
+            _ => 0,
+        }
+    }
+
+    fn region(&self, buf: &[u8], j: usize) -> usize {
+        read_u16_be(buf, self.indices_at + 2 * j).map_or(usize::MAX, usize::from)
+    }
+
+    // Its rows decoded, as `value` reads each, a row past the table all 0.
+    fn decode(&self, buf: &[u8]) -> Ivd {
+        let region_indices = (0..self.regions).map(|j| self.region(buf, j)).collect();
+        let mut deltas = Vec::with_capacity(self.items.min(256).saturating_mul(self.regions));
+        let rows = buf.get(self.rows_at..).unwrap_or_default();
+        let fit = rows.len().checked_div(self.row_bytes).unwrap_or(0).min(self.items);
+        for row in rows[..fit * self.row_bytes].chunks_exact(self.row_bytes.max(1)) {
+            let (wide, narrow) = row.split_at(self.word_count * self.wide);
+            if self.wide == 4 {
+                deltas.extend(wide.as_chunks::<4>().0.iter().map(|&c| i32::from_be_bytes(c)));
+                deltas.extend(narrow.as_chunks::<2>().0.iter().map(|&c| i32::from(i16::from_be_bytes(c))));
+            } else {
+                deltas.extend(wide.as_chunks::<2>().0.iter().map(|&c| i32::from(i16::from_be_bytes(c))));
+                deltas.extend(narrow.iter().map(|&b| i32::from(b as i8)));
+            }
+        }
+        deltas.resize(self.items * self.regions, 0);
+        Ivd { region_indices, deltas, items: self.items }
+    }
+}
+
+// An ItemVariationStore read in place, where `ItemVariationStore::parse` decodes the same layout whole, and summed as
+// `store_delta`.
+pub(crate) struct StoreView {
+    table: TableBytes,
+    layout: Layout,
+}
+
+impl StoreView {
+    pub(crate) fn read(table: TableBytes, base: usize) -> Option<StoreView> {
+        let layout = Layout::read(table.as_slice(), base)?;
+        Some(StoreView { table, layout })
+    }
+
+    pub(crate) fn axis_count(&self) -> usize {
+        self.layout.axis_count
+    }
+
+    // Region `i`'s scalar at 16.16 `coords`; 0 past the regions.
+    pub(crate) fn region_scalar(&self, coords: &[i64], i: usize) -> i64 {
+        if i >= self.layout.region_count {
+            return 0;
+        }
+        let (buf, region) = (self.table.as_slice(), self.layout.region_at(i));
+        let field = |at: usize| read_i16_be(buf, at).map_or(0, |v| i64::from(v) * 4);
+        let axes = (0..self.layout.axis_count).map(|j| region + j * 6).map(|a| (field(a), field(a + 2), field(a + 4)));
+        region_scalar(coords, axes)
+    }
+
+    // Data set `outer`'s region indices, None where it's absent or past the store.
+    pub(crate) fn data_regions(&self, outer: usize) -> Option<impl ExactSizeIterator<Item = usize> + '_> {
+        let set = self.layout.subtables.get(outer).filter(|s| s.indices_at != 0)?;
+        Some((0..set.regions).map(|j| set.region(self.table.as_slice(), j)))
+    }
+
+    // Each region's scalar at 16.16 `coords`, which `delta` takes, as `store_scalars`.
+    pub(crate) fn scalars(&self, coords: &[i64]) -> Vec<i64> {
+        (0..self.layout.region_count).map(|i| self.region_scalar(coords, i)).collect()
+    }
+
+    // An item's delta from `buf`, the store's own table as its reader holds it. A region at 0 adds nothing, so its
+    // delta is never read.
+    fn delta(&self, buf: &[u8], outer: usize, inner: usize, scalars: &[i64]) -> i64 {
+        #[cfg(test)]
+        let _ = ROWS_SUMMED.try_with(|n| n.set(n.get() + 1));
+        let Some(set) = self.layout.subtables.get(outer) else { return 0 };
+        let Some(row) = set.row(buf, inner) else { return 0 };
+        let indices = buf.get(set.indices_at..set.indices_at + 2 * set.regions).unwrap_or_default();
+        let scalar = |r: &[u8; 2]| scalars.get(usize::from(u16::from_be_bytes(*r))).copied().unwrap_or(0);
+        indices.as_chunks::<2>().0.iter().enumerate().fold(0i64, |sum, (j, r)| match scalar(r) {
+            0 => sum,
+            s => sum.saturating_add(i64::from(set.value(row, j)) * s),
+        })
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        crate::daecore::daekit::base::sync::heap_of(&self.layout.subtables)
+    }
+}
+
+// A DeltaSetIndexMap read in place, checked as `parse_delta_set_index_map` checks it.
+struct MapView {
+    data_at: usize,
+    count: usize,
+    entry_size: usize,
+    inner_bits: usize,
+}
+
+impl MapView {
+    // None where the parse fails, Some(None) for an empty map, which is no map.
+    fn read(buf: &[u8], base: usize) -> Option<Option<MapView>> {
+        let format = *buf.get(base)?;
+        if format > 1 {
+            return None;
+        }
+        let entry_format = *buf.get(base + 1)?;
+        let (count, data_at) = match format {
+            0 => (usize::from(read_u16_be(buf, base + 2)?), base + 4),
+            _ => (read_u32_be(buf, base + 2)? as usize, base + 6),
+        };
+        let entry_size = usize::from((entry_format >> 4) & 0x3) + 1;
+        if !records_fit(data_at, count, entry_size, buf.len()) {
+            return None;
+        }
+        let inner_bits = usize::from(entry_format & 0x0F) + 1;
+        Some((count > 0).then_some(MapView { data_at, count, entry_size, inner_bits }))
+    }
+
+    // As `delta_set_index_map_lookup`: past the end, the last entry answers.
+    fn lookup(&self, buf: &[u8], index: usize) -> (usize, usize) {
+        // An entry is the low bytes of the four ending it, the map's header lying before the first.
+        let end = self.data_at + (index.min(self.count - 1) + 1) * self.entry_size;
+        let value = read_u32_be(buf, end - 4).map_or(0, |v| (v & (u32::MAX >> (32 - 8 * self.entry_size))) as usize);
+        (value >> self.inner_bits, value & ((1 << self.inner_bits) - 1))
+    }
+}
+
+// `DeltaSource` read in place: a table's store and the map it names, if any.
+pub(crate) struct DeltaView {
+    store: StoreView,
+    map: Option<MapView>,
+}
+
+impl DeltaView {
+    pub(crate) fn read(table: &TableBytes, store_at: usize, map_at: Option<usize>) -> Option<DeltaView> {
+        let map = match map_at {
+            Some(at) => MapView::read(table, at)?,
+            None => None,
+        };
+        Some(DeltaView { store: StoreView::read(table.clone(), store_at)?, map })
+    }
+
+    pub(crate) fn scalars(&self, location: &[f64]) -> Vec<i64> {
+        self.store.scalars(&fixed_coords(location))
+    }
+
+    // Its scalars at 16.16 `coords`.
+    pub(crate) fn scalars_at(&self, coords: &[i64]) -> Vec<i64> {
+        self.store.scalars(coords)
+    }
+
+    pub(crate) fn delta(&self, index: usize, implicit: (usize, usize), scalars: &[i64]) -> i64 {
+        let buf = self.store.table.as_slice();
+        let (outer, inner) = self.map.as_ref().map_or(implicit, |map| map.lookup(buf, index));
+        self.store.delta(buf, outer, inner, scalars)
+    }
+
+    // As `DeltaSource::glyph_deltas`.
+    pub(crate) fn glyph_deltas<'s>(&'s self, scalars: &'s [i64]) -> impl FnMut(usize) -> i64 + 's {
+        let (buf, mut worked) = (self.store.table.as_slice(), alloc::collections::BTreeMap::new());
+        move |gid| {
+            let (outer, inner) = self.map.as_ref().map_or((0, gid), |map| map.lookup(buf, gid));
+            let delta = || self.store.delta(buf, outer, inner, scalars);
+            match self.store.layout.subtables.get(outer).is_some_and(|set| set.regions > SHORT_ROW) {
+                true => *worked.entry((outer, inner)).or_insert_with(delta),
+                false => delta(),
+            }
+        }
+    }
+
+    pub(crate) fn extent(&self) -> usize {
+        self.map.as_ref().map_or_else(|| self.store.layout.subtables.first().map_or(0, |s| s.items), |m| m.count)
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.store.heap_bytes()
+    }
+}
+
+impl ItemVariationStore {
+    /// Each region's scalar at normalized coordinates `location`, an axis past them at 0, worked out in 16.16 as
+    /// every variation in daegun is.
+    #[doc(alias("precompute_region_scalars"))]
+    pub fn region_scalars(&self, location: &[f64]) -> Vec<f64> {
+        store_scalars(self, location).into_iter().map(units).collect()
+    }
+
+    /// An item's delta: its row's deltas weighted by [`region_scalars`](Self::region_scalars)'s scalars and summed;
+    /// 0 for an index past the store's.
+    #[doc(alias("compute_ivs_delta_f64"))]
+    pub fn delta(&self, index: DeltaSetIndex, region_scalars: &[f64]) -> f64 {
+        let (outer, inner) = index.into();
+        units(weighted_delta(self, outer, inner, |r| region_scalars.get(r).map_or(0, |&s| fixed_coord(s))))
+    }
+}
+
+impl From<DeltaSetIndex> for (usize, usize) {
+    fn from(index: DeltaSetIndex) -> (usize, usize) {
+        (index.outer as usize, index.inner as usize)
+    }
+}
+
+// The most regions a row has that's summed again for each glyph naming it, which costs no more than looking up its
+// sum; real fonts' rows hold a few dozen at most.
+const SHORT_ROW: usize = 64;
+
+// 16.16's one: every scalar and delta is worked in 16.16, which meets the variations overview's 16 fractional bits.
+pub(crate) const ONE: i64 = 0x10000;
+
+// A normalized coordinate in 16.16; a location's are 2.14 values, which convert exactly.
+pub(crate) fn fixed_coord(v: f64) -> i64 {
+    i64::from(ot_round(v * 65_536.0))
+}
+
+pub(crate) fn fixed_coords(location: &[f64]) -> Vec<i64> {
+    location.iter().map(|&v| fixed_coord(v)).collect()
+}
+
+// A 16.16 value as a number of units, exact in a double.
+pub(crate) fn units(v: i64) -> f64 {
+    v as f64 / 65_536.0
+}
+
+// A 16.16 value rounded to a whole unit, a half up, as a delta is stored.
+pub(crate) fn round_fixed(v: i64) -> i32 {
+    (v.saturating_add(0x8000) >> 16).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+pub(crate) fn store_scalars(store: &ItemVariationStore, location: &[f64]) -> Vec<i64> {
+    let coords = fixed_coords(location);
+    let fixed = |a: &RegionAxis| (fixed_coord(a.start), fixed_coord(a.peak), fixed_coord(a.end));
+    store.regions.iter().map(|region| region_scalar(&coords, region.iter().map(fixed))).collect()
+}
+
+// An item's delta in 16.16: its row's deltas times their regions' scalars, summed exactly.
+pub(crate) fn store_delta(store: &ItemVariationStore, outer: usize, inner: usize, scalars: &[i64]) -> i64 {
+    weighted_delta(store, outer, inner, |r| scalars.get(r).copied().unwrap_or(0))
+}
+
+// The rows summed on this thread, which the tests count.
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static ROWS_SUMMED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+// The same with region `r`'s scalar as `scalar` gives it.
+fn weighted_delta(store: &ItemVariationStore, outer: usize, inner: usize, scalar: impl Fn(usize) -> i64) -> i64 {
+    #[cfg(test)]
+    let _ = ROWS_SUMMED.try_with(|n| n.set(n.get() + 1));
+    let Some(ivd) = store.ivd_data.get(outer) else { return 0 };
+    let Some(row) = ivd.row(inner) else { return 0 };
+    ivd.region_indices.iter().zip(row).fold(0, |sum, (&r, &value)| sum.saturating_add(i64::from(value) * scalar(r)))
+}
+
+// A VariationIndex table's outer and inner index; a Device table of sizes is not one.
+pub(crate) fn variation_index(table: &[u8], at: usize) -> Option<(u16, u16)> {
+    if read_u16_be(table, at.checked_add(4)?)? != 0x8000 {
+        return None;
+    }
+    Some((read_u16_be(table, at)?, read_u16_be(table, at + 2)?))
+}
+
+// What a Device or VariationIndex table adds at a location in 16.16, from the ItemVariationStore of the table
 // that holds it; each (outer, inner) is worked out once, as many tables may name one.
 pub(crate) struct DeviceDeltas {
-    store: crate::daecore::sync::Shared<ItemVariationStore>,
-    scalars: Vec<f64>,
-    worked_out: alloc::collections::BTreeMap<(u16, u16), f64>,
+    store: crate::daecore::daekit::base::sync::Shared<ItemVariationStore>,
+    scalars: Vec<i64>,
+    worked_out: alloc::collections::BTreeMap<(u16, u16), i64>,
 }
 
 impl DeviceDeltas {
@@ -213,104 +563,68 @@ impl DeviceDeltas {
         if store_at == 0 || location.iter().all(|&c| c == 0.0) {
             return None;
         }
-        DeviceDeltas::from_store(crate::daecore::sync::Shared::new(parse_item_variation_store(table, store_at).ok()?), location)
+        DeviceDeltas::from_store(
+            crate::daecore::daekit::base::sync::Shared::new(ItemVariationStore::parse(table, store_at).ok()?),
+            location,
+        )
     }
 
     // Over a store parsed already, such as the one a font keeps for the shaper.
-    pub(crate) fn from_store(store: crate::daecore::sync::Shared<ItemVariationStore>, location: &[f64]) -> Option<DeviceDeltas> {
+    pub(crate) fn from_store(
+        store: crate::daecore::daekit::base::sync::Shared<ItemVariationStore>,
+        location: &[f64],
+    ) -> Option<DeviceDeltas> {
         if location.iter().all(|&c| c == 0.0) {
             return None;
         }
-        let scalars = precompute_region_scalars(&store, location);
+        let scalars = store_scalars(&store, location);
         Some(DeviceDeltas { store, scalars, worked_out: alloc::collections::BTreeMap::new() })
     }
 
-    // A VariationIndex's delta; a Device table of sizes adds nothing, applying only at a ppem.
-    pub(crate) fn delta(&mut self, table: &[u8], device_at: usize) -> f64 {
-        if read_u16_be(table, device_at + 4) != Some(0x8000) {
-            return 0.0;
-        }
-        let (Some(outer), Some(inner)) = (read_u16_be(table, device_at), read_u16_be(table, device_at + 2)) else {
-            return 0.0;
-        };
+    // A VariationIndex's delta in 16.16; a Device table of sizes adds nothing, applying only at a ppem.
+    pub(crate) fn delta(&mut self, table: &[u8], device_at: usize) -> i64 {
+        let Some((outer, inner)) = variation_index(table, device_at) else { return 0 };
         let (store, scalars) = (&self.store, &self.scalars);
         *self
             .worked_out
             .entry((outer, inner))
-            .or_insert_with(|| compute_ivs_delta_f64(store, usize::from(outer), usize::from(inner), scalars))
+            .or_insert_with(|| store_delta(store, usize::from(outer), usize::from(inner), scalars))
     }
 }
 
-fn region_scalar(store: &ItemVariationStore, reg_idx: usize, location: &[f64]) -> f64 {
-    let region = match store.regions.get(reg_idx) { Some(r) => r, None => return 0.0 };
-    // Most regions are zero at any one location, and the first axis that says so settles it: every
-    // factor is finite and not negative, so the product could only stay zero.
-    let mut scalar = 1.0;
-    for (j, a) in region.iter().take(store.axis_count).enumerate() {
-        scalar *= axis_factor(location.get(j).copied().unwrap_or(0.0), a.start, a.peak, a.end);
-        if scalar == 0.0 {
-            break;
+// A region's scalar at 16.16 `coords` by the variations overview's per-axis rule, each axis's share multiplied in
+// and rounded in 16.16: an ill-formed axis or one peaking at 0 is left out, one past the coordinates sits at 0.
+pub(crate) fn region_scalar(coords: &[i64], axes: impl Iterator<Item = (i64, i64, i64)>) -> i64 {
+    let mut scalar = ONE;
+    for (j, (start, peak, end)) in axes.enumerate() {
+        let c = coords.get(j).copied().unwrap_or(0);
+        if start > peak || peak > end || (start < 0 && end > 0) || peak == 0 || c == peak {
+            continue;
         }
+        if c <= start || c >= end {
+            return 0;
+        }
+        let (part, whole) = if c < peak { (c - start, peak - start) } else { (end - c, end - peak) };
+        scalar = (scalar * part + whole / 2) / whole;
     }
     scalar
 }
 
-// One axis's part of a region's scalar, for the IVS and for gvar and cvar tuples alike. The spec, fontTools
-// and FreeType ignore an axis whose region is backwards or crosses zero; HarfBuzz answers 0 at a zero coordinate.
-pub(crate) fn axis_factor(loc: f64, start: f64, peak: f64, end: f64) -> f64 {
-    if peak == 0.0 || loc == peak || start > peak || peak > end || (start < 0.0 && end > 0.0) {
-        1.0
-    } else if loc < start || loc > end {
-        0.0
-    } else if loc < peak {
-        (loc - start) / (peak - start)
-    } else {
-        (end - loc) / (end - peak)
+// A gvar or cvar tuple's scalar: a peak alone spans from 0 to it, an intermediate region from its start to its end.
+pub(crate) fn tuple_scalar(coords: &[i64], peak: &[i64], region: Option<(&[i64], &[i64])>) -> i64 {
+    match region {
+        Some((start, end)) => region_scalar(coords, start.iter().zip(peak).zip(end).map(|((&s, &p), &e)| (s, p, e))),
+        None => region_scalar(coords, peak.iter().map(|&p| (p.min(0), p, p.max(0)))),
     }
 }
 
-pub(crate) fn region_scalars(store: &ItemVariationStore, outer_idx: usize, location: &[f64]) -> Option<Vec<f64>> {
-    let ivd = store.ivd_data.get(outer_idx)?;
-    Some(ivd.region_indices.iter().map(|&reg_idx| region_scalar(store, reg_idx, location)).collect())
+// The scalars of one ItemVariationData's regions in its order, as a CFF2 blend takes them.
+pub(crate) fn data_scalars(store: &ItemVariationStore, outer: usize, location: &[f64]) -> Option<Vec<i64>> {
+    let ivd = store.ivd_data.get(outer)?;
+    let scalars = store_scalars(store, location);
+    Some(ivd.region_indices.iter().map(|&r| scalars.get(r).copied().unwrap_or(0)).collect())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-
-    // A one-axis store whose first data offset is NULL and whose second holds one delta of 100, with
-    // other table bytes after it that a NULL read as an offset would land among.
-    fn store_with_null_data() -> Vec<u8> {
-        let mut t = vec![0, 1, 0, 0, 0, 16, 0, 2, 0, 0, 0, 0, 0, 0, 0, 26];
-        t.extend([0, 1, 0, 1, 0, 0, 0x40, 0, 0x40, 0]);
-        t.extend([0, 1, 0, 0, 0, 1, 0, 0, 100]);
-        t.extend([0x11; 40]);
-        t
-    }
-
-    #[test]
-    fn a_null_data_offset_has_no_variation() {
-        let store = parse_item_variation_store(&store_with_null_data(), 0).expect("parses");
-        let scalars = precompute_region_scalars(&store, &[1.0]);
-        assert_eq!(compute_ivs_delta_f64(&store, 0, 0, &scalars), 0.0);
-        assert_eq!(compute_ivs_delta_f64(&store, 1, 0, &scalars), 100.0);
-    }
-
-    #[test]
-    fn a_store_or_map_of_an_unknown_format_is_refused() {
-        let mut t = store_with_null_data();
-        t[1] = 2;
-        assert!(parse_item_variation_store(&t, 0).is_err());
-        assert!(parse_delta_set_index_map(&[7, 0, 0, 0, 0, 1, 0x40], 0).is_err());
-    }
-
-    #[test]
-    fn an_empty_delta_set_index_map_maps_nothing() {
-        let map = parse_delta_set_index_map(&[0, 0, 0, 0], 0).expect("parses");
-        assert!(map.is_empty());
-        assert_eq!(delta_set_index_map_lookup(&map, 5), (0, 5));
-        let one = parse_delta_set_index_map(&[0, 0x17, 0, 1, 0x01, 0x02], 0).expect("parses");
-        assert_eq!([0, 9].map(|i| delta_set_index_map_lookup(&one, i)), [(1, 2), (1, 2)]);
-    }
-}
+#[path = "../../../tests/unit/daetype/format/ivs.rs"]
+mod tests;

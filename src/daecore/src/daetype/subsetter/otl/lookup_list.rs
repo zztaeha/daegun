@@ -1,43 +1,93 @@
-use crate::daecore::daetype::subsetter::GlyphSet;
+use alloc::collections::BTreeMap;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 use super::generic::schema::Schema;
-use super::generic::Work;
-use crate::daecore::daetype::decoder::{read_u16_be, read_u32_be, write_u16_be, write_u32_be};
+use super::generic::{Graph, Link, Parsed, Work};
+use crate::daecore::daetype::decoder::{fitting_count, read_u16_be, read_u32_be, write_u16_be, write_u32_be};
 
 const EXTENSION_RECORD_LEN: usize = 8;
 
 pub(crate) type SubtableSubsetter<'a> =
-    &'a dyn Fn(u16, Option<&Schema>, &[u8], usize, &GlyphSet, &[u16], &mut Work) -> Option<Vec<u8>>;
+    &'a dyn for<'b> Fn(u16, Option<&Schema>, &'b [u8], usize, &mut Work) -> Option<Parsed<'b>>;
 
-// Subtables rebuilt in this pass by where they start and their type, kept once named again, so one
+// A subtable as read, shared by every lookup naming it.
+type Read<'b> = Rc<Parsed<'b>>;
+
+// Subtables read in this pass by where they start and their type, kept once named again, so one
 // that many lookups name is parsed at most twice, and the work that costs is spent across the table.
-struct Pass {
+struct Pass<'b> {
     work: Work,
-    rebuilt: alloc::collections::BTreeMap<(usize, u16), Option<Vec<u8>>>,
+    offsets: OffsetBudget,
+    read: BTreeMap<(usize, u16), Option<Read<'b>>>,
 }
-type SchemaForType<'a> = &'a dyn Fn(u16) -> Option<Schema>;
 
-pub(crate) fn resolve_effective_type(buf: &[u8], ext_type: u16, lookup_type: u16, sub_off: usize) -> Option<(u16, usize)> {
+type SchemaForType = fn(u16) -> Option<&'static Schema>;
+
+fn resolve_effective_type(buf: &[u8], ext_type: u16, lookup_type: u16, sub_off: usize) -> Option<(u16, usize)> {
     if lookup_type != ext_type { return Some((lookup_type, sub_off)); }
     let ext_format = read_u16_be(buf, sub_off)?;
     if ext_format != 1 { return None; }
     let real_type = read_u16_be(buf, sub_off + 2)?;
     if real_type == ext_type { return None; }
     let real_off = read_u32_be(buf, sub_off + 4)? as usize;
-    Some((real_type, sub_off + real_off))
+    Some((real_type, sub_off.checked_add(real_off)?))
+}
+
+// Where each lookup a GSUB or GPOS names starts, in LookupList order, None for a null lookup, which holds nothing.
+// None for a list cut short; a null list names no lookups.
+pub(crate) fn lookups(buf: &[u8]) -> Option<impl ExactSizeIterator<Item = Option<usize>> + '_> {
+    let ([_, _, list], width) = super::layout_lists(buf)?;
+    let count = if list == 0 { 0 } else { usize::from(read_u16_be(buf, list)?) };
+    let offsets = buf.get(list + 2..list + 2 + width * count)?.chunks_exact(width);
+    Some(offsets.map(move |rel| {
+        let rel = rel.iter().fold(0, |rel, &b| rel << 8 | usize::from(b));
+        (rel != 0).then(|| list.saturating_add(rel).min(buf.len()))
+    }))
+}
+
+// The subtable offsets a table's lookups may name between them, one per byte of the table. Lookups laid
+// out apart name at most one per two bytes; lookups crafted to overlap could name 65,535 each.
+pub(crate) struct OffsetBudget(usize);
+
+impl OffsetBudget {
+    pub(crate) fn for_table(len: usize) -> OffsetBudget {
+        OffsetBudget(len)
+    }
+}
+
+// A lookup's subtables, each named once, an Extension resolved or, malformed, dropped; a count past the
+// table names the offsets it holds. None once the lookups walked name more offsets than `budget` allows.
+pub(crate) fn subtables<'a>(
+    buf: &'a [u8], lookup: usize, ext_type: u16, budget: &mut OffsetBudget,
+) -> Option<impl Iterator<Item = (u16, usize)> + 'a> {
+    let lookup_type = read_u16_be(buf, lookup).unwrap_or(0);
+    let count = fitting_count(buf, lookup + 4, 2);
+    budget.0 = budget.0.checked_sub(count)?;
+    let mut seen = alloc::collections::BTreeSet::new();
+    Some((0..count)
+        .map_while(move |i| read_u16_be(buf, lookup + 6 + 2 * i))
+        .filter_map(move |rel| resolve_effective_type(buf, ext_type, lookup_type, lookup + usize::from(rel)))
+        .filter(move |&(_, off)| seen.insert(off)))
 }
 
 #[derive(Clone)]
-struct RebuiltLookup {
+struct RebuiltLookup<T> {
     real_type: u16,
     flag: u16,
     mark_filtering_set: Option<u16>,
-    subtables: Vec<Vec<u8>>,
+    subtables: Vec<T>,
 }
 
-impl RebuiltLookup {
+impl<T> RebuiltLookup<T> {
     fn hollow(lookup_type: u16) -> Self {
-        RebuiltLookup { real_type: lookup_type, flag: 0, mark_filtering_set: None, subtables: Vec::new() }
+        let subtables = Vec::new();
+        RebuiltLookup { real_type: lookup_type, flag: 0, mark_filtering_set: None, subtables }
+    }
+
+    // Its header's fields, for subtables of another form.
+    fn with_none<U>(&self) -> RebuiltLookup<U> {
+        let RebuiltLookup { real_type, flag, mark_filtering_set, .. } = *self;
+        RebuiltLookup { real_type, flag, mark_filtering_set, subtables: Vec::new() }
     }
 
     fn is_hollow(&self) -> bool { self.subtables.is_empty() }
@@ -45,18 +95,6 @@ impl RebuiltLookup {
     fn trailing(&self) -> usize { if self.flag & 0x0010 != 0 { 2 } else { 0 } }
 
     fn header_len(&self) -> usize { 6 + self.subtables.len() * 2 + self.trailing() }
-
-    fn inline_len(&self) -> usize {
-        if self.is_hollow() { return 6; }
-        self.header_len() + self.subtables.iter().map(|t| t.len()).sum::<usize>()
-    }
-
-    fn promoted_header_len(&self) -> usize {
-        if self.is_hollow() { return 6; }
-        self.header_len() + self.subtables.len() * EXTENSION_RECORD_LEN
-    }
-
-    fn payload_len(&self) -> usize { self.subtables.iter().map(|t| t.len()).sum() }
 
     fn write_header_into(&self, out: &mut [u8], at: usize, declared_type: u16) {
         write_u16_be(out, at, declared_type);
@@ -68,97 +106,232 @@ impl RebuiltLookup {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn rebuild_one_lookup(
-    buf: &[u8],
+impl RebuiltLookup<Vec<u8>> {
+    fn inline_len(&self) -> usize {
+        if self.is_hollow() { return 6; }
+        self.header_len() + self.subtables.iter().map(|t| t.len()).sum::<usize>()
+    }
+
+    fn promoted_header_len(&self) -> usize {
+        if self.is_hollow() { return 6; }
+        self.header_len() + self.subtables.len() * EXTENSION_RECORD_LEN
+    }
+
+    fn payload_len(&self) -> usize { self.subtables.iter().map(|t| t.len()).sum() }
+}
+
+fn rebuild_one_lookup<'b>(
+    buf: &'b [u8],
     lookup_start: usize,
     ext_type: u16,
-    active: &GlyphSet,
-    gid_map: &[u16],
-    mark_sets: u16,
+    mark_sets: &[Option<u16>],
     subset_subtable: SubtableSubsetter,
     schema_for_type: SchemaForType,
-    pass: &mut Pass,
-) -> RebuiltLookup {
-    let Some(lookup_type) = read_u16_be(buf, lookup_start) else { return RebuiltLookup::hollow(1) };
-    let Some(orig_flag) = read_u16_be(buf, lookup_start + 2) else { return RebuiltLookup::hollow(lookup_type) };
-    let Some(sub_count) = read_u16_be(buf, lookup_start + 4) else { return RebuiltLookup::hollow(lookup_type) };
+    pass: &mut Pass<'b>,
+) -> Option<RebuiltLookup<Read<'b>>> {
+    let Some(lookup_type) = read_u16_be(buf, lookup_start) else { return Some(RebuiltLookup::hollow(1)) };
+    let Some(orig_flag) = read_u16_be(buf, lookup_start + 2) else { return Some(RebuiltLookup::hollow(lookup_type)) };
+    let Some(sub_count) = read_u16_be(buf, lookup_start + 4) else { return Some(RebuiltLookup::hollow(lookup_type)) };
 
-    // A mark filtering set the subset's GDEF does not hold is dropped with its flag: OTS, which
-    // browsers run on web fonts, refuses a lookup naming one.
-    let mark_filtering_set = (orig_flag & 0x0010 != 0)
+    // A mark filtering set takes its index in the subset's GDEF. One the font lacks filters by none, so its flag goes
+    // rather than name a set the subset's GDEF doesn't hold; one left empty ignores every mark, as it did.
+    let set = (orig_flag & 0x0010 != 0)
         .then(|| read_u16_be(buf, lookup_start + 6 + sub_count as usize * 2))
         .flatten()
-        .filter(|&set| set < mark_sets);
-    let flag = if mark_filtering_set.is_some() { orig_flag } else { orig_flag & !0x0010 };
+        .and_then(|set| mark_sets.get(usize::from(set)));
+    let mark_filtering_set = set.copied().flatten();
+    let flag = match set {
+        Some(Some(_)) => orig_flag,
+        Some(None) => orig_flag & !0x0010 | 0x0008,
+        None => orig_flag & !0x0010,
+    };
 
     // A subtable named twice in one lookup applies where its first naming does, so later ones go.
     let mut effective_type: Option<u16> = None;
-    let mut plan: Option<Option<Schema>> = None;
-    let mut subtables: Vec<Vec<u8>> = Vec::new();
-    let mut seen = alloc::collections::BTreeSet::new();
-    for i in 0..sub_count as usize {
-        let Some(rel) = read_u16_be(buf, lookup_start + 6 + i * 2) else { break };
-        let Some((this_type, this_off)) = resolve_effective_type(buf, ext_type, lookup_type, lookup_start + rel as usize) else { continue };
-        if !seen.insert(this_off) { continue; }
+    let mut rebuilt_subtables: Vec<Read<'b>> = Vec::new();
+    for (this_type, this_off) in subtables(buf, lookup_start, ext_type, &mut pass.offsets)? {
         if *effective_type.get_or_insert(this_type) != this_type { continue; }
-        if plan.is_none() { plan = Some(schema_for_type(this_type)); }
-        let schema = plan.as_ref().and_then(Option::as_ref);
-        let rebuilt = match pass.rebuilt.get(&(this_off, this_type)) {
+        let schema = schema_for_type(this_type);
+        let read = |pass: &mut Pass<'b>| subset_subtable(this_type, schema, buf, this_off, &mut pass.work).map(Rc::new);
+        let rebuilt = match pass.read.get(&(this_off, this_type)) {
             Some(done) => done.clone(),
             None if pass.work.seen(this_off) => {
-                let done = subset_subtable(this_type, schema, buf, this_off, active, gid_map, &mut pass.work);
-                pass.rebuilt.insert((this_off, this_type), done.clone());
+                let done = read(pass);
+                pass.read.insert((this_off, this_type), done.clone());
                 done
             }
-            None => subset_subtable(this_type, schema, buf, this_off, active, gid_map, &mut pass.work),
+            None => read(pass),
         };
-        subtables.extend(rebuilt);
+        rebuilt_subtables.extend(rebuilt);
     }
-    let (Some(real_type), false) = (effective_type, subtables.is_empty()) else {
-        return RebuiltLookup::hollow(lookup_type);
+    let (Some(real_type), false) = (effective_type, rebuilt_subtables.is_empty()) else {
+        return Some(RebuiltLookup::hollow(lookup_type));
     };
 
-    RebuiltLookup { real_type, flag, mark_filtering_set, subtables }
+    Some(RebuiltLookup { real_type, flag, mark_filtering_set, subtables: rebuilt_subtables })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn rebuild_lookups(
-    buf: &[u8],
-    lookup_list_off: usize,
+// The table's lookups as read, with the work the reading spent.
+fn read_lookups<'b>(
+    buf: &'b [u8],
     ext_type: u16,
-    active: &GlyphSet,
-    gid_map: &[u16],
-    mark_sets: u16,
+    mark_sets: &[Option<u16>],
     subset_subtable: SubtableSubsetter,
     schema_for_type: SchemaForType,
-) -> Option<Vec<RebuiltLookup>> {
-    // A lookup named by many entries is rebuilt once and copied, and the copies stop at twice the table.
-    let count = read_u16_be(buf, lookup_list_off)? as usize;
-    let budget = crate::daecore::daetype::subsetter::subset_budget(buf.len());
-    let (mut out, mut held): (Vec<RebuiltLookup>, usize) = (Vec::with_capacity(count), 0);
-    let mut first_of = alloc::collections::BTreeMap::new();
-    let mut pass = Pass { work: Work::for_table(buf.len()), rebuilt: alloc::collections::BTreeMap::new() };
-    for i in 0..count {
-        let rel = read_u16_be(buf, lookup_list_off + 2 + i * 2)?;
-        let lookup = match first_of.get(&rel) {
-            Some(&j) => RebuiltLookup::clone(&out[j]),
-            None => {
-                first_of.insert(rel, i);
-                rebuild_one_lookup(
-                    buf, lookup_list_off + rel as usize, ext_type, active, gid_map,
-                    mark_sets, subset_subtable, schema_for_type, &mut pass,
-                )
+) -> Option<(Vec<RebuiltLookup<Read<'b>>>, Work)> {
+    let starts = lookups(buf)?;
+    let mut out: Vec<RebuiltLookup<Read<'b>>> = Vec::with_capacity(starts.len());
+    let mut first_of = BTreeMap::new();
+    let mut pass =
+        Pass { work: Work::for_table(buf.len()), offsets: OffsetBudget::for_table(buf.len()), read: BTreeMap::new() };
+    for (i, start) in starts.enumerate() {
+        let lookup = match start.map(|start| (start, first_of.get(&start))) {
+            None => RebuiltLookup::hollow(1),
+            Some((_, Some(&j))) => RebuiltLookup::clone(&out[j]),
+            Some((start, None)) => {
+                first_of.insert(start, i);
+                rebuild_one_lookup(buf, start, ext_type, mark_sets, subset_subtable, schema_for_type, &mut pass)?
             }
         };
-        held = held.saturating_add(lookup.inline_len());
-        if held > budget { return None; }
         out.push(lookup);
+    }
+    Some((out, pass.work))
+}
+
+// Each lookup's number in the subset: those a feature names that hold a subtable, then every lookup their records
+// name in turn, in the source's order, and u16::MAX for the rest, which go. With `held`, each keeps its own. A Feature,
+// subtable or child many name is read once, each lookup index spending the subset budget; None past it.
+fn numbering(buf: &[u8], lookups: &[RebuiltLookup<Read<'_>>], held: bool) -> Option<Vec<u16>> {
+    if held {
+        return (0..lookups.len()).map(|i| u16::try_from(i).ok()).collect();
+    }
+    let live = live(lookups);
+    let ([_, feature_off, _], _) = super::layout_lists(buf)?;
+    let features = if feature_off == 0 { 0 } else { usize::from(read_u16_be(buf, feature_off)?) };
+    let (mut kept, mut walk) = (alloc::vec![false; lookups.len()], Vec::new());
+    let (mut read, mut left) = (alloc::collections::BTreeSet::new(), super::super::subset_budget(buf.len()));
+    for i in 0..features {
+        let rel = usize::from(read_u16_be(buf, feature_off + 2 + i * 6 + 4)?);
+        if rel == 0 || !read.insert(rel) {
+            continue;
+        }
+        let feature = feature_off + rel;
+        let count = usize::from(read_u16_be(buf, feature + 2)?);
+        left = left.checked_sub(count)?;
+        for k in 0..count {
+            let lookup = usize::from(read_u16_be(buf, feature + 4 + 2 * k)?);
+            if live.get(lookup) == Some(&true) && !kept[lookup] {
+                kept[lookup] = true;
+                walk.push(lookup);
+            }
+        }
+    }
+    let (mut named, mut seen) = (Vec::new(), alloc::collections::BTreeSet::new());
+    while let Some(lookup) = walk.pop() {
+        for read in &lookups[lookup].subtables {
+            if let Parsed::Value(value) = &**read && seen.insert(core::ptr::from_ref(value)) {
+                super::generic::named_lookups(value, &mut seen, &mut named);
+            }
+        }
+        left = left.checked_sub(named.len())?;
+        for nested in named.drain(..).map(usize::from) {
+            if nested < kept.len() && !kept[nested] {
+                kept[nested] = true;
+                walk.push(nested);
+            }
+        }
+    }
+    let mut next = 0;
+    Some(kept.iter().map(|&k| if k { next += 1; next - 1 } else { u16::MAX }).collect())
+}
+
+// The lookups `numbers` keeps, each subtable written once however many lookups name it, one writing nothing left out.
+// None once the headers and what `held` counts of their subtables pass `budget`, which shared copies would.
+fn written<'b, T: Clone>(
+    lookups: &[RebuiltLookup<Read<'b>>], numbers: &[u16], budget: usize, held: impl Fn(&T) -> usize,
+    mut write: impl FnMut(&Parsed<'b>) -> Option<T>,
+) -> Option<Vec<RebuiltLookup<T>>> {
+    let mut done: BTreeMap<*const Parsed<'b>, Option<T>> = BTreeMap::new();
+    let mut spent = 0usize;
+    let mut out = Vec::new();
+    for (lookup, _) in lookups.iter().zip(numbers).filter(|&(_, &n)| n != u16::MAX) {
+        let subtables = lookup.subtables.iter().filter_map(|read| {
+            done.entry(Rc::as_ptr(read)).or_insert_with(|| write(read)).clone()
+        });
+        let subtables: Vec<T> = subtables.collect();
+        let rebuilt = match subtables.is_empty() {
+            true => RebuiltLookup::hollow(lookup.real_type),
+            false => RebuiltLookup { subtables, ..lookup.with_none() },
+        };
+        spent = spent.saturating_add(rebuilt.header_len()).saturating_add(rebuilt.subtables.iter().map(&held).sum());
+        if spent > budget {
+            return None;
+        }
+        out.push(rebuilt);
     }
     Some(out)
 }
 
-fn assemble_inline(lookups: &[RebuiltLookup]) -> Option<Vec<u8>> {
+// Whether each lookup holds a subtable still.
+fn live<T>(lookups: &[RebuiltLookup<T>]) -> Vec<bool> {
+    lookups.iter().map(|l| !l.is_hollow()).collect()
+}
+
+// The LookupList through `graph`, each subtable, lookup and part of them written once across the table: inline where
+// `fits` takes it, else each subtable behind an Extension record. None where an offset can't reach.
+fn shared_list(
+    lookups: &[RebuiltLookup<usize>], mut graph: Graph, ext_type: u16, long: bool, fits: impl Fn(usize) -> bool,
+) -> Option<Vec<u8>> {
+    first_packed(lookups, &mut graph, |graph, promoted| {
+        let list = list_root(lookups, graph, ext_type, long, promoted).and_then(|root| graph.pack(root))?;
+        (long || promoted.contains(&true) || fits(list.len())).then_some(list)
+    })
+}
+
+// What `pack` writes with no lookup behind Extension records, else, where that can't reach, with every one: the
+// simplest plan that reaches whatever can be.
+fn first_packed(
+    lookups: &[RebuiltLookup<usize>], graph: &mut Graph, mut pack: impl FnMut(&mut Graph, &[bool]) -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    pack(graph, &alloc::vec![false; lookups.len()]).or_else(|| pack(graph, &alloc::vec![true; lookups.len()]))
+}
+
+fn list_root(
+    lookups: &[RebuiltLookup<usize>], graph: &mut Graph, ext_type: u16, long: bool, promoted: &[bool],
+) -> Option<usize> {
+    let width = if long { 4 } else { 2 };
+    let mut list = alloc::vec![0u8; 2 + lookups.len() * width];
+    write_u16_be(&mut list, 0, u16::try_from(lookups.len()).ok()?);
+    let links = lookups.iter().zip(promoted).enumerate().map(|(i, (lookup, &promoted))| {
+        Link { at: 2 + i * width, width, to: lookup_object(lookup, graph, ext_type, promoted) }
+    });
+    let links = links.collect();
+    Some(graph.add(list, links))
+}
+
+// A lookup's header naming its subtables, or with `promoted`, an Extension record each that names it.
+fn lookup_object(lookup: &RebuiltLookup<usize>, graph: &mut Graph, ext_type: u16, promoted: bool) -> usize {
+    let mut header = alloc::vec![0u8; if lookup.is_hollow() { 6 } else { lookup.header_len() }];
+    if lookup.is_hollow() {
+        write_u16_be(&mut header, 0, lookup.real_type);
+        return graph.add(header, Vec::new());
+    }
+    lookup.write_header_into(&mut header, 0, if promoted { ext_type } else { lookup.real_type });
+    let mut links = Vec::with_capacity(lookup.subtables.len());
+    for (i, &subtable) in lookup.subtables.iter().enumerate() {
+        let mut to = subtable;
+        if promoted {
+            let mut record = alloc::vec![0u8; EXTENSION_RECORD_LEN];
+            write_u16_be(&mut record, 0, 1);
+            write_u16_be(&mut record, 2, lookup.real_type);
+            to = graph.add(record, alloc::vec![Link { at: 4, width: 4, to }]);
+        }
+        links.push(Link { at: 6 + 2 * i, width: 2, to });
+    }
+    graph.add(header, links)
+}
+
+fn assemble_inline(lookups: &[RebuiltLookup<Vec<u8>>]) -> Option<Vec<u8>> {
     let header_len = 2 + lookups.len() * 2;
     let mut out = vec![0u8; header_len];
     write_u16_be(&mut out, 0, u16::try_from(lookups.len()).ok()?);
@@ -187,7 +360,7 @@ fn assemble_inline(lookups: &[RebuiltLookup]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn assemble_promoted(lookups: &[RebuiltLookup], ext_type: u16) -> Option<Vec<u8>> {
+fn assemble_promoted(lookups: &[RebuiltLookup<Vec<u8>>], ext_type: u16) -> Option<Vec<u8>> {
     let list_header = 2 + lookups.len() * 2;
 
     let mut lookup_at = Vec::with_capacity(lookups.len());
@@ -229,50 +402,137 @@ fn assemble_promoted(lookups: &[RebuiltLookup], ext_type: u16) -> Option<Vec<u8>
     Some(out)
 }
 
-// The subset lookups after the ScriptList and FeatureList, trimmed or rebuilt, then FeatureVariations
-// moved whole; a table not understood that far keeps all its source ahead of the lookups.
-#[allow(clippy::too_many_arguments)]
+// From 1.2 the LookupList names lookups at 32-bit offsets, so only a lookup whose own subtables lie past 16-bit reach
+// becomes an Extension. Its offsets count from itself, so it's laid out as a list of one, less that list's 4-byte head.
+fn assemble_long(lookups: &[RebuiltLookup<Vec<u8>>], ext_type: u16) -> Option<Vec<u8>> {
+    let mut out = vec![0u8; 2 + lookups.len() * 4];
+    write_u16_be(&mut out, 0, u16::try_from(lookups.len()).ok()?);
+    for (i, lk) in lookups.iter().enumerate() {
+        let at = u32::try_from(out.len()).ok()?;
+        write_u32_be(&mut out, 2 + i * 4, at);
+        let one = core::slice::from_ref(lk);
+        out.extend_from_slice(assemble_inline(one).or_else(|| assemble_promoted(one, ext_type))?.get(4..)?);
+    }
+    Some(out)
+}
+
+// The subset table, one graph with its header, ScriptList and FeatureList. Without FeatureVariations or a JSTF (`held`)
+// naming them by index, features and lookups renumber afresh. Past the graph, `compose` writes the lists apart.
 pub(crate) fn subset_lookup_table(
     buf: &[u8],
     ext_type: u16,
-    active: &GlyphSet,
-    gid_map: &[u16],
-    mark_sets: u16,
+    mark_sets: &[Option<u16>],
     subset_subtable: SubtableSubsetter,
     schema_for_type: SchemaForType,
+    held: bool,
 ) -> Option<Vec<u8>> {
-    if buf.len() < 10 { return None; }
-    let lookup_off = read_u16_be(buf, 8)? as usize;
-    let lookups = rebuild_lookups(
-        buf, lookup_off, ext_type, active, gid_map, mark_sets, subset_subtable, schema_for_type,
-    )?;
-
+    let long = super::layout_header_len(buf)? == 26;
     let variations = super::feature_variations(buf);
-    let new_lookup_off = match variations {
+    let lists_end = match variations {
         Some(_) => super::layout_live_prefix_len(buf).unwrap_or(buf.len()),
         None => buf.len(),
     };
-    if new_lookup_off > 0xFFFF { return None; }
+    let fits = |len: usize| lists_end + len <= 0xFFFF;
+    let budget = crate::daecore::daetype::subsetter::subset_budget(buf.len());
 
-    let fits = |list: &Vec<u8>| new_lookup_off + list.len() <= 0xFFFF;
-    let list = match assemble_inline(&lookups).filter(fits) {
-        Some(inline) => inline,
-        None => assemble_promoted(&lookups, ext_type)?,
+    let (read, mut work) = read_lookups(buf, ext_type, mark_sets, subset_subtable, schema_for_type)?;
+    let numbers = numbering(buf, &read, held || variations != Some(None))?;
+    let renumbered = numbers.iter().enumerate().any(|(i, &n)| usize::from(n) != i);
+    work.lookups = renumbered.then(|| numbers.clone());
+    let lists = (&live(&read)[..], &numbers[..], renumbered);
+
+    let mut graph = Graph::within(budget);
+    let shared = written(&read, &numbers, budget, |_| 0, |parsed| match parsed {
+        Parsed::Value(value) => super::generic::emit_value(value, &mut graph, &mut work),
+        Parsed::Bytes(bytes) => Some(graph.add(bytes.clone(), Vec::new())),
+    });
+    if let Some(lookups) = shared.filter(|_| graph.held() <= budget) {
+        if let Some(fv) = &variations {
+            let whole = first_packed(&lookups, &mut graph, |graph, promoted| {
+                whole_table(buf, &lookups, lists, fv.clone(), graph, ext_type, promoted)
+            });
+            if whole.is_some() {
+                return whole;
+            }
+        }
+        if let Some(list) = shared_list(&lookups, graph, ext_type, long, fits) {
+            return compose(buf, list, lists, variations, lists_end);
+        }
+    }
+    let lookups = written(&read, &numbers, budget, Vec::len, |parsed| match parsed {
+        Parsed::Value(value) => super::generic::build_value(value, &mut work),
+        Parsed::Bytes(bytes) => Some(bytes.clone()),
+    })?;
+    let list = match long {
+        true => assemble_long(&lookups, ext_type)?,
+        false => match assemble_inline(&lookups).filter(|list| fits(list.len())) {
+            Some(inline) => inline,
+            None => assemble_promoted(&lookups, ext_type)?,
+        },
     };
+    compose(buf, list, lists, variations, lists_end)
+}
 
-    // FeatureVariations names features by index, so with one the features keep theirs.
-    let live: Vec<bool> = lookups.iter().map(|l| !l.subtables.is_empty()).collect();
+// Each lookup as read, whether it holds a subtable, its number in the subset, and whether any number moved.
+type Lists<'a> = (&'a [bool], &'a [u16], bool);
+
+// The whole table through `graph`: header, lists and lookups. 1.1 without FeatureVariations is written as 1.0, since
+// that offset is all 1.1 adds.
+fn whole_table(
+    buf: &[u8], lookups: &[RebuiltLookup<usize>], lists: Lists, variations: Option<core::ops::Range<usize>>,
+    graph: &mut Graph, ext_type: u16, promoted: &[bool],
+) -> Option<Vec<u8>> {
+    let long = super::layout_header_len(buf)? == 26;
+    let (features, scripts, _) = read_lists(buf, lists, variations.is_none())?;
+    let roots = [
+        script_list(&scripts, graph)?,
+        feature_list(&features, graph)?,
+        list_root(lookups, graph, ext_type, long, promoted)?,
+    ];
+    let mut header = alloc::vec![0u8; if long { 26 } else if variations.is_some() { 14 } else { 10 }];
+    write_u16_be(&mut header, 0, 1);
+    if header.len() > 10 {
+        header[2..4].copy_from_slice(buf.get(2..4)?);
+    }
+    let (at, width) = if long { ([14, 18, 22], 4) } else { ([4, 6, 8], 2) };
+    let mut links: Vec<Link> = at.into_iter().zip(roots).map(|(at, to)| Link { at, width, to }).collect();
+    if let Some(fv) = variations {
+        links.push(Link { at: 10, width: 4, to: graph.add(buf.get(fv)?.to_vec(), Vec::new()) });
+    }
+    let root = graph.add(header, links);
+    graph.pack(root)
+}
+
+// The lists ahead of `list`, the LookupList: as the source has them, or rebuilt where a feature goes or a lookup's
+// number moves, then FeatureVariations moved whole if the lists' bytes don't hold it.
+fn compose(
+    buf: &[u8], list: Vec<u8>, lists: Lists, variations: Option<Option<core::ops::Range<usize>>>, lists_end: usize,
+) -> Option<Vec<u8>> {
+    let long = super::layout_header_len(buf)? == 26;
+    if !long && lists_end > 0xFFFF { return None; }
     let rebuilt = match variations {
-        Some(None) => rebuild_prefix(buf, &live).filter(|p| p.len() <= new_lookup_off),
+        Some(None) => rebuild_prefix(buf, lists).filter(|p| p.len() <= lists_end || lists.2),
         _ => None,
     };
     let (mut out, moved) = match (rebuilt, variations.flatten()) {
         (Some(prefix), _) => (prefix, None),
-        (None, Some(fv)) if fv.end <= new_lookup_off => (buf.get(..new_lookup_off)?.to_vec(), None),
-        (None, fv) => (buf.get(..new_lookup_off)?.to_vec(), fv),
+        // The source's lists name lookups by their old numbers.
+        (None, _) if lists.2 => return None,
+        (None, Some(fv)) if fv.end <= lists_end => (buf.get(..lists_end)?.to_vec(), None),
+        (None, fv) => (buf.get(..lists_end)?.to_vec(), fv),
     };
-    let lookup_at = u16::try_from(out.len()).ok()?;
-    write_u16_be(&mut out, 8, lookup_at);
+    if long {
+        // A 1.2 table's lists are written through their 32-bit offsets alone.
+        let ([script, feature, _], _) = super::layout_lists(&out)?;
+        let lists = [script, feature, out.len()].map(u32::try_from);
+        for (at, list) in [14, 18, 22].into_iter().zip(lists) {
+            write_u32_be(&mut out, at, list.ok()?);
+        }
+        out[4..10].fill(0);
+    } else {
+        let lookup_at = u16::try_from(out.len()).ok()?;
+        write_u16_be(&mut out, 8, lookup_at);
+    }
     out.extend_from_slice(&list);
     if let Some(fv) = moved {
         let at = u32::try_from(out.len()).ok()?;
@@ -282,12 +542,14 @@ pub(crate) fn subset_lookup_table(
     Some(out)
 }
 
+#[derive(Clone)]
 struct LangSys {
     tag: u32,
     features: Vec<u16>,
     required: Option<u16>,
 }
 
+#[derive(Clone)]
 struct Script {
     tag: u32,
     default_features: Option<Vec<u16>>,
@@ -295,71 +557,124 @@ struct Script {
     langs: Vec<LangSys>,
 }
 
+// A feature's tag, lookup indices and parameters' bytes.
+type Feature = (u32, Vec<u16>, Option<Vec<u8>>);
+
 // Features the shaper asks after by presence alone, kept with no lookup: a GPOS kern feature turns
-// the legacy kern table off, and Indic base finding reads pref's mask, as HarfBuzz never drops pref.
+// the legacy kern table off, and Indic base finding reads pref's mask, which stays without lookups.
 const STEERING: [[u8; 4]; 2] = [*b"kern", *b"pref"];
 
-// A version 1.0 header, ScriptList and FeatureList for a table with no FeatureVariations, the features
-// with no live lookup left out but those that steer shaping; None when every feature stays.
-fn rebuild_prefix(buf: &[u8], live: &[bool]) -> Option<Vec<u8>> {
-    super::layout_header_len(buf)?;
-    let script_off = read_u16_be(buf, 4)? as usize;
-    let feature_off = read_u16_be(buf, 6)? as usize;
+// Whether a feature with no live lookup stays: one that steers shaping, or `size` with its parameters, which are all
+// it holds; another's parameters, such as a stylistic set's name, go with it.
+fn stays_empty(tag: u32, params: &Option<Vec<u8>>) -> bool {
+    STEERING.contains(&tag.to_be_bytes()) || (&tag.to_be_bytes() == b"size" && params.is_some())
+}
+
+// The features and scripts, each lookup by its number in the subset. With `drop`, features with no live lookup go, but
+// those that stay empty, one the same as an earlier one merges into it, and the answer says if any went. A Script or
+// LangSys many records name is read once, and None once the bytes read and copied pass the subset budget.
+fn read_lists(buf: &[u8], (live, numbers, _): Lists, drop: bool) -> Option<(Vec<Feature>, Vec<Script>, bool)> {
+    let ([script_off, feature_off, _], _) = super::layout_lists(buf)?;
     let count = |off: usize| if off == 0 { Some(0) } else { read_u16_be(buf, off).map(usize::from) };
+    let left = core::cell::Cell::new(crate::daecore::daetype::subsetter::subset_budget(buf.len()));
+    let spend = |n: usize| left.get().checked_sub(n).map(|rest| left.set(rest));
 
     let feature_count = count(feature_off)?;
-    let mut kept: Vec<(u32, Vec<u16>, Option<Vec<u8>>)> = Vec::new();
+    let mut kept: Vec<Feature> = Vec::new();
+    let mut alike: BTreeMap<Feature, u16> = BTreeMap::new();
     let mut remap: Vec<Option<u16>> = alloc::vec![None; feature_count];
     for (i, slot) in remap.iter_mut().enumerate() {
         let rec = feature_off + 2 + i * 6;
         let tag = read_u32_be(buf, rec)?;
-        let f = feature_off + read_u16_be(buf, rec + 4)? as usize;
-        let params_rel = read_u16_be(buf, f)? as usize;
-        let n_idx = read_u16_be(buf, f + 2)? as usize;
+        // A null feature, script or language system is an empty one.
+        let (f, params_rel, n_idx) = match read_u16_be(buf, rec + 4)? {
+            0 => (feature_off, 0, 0),
+            rel => {
+                let f = feature_off + usize::from(rel);
+                (f, usize::from(read_u16_be(buf, f)?), usize::from(read_u16_be(buf, f + 2)?))
+            }
+        };
 
+        spend(4 + 2 * n_idx)?;
         let mut indices: Vec<u16> = Vec::new();
         for k in 0..n_idx {
             let idx = read_u16_be(buf, f + 4 + k * 2)?;
-            if live.get(idx as usize).copied().unwrap_or(false) {
-                indices.push(idx);
+            if !drop || live.get(idx as usize).copied().unwrap_or(false) {
+                indices.push(numbers.get(usize::from(idx)).copied().unwrap_or(idx));
             }
         }
         let params = if params_rel == 0 {
             None
         } else {
             let at = f + params_rel;
-            let end = super::feature_params_extent_at(buf, rec, at)?;
+            let end = super::feature_params_end(buf, rec, at)?;
+            spend(end.saturating_sub(at))?;
             Some(buf.get(at..end)?.to_vec())
         };
-        if indices.is_empty() && params.is_none() && !STEERING.contains(&tag.to_be_bytes()) { continue; }
-        *slot = Some(u16::try_from(kept.len()).ok()?);
-        kept.push((tag, indices, params));
+        if drop && indices.is_empty() && !stays_empty(tag, &params) { continue; }
+        let feature = (tag, indices, params);
+        *slot = Some(match alike.get(&feature) {
+            Some(&same) => same,
+            None => {
+                let new = u16::try_from(kept.len()).ok()?;
+                if drop { alike.insert(feature.clone(), new); }
+                kept.push(feature);
+                new
+            }
+        });
     }
-    if kept.len() == feature_count { return None; }
+    let dropped = kept.len() != feature_count;
 
     let script_count = count(script_off)?;
-    let mut scripts: Vec<Script> = Vec::new();
+    let mut scripts: Vec<Script> = Vec::with_capacity(script_count);
+    let mut seen = alloc::vec![false; kept.len()];
+    let mut systems: BTreeMap<usize, (Vec<u16>, Option<u16>)> = BTreeMap::new();
+    let mut read_langsys = |at: usize| -> Option<(Vec<u16>, Option<u16>)> {
+        if let Some(read) = systems.get(&at) {
+            spend(6 + 2 * read.0.len())?;
+            return Some(read.clone());
+        }
+        let required = read_u16_be(buf, at + 2)?;
+        let n = read_u16_be(buf, at + 4)? as usize;
+        spend(6 + 2 * n)?;
+        let mut out = Vec::new();
+        for k in 0..n {
+            let old = read_u16_be(buf, at + 6 + k * 2)? as usize;
+            if let Some(&Some(new)) = remap.get(old) && !core::mem::replace(&mut seen[usize::from(new)], true) {
+                out.push(new);
+            }
+        }
+        out.iter().for_each(|&new| seen[usize::from(new)] = false);
+        let new_required = match required {
+            0xFFFF => None,
+            r => remap.get(r as usize).copied().flatten(),
+        };
+        systems.insert(at, (out.clone(), new_required));
+        Some((out, new_required))
+    };
+    // Each Script's first record, by where the Script starts.
+    let mut first: BTreeMap<usize, usize> = BTreeMap::new();
     for i in 0..script_count {
         let rec = script_off + 2 + i * 6;
         let tag = read_u32_be(buf, rec)?;
-        let s = script_off + read_u16_be(buf, rec + 4)? as usize;
+        let s_rel = read_u16_be(buf, rec + 4)? as usize;
+        if s_rel == 0 {
+            scripts.push(Script { tag, default_features: None, default_required: None, langs: Vec::new() });
+            continue;
+        }
+        let s = script_off + s_rel;
+        if let Some(&j) = first.get(&s) {
+            let read = scripts.get(j)?;
+            let lists = read.default_features.iter().chain(read.langs.iter().map(|l| &l.features));
+            spend(4 + 6 * read.langs.len() + lists.map(|f| 6 + 2 * f.len()).sum::<usize>())?;
+            let copy = Script { tag, ..read.clone() };
+            scripts.push(copy);
+            continue;
+        }
+        first.insert(s, scripts.len());
         let default_rel = read_u16_be(buf, s)? as usize;
         let lang_count = read_u16_be(buf, s + 2)? as usize;
-
-        let read_langsys = |at: usize| -> Option<(Vec<u16>, Option<u16>)> {
-            let required = read_u16_be(buf, at + 2)?;
-            let n = read_u16_be(buf, at + 4)? as usize;
-            let mut out = Vec::new();
-            for k in 0..n {
-                let old = read_u16_be(buf, at + 6 + k * 2)? as usize;
-                if let Some(Some(new)) = remap.get(old) { out.push(*new); }
-            }
-            let new_required = match required {
-                0xFFFF => None,
-                r => remap.get(r as usize).copied().flatten(),
-            };
-            Some((out, new_required))
-        };
+        spend(4 + 6 * lang_count)?;
 
         let (default_features, default_required) = if default_rel == 0 {
             (None, None)
@@ -371,13 +686,76 @@ fn rebuild_prefix(buf: &[u8], live: &[bool]) -> Option<Vec<u8>> {
         for j in 0..lang_count {
             let lrec = s + 4 + j * 6;
             let ltag = read_u32_be(buf, lrec)?;
-            let at = s + read_u16_be(buf, lrec + 4)? as usize;
-            let (f, r) = read_langsys(at)?;
+            let (f, r) = match read_u16_be(buf, lrec + 4)? {
+                0 => (Vec::new(), None),
+                rel => read_langsys(s + usize::from(rel))?,
+            };
+            // A system the same as its script's default goes, as the shaper reads the default for a language it
+            // lacks. No FeatureVariations names one, so it goes with them too.
+            if default_features.as_ref() == Some(&f) && default_required == r {
+                continue;
+            }
             langs.push(LangSys { tag: ltag, features: f, required: r });
         }
         scripts.push(Script { tag, default_features, default_required, langs });
     }
+    Some((kept, scripts, dropped))
+}
 
+// Each script's records naming its language systems, each an object of its own, so systems alike are one.
+fn script_list(scripts: &[Script], graph: &mut Graph) -> Option<usize> {
+    let mut list = alloc::vec![0u8; 2 + scripts.len() * 6];
+    write_u16_be(&mut list, 0, u16::try_from(scripts.len()).ok()?);
+    let mut links = Vec::with_capacity(scripts.len());
+    for (i, Script { tag, default_features, default_required, langs }) in scripts.iter().enumerate() {
+        list[2 + i * 6..6 + i * 6].copy_from_slice(&tag.to_be_bytes());
+        let mut table = alloc::vec![0u8; 4 + langs.len() * 6];
+        write_u16_be(&mut table, 2, u16::try_from(langs.len()).ok()?);
+        let mut own = Vec::with_capacity(langs.len() + 1);
+        if let Some(features) = default_features {
+            own.push(Link { at: 0, width: 2, to: lang_sys(features, *default_required, graph)? });
+        }
+        for (j, LangSys { tag, features, required }) in langs.iter().enumerate() {
+            table[4 + j * 6..8 + j * 6].copy_from_slice(&tag.to_be_bytes());
+            own.push(Link { at: 8 + j * 6, width: 2, to: lang_sys(features, *required, graph)? });
+        }
+        links.push(Link { at: 6 + i * 6, width: 2, to: graph.add(table, own) });
+    }
+    Some(graph.add(list, links))
+}
+
+fn lang_sys(features: &[u16], required: Option<u16>, graph: &mut Graph) -> Option<usize> {
+    let head = [0, required.unwrap_or(0xFFFF), u16::try_from(features.len()).ok()?];
+    let mut bytes = Vec::with_capacity(6 + 2 * features.len());
+    bytes.extend(head.iter().chain(features).flat_map(|v| v.to_be_bytes()));
+    Some(graph.add(bytes, Vec::new()))
+}
+
+// Each feature's record naming its table, and each table its parameters, as objects of their own.
+fn feature_list(features: &[Feature], graph: &mut Graph) -> Option<usize> {
+    let mut list = alloc::vec![0u8; 2 + features.len() * 6];
+    write_u16_be(&mut list, 0, u16::try_from(features.len()).ok()?);
+    let mut links = Vec::with_capacity(features.len());
+    for (i, (tag, indices, params)) in features.iter().enumerate() {
+        list[2 + i * 6..6 + i * 6].copy_from_slice(&tag.to_be_bytes());
+        let head = [0, u16::try_from(indices.len()).ok()?];
+        let mut table = Vec::with_capacity(4 + 2 * indices.len());
+        table.extend(head.iter().chain(indices).flat_map(|v| v.to_be_bytes()));
+        let own = match params {
+            Some(params) => alloc::vec![Link { at: 0, width: 2, to: graph.add(params.clone(), Vec::new()) }],
+            None => Vec::new(),
+        };
+        links.push(Link { at: 6 + i * 6, width: 2, to: graph.add(table, own) });
+    }
+    Some(graph.add(list, links))
+}
+
+// A header, ScriptList and FeatureList for a table with no FeatureVariations, as `read_lists` keeps them; None when
+// every feature and lookup keeps its number. 1.1 is written as 1.0, having no FeatureVariations to point to.
+fn rebuild_prefix(buf: &[u8], lists: Lists) -> Option<Vec<u8>> {
+    let long = super::layout_header_len(buf)? == 26;
+    let (kept, scripts, dropped) = read_lists(buf, lists, true)?;
+    if !dropped && !lists.2 { return None; }
     let mut script_list: Vec<u8> = Vec::new();
     script_list.extend_from_slice(&u16::try_from(scripts.len()).ok()?.to_be_bytes());
     let mut script_bodies: Vec<u8> = Vec::new();
@@ -429,61 +807,23 @@ fn rebuild_prefix(buf: &[u8], live: &[bool]) -> Option<Vec<u8>> {
     }
     feature_list.extend_from_slice(&feature_bodies);
 
-    let mut out: Vec<u8> = alloc::vec![0u8; 10];
+    let mut out: Vec<u8> = alloc::vec![0u8; if long { 26 } else { 10 }];
     write_u16_be(&mut out, 0, 1);
-    let script_at = 10usize;
+    let script_at = out.len();
     let feature_at = script_at + script_list.len();
-    write_u16_be(&mut out, 4, u16::try_from(script_at).ok()?);
-    write_u16_be(&mut out, 6, u16::try_from(feature_at).ok()?);
+    if long {
+        out[2..4].copy_from_slice(buf.get(2..4)?);
+        write_u32_be(&mut out, 14, u32::try_from(script_at).ok()?);
+        write_u32_be(&mut out, 18, u32::try_from(feature_at).ok()?);
+    } else {
+        write_u16_be(&mut out, 4, u16::try_from(script_at).ok()?);
+        write_u16_be(&mut out, 6, u16::try_from(feature_at).ok()?);
+    }
     out.extend_from_slice(&script_list);
     out.extend_from_slice(&feature_list);
     Some(out)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use core::cell::Cell;
-
-    // kern, liga and pref each name one SingleSubst of glyph 5, which the subset drops: kern and pref
-    // stay with no lookup, liga goes.
-    #[test]
-    fn features_that_steer_shaping_stay_without_lookups() {
-        let u16s = |w: &[u16]| w.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>();
-        let gsub = [
-            u16s(&[1, 0, 10, 34, 72, 1]), b"DFLT".to_vec(), u16s(&[8, 4, 0, 0, 0xFFFF, 3, 0, 1, 2]),
-            u16s(&[3]), b"kern".to_vec(), u16s(&[20]), b"liga".to_vec(), u16s(&[26]), b"pref".to_vec(), u16s(&[32]),
-            u16s(&[0, 1, 0, 0, 1, 0, 0, 1, 0]),
-            u16s(&[1, 4, 1, 0, 1, 8, 1, 6, 1, 1, 1, 5]),
-        ].concat();
-        let mut active = GlyphSet::new();
-        [0, 1].into_iter().for_each(|g| { active.insert(g); });
-        let out = super::super::gsub::subset_gsub(&gsub, &active, &[0, 1], 0).expect("a GSUB");
-        let list = usize::from(read_u16_be(&out, 6).expect("FeatureList"));
-        let tags: Vec<&[u8]> = (0..usize::from(read_u16_be(&out, list).expect("count"))).map(|i| &out[list + 2 + 6 * i..list + 6 + 6 * i]).collect();
-        assert_eq!(tags, [&b"kern"[..], &b"pref"[..]]);
-    }
-
-    // Ten lookups each naming one subtable: it is rebuilt at its first naming and kept at its
-    // second, and the rest reuse it.
-    #[test]
-    fn a_subtable_many_lookups_name_is_rebuilt_at_most_twice() {
-        let n = 10u16;
-        let lookup_at = |i: u16| 2 + 2 * n + 8 * i;
-        let sub_at = lookup_at(n);
-        let mut buf: Vec<u8> = n.to_be_bytes().to_vec();
-        (0..n).for_each(|i| buf.extend(lookup_at(i).to_be_bytes()));
-        for i in 0..n {
-            buf.extend([1, 0, 1, sub_at - lookup_at(i)].iter().flat_map(|v: &u16| v.to_be_bytes()));
-        }
-        buf.extend([0; 4]);
-        let calls = Cell::new(0);
-        let subset = |_: u16, _: Option<&Schema>, _: &[u8], _: usize, _: &GlyphSet, _: &[u16], _: &mut Work| {
-            calls.set(calls.get() + 1);
-            Some(alloc::vec![0; 4])
-        };
-        let lookups = rebuild_lookups(&buf, 0, 7, &GlyphSet::new(), &[], 0, &subset, &|_| None).expect("lookups");
-        assert!(lookups.len() == 10 && lookups.iter().all(|l| l.subtables.len() == 1));
-        assert!(calls.get() <= 2, "rebuilt {} times", calls.get());
-    }
-}
+#[path = "../../../../tests/unit/daetype/subsetter/otl/lookup_list.rs"]
+mod tests;

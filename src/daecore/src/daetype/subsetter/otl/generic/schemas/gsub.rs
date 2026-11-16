@@ -1,68 +1,101 @@
-use alloc::boxed::Box;
-use super::format_1;
-use super::super::schema::{Schema, StructField, CountSource, DropPolicy, RebuildPolicy, OffsetWidth, PayloadShape, EnvRef};
-use super::context::{context_schema, chain_context_schema};
+use super::super::schema::{
+    Schema, StructField, CountSource, DropPolicy, RebuildPolicy, OffsetWidth, PayloadShape, EnvRef, Name, Width,
+};
 
-pub(crate) fn single_subst_schema() -> Schema {
-    Schema::FormatSwitch(0, vec![
-        (1, Schema::DeltaCoverageSubst),
-        (2, Schema::Struct(vec![
-            StructField { name: "format", schema: Schema::U16, bind: None },
-            StructField { name: "entries", schema: Schema::CoveredArray(vec![], Box::new(Schema::GlyphId), PayloadShape::Inline), bind: None },
-        ])),
-    ])
+// Each format is written back as it came but SingleSubst's: 1 where its pairs share a delta, else 2, and 3 or 4 where
+// a substitute needs 24 bits.
+pub(crate) static SINGLE_SUBST: Schema = Schema::FormatSwitch(0, &[
+    (1, Schema::DeltaCoverageSubst(Width::W16)),
+    (2, Schema::CoveredGlyphs(Width::W16)),
+    (3, Schema::DeltaCoverageSubst(Width::W24)),
+    (4, Schema::CoveredGlyphs(Width::W24)),
+]);
+
+// A MultipleSubst sequence or an AlternateSubst set: glyphs of a width, counted in 16 bits.
+macro_rules! glyph_list {
+    ($w:expr, $policy:expr) => {
+        Schema::Struct(&[
+            StructField { name: "glyph_count", schema: Schema::U16, bind: Some(Name::GlyphCount) },
+            StructField {
+                name: "glyphs",
+                schema: Schema::Glyphs($w, CountSource::Field(EnvRef(Name::GlyphCount)), $policy),
+                bind: None,
+            },
+        ])
+    };
 }
 
-fn coverage_indexed_glyph_array_schema(drop_policy: DropPolicy) -> Schema {
-    Schema::Struct(vec![
-        StructField { name: "glyph_count", schema: Schema::U16, bind: Some("glyph_count") },
-        StructField { name: "glyphs", schema: Schema::Array(Box::new(Schema::GlyphId), CountSource::Field(EnvRef("glyph_count")), drop_policy), bind: None },
-    ])
+// Format 1 of 16-bit glyphs, or 2 of 24-bit ones: a set for each covered glyph.
+macro_rules! covered_sets {
+    ($narrow:expr, $wide:expr) => {
+        Schema::FormatSwitch(0, &[
+            (1, Schema::Struct(&[
+                StructField { name: "format", schema: Schema::U16, bind: None },
+                StructField {
+                    name: "entries",
+                    schema: Schema::CoveredArray(&[], &$narrow, PayloadShape::Offsets(OffsetWidth::W16), Width::W16),
+                    bind: None,
+                },
+            ])),
+            (2, Schema::Struct(&[
+                StructField { name: "format", schema: Schema::U16, bind: None },
+                StructField {
+                    name: "entries",
+                    schema: Schema::CoveredArray(&[], &$wide, PayloadShape::Offsets(OffsetWidth::W24), Width::W24),
+                    bind: None,
+                },
+            ])),
+        ])
+    };
 }
 
-pub(crate) fn multiple_subst_schema() -> Schema {
-    format_1(Schema::Struct(vec![
-        StructField { name: "format", schema: Schema::U16, bind: None },
-        StructField {
-            name: "entries",
-            schema: Schema::CoveredArray(vec![], Box::new(coverage_indexed_glyph_array_schema(DropPolicy::AllOrNothing)), PayloadShape::Offsets(OffsetWidth::W16)),
-            bind: None,
-        },
-    ]))
+static SEQUENCE: Schema = glyph_list!(Width::W16, DropPolicy::AllOrNothing);
+static SEQUENCE_24: Schema = glyph_list!(Width::W24, DropPolicy::AllOrNothing);
+pub(crate) static MULTIPLE_SUBST: Schema = covered_sets!(SEQUENCE, SEQUENCE_24);
+
+static ALTERNATE_SET: Schema = glyph_list!(Width::W16, DropPolicy::FilterSurvivorsOrFail);
+static ALTERNATE_SET_24: Schema = glyph_list!(Width::W24, DropPolicy::FilterSurvivorsOrFail);
+pub(crate) static ALTERNATE_SUBST: Schema = covered_sets!(ALTERNATE_SET, ALTERNATE_SET_24);
+
+// A ligature's glyph and its components but the first, each of a width.
+macro_rules! ligature {
+    ($glyph:expr, $w:expr) => {
+        Schema::Struct(&[
+            StructField { name: "lig_glyph", schema: $glyph, bind: None },
+            StructField { name: "comp_count", schema: Schema::U16, bind: Some(Name::CompCount) },
+            StructField {
+                name: "components",
+                schema: Schema::Glyphs(
+                    $w,
+                    CountSource::FieldMinusOne(EnvRef(Name::CompCount)),
+                    DropPolicy::AllOrNothing,
+                ),
+                bind: None,
+            },
+        ])
+    };
 }
 
-pub(crate) fn alternate_subst_schema() -> Schema {
-    format_1(Schema::Struct(vec![
-        StructField { name: "format", schema: Schema::U16, bind: None },
-        StructField {
-            name: "entries",
-            schema: Schema::CoveredArray(vec![], Box::new(coverage_indexed_glyph_array_schema(DropPolicy::FilterSurvivorsOrFail)), PayloadShape::Offsets(OffsetWidth::W16)),
-            bind: None,
-        },
-    ]))
+macro_rules! ligature_set {
+    ($ligature:expr, $offset:expr) => {
+        Schema::Struct(&[
+            StructField { name: "lig_count", schema: Schema::U16, bind: Some(Name::LigCount) },
+            StructField {
+                name: "ligatures",
+                schema: Schema::OffsetArray(
+                    &$ligature,
+                    CountSource::Field(EnvRef(Name::LigCount)),
+                    RebuildPolicy::CompactSurvivors,
+                    $offset,
+                ),
+                bind: None,
+            },
+        ])
+    };
 }
 
-fn ligature_schema() -> Schema {
-    Schema::Struct(vec![
-        StructField { name: "lig_glyph", schema: Schema::GlyphId, bind: None },
-        StructField { name: "comp_count", schema: Schema::U16, bind: Some("comp_count") },
-        StructField { name: "components", schema: Schema::Array(Box::new(Schema::GlyphId), CountSource::FieldMinusOne(EnvRef("comp_count")), DropPolicy::AllOrNothing), bind: None },
-    ])
-}
-
-fn ligature_set_schema() -> Schema {
-    Schema::Struct(vec![
-        StructField { name: "lig_count", schema: Schema::U16, bind: Some("lig_count") },
-        StructField { name: "ligatures", schema: Schema::OffsetArray(Box::new(ligature_schema()), CountSource::Field(EnvRef("lig_count")), RebuildPolicy::CompactSurvivors, OffsetWidth::W16), bind: None },
-    ])
-}
-
-pub(crate) fn ligature_subst_schema() -> Schema {
-    format_1(Schema::Struct(vec![
-        StructField { name: "format", schema: Schema::U16, bind: None },
-        StructField { name: "entries", schema: Schema::CoveredArray(vec![], Box::new(ligature_set_schema()), PayloadShape::Offsets(OffsetWidth::W16)), bind: None },
-    ]))
-}
-
-pub(crate) fn context_subst_schema() -> Schema { context_schema() }
-pub(crate) fn chain_context_subst_schema() -> Schema { chain_context_schema() }
+static LIGATURE: Schema = ligature!(Schema::GlyphId, Width::W16);
+static LIGATURE_24: Schema = ligature!(Schema::GlyphId24, Width::W24);
+static LIGATURE_SET: Schema = ligature_set!(LIGATURE, OffsetWidth::W16);
+static LIGATURE_SET_24: Schema = ligature_set!(LIGATURE_24, OffsetWidth::W24);
+pub(crate) static LIGATURE_SUBST: Schema = covered_sets!(LIGATURE_SET, LIGATURE_SET_24);

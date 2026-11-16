@@ -1,17 +1,15 @@
 use alloc::vec::Vec;
+use super::super::super::decoder::{bin_search_header, midpoint_search};
+use super::super::super::format::aat::Lookup;
 
-// nUnits counts the 0xFFFF terminator in the segment formats and not in format 6, as Apple's own
-// fonts write them; readers take either.
+// A lookup's entries whose glyphs the subset keeps, renumbered by `remap`, with their values.
+pub(crate) fn kept_entries(lookup: &Lookup, remap: impl Fn(u16) -> Option<u16>) -> Vec<(u16, u16)> {
+    lookup.pairs().into_iter().filter_map(|(g, v)| Some((remap(g)?, v))).collect()
+}
+
+// nUnits counts every unit searched, the 0xFFFF one the lookup chapter has end a search among them.
 fn bin_srch(out: &mut Vec<u8>, unit_size: usize, n_units: usize) -> Option<()> {
-    let (search_range, selector) = match n_units {
-        0 => (0, 0),
-        n => {
-            let selector = (usize::BITS - 1 - n.leading_zeros()) as usize;
-            (unit_size << selector, selector)
-        }
-    };
-    let range_shift = (unit_size * n_units).checked_sub(search_range)?;
-    for v in [unit_size, n_units, search_range, selector, range_shift] {
+    for v in [unit_size, n_units].into_iter().chain(bin_search_header(n_units, unit_size)) {
         out.extend_from_slice(&u16::try_from(v).ok()?.to_be_bytes());
     }
     Some(())
@@ -56,9 +54,19 @@ fn format4(sorted: &[(u16, u16)]) -> Option<Vec<u8>> {
 
 fn format6(sorted: &[(u16, u16)]) -> Option<Vec<u8>> {
     let mut out = alloc::vec![0, 6];
-    bin_srch(&mut out, 4, sorted.len())?;
+    bin_srch(&mut out, 4, sorted.len() + 1)?;
     sorted.iter().for_each(|&(g, v)| push(&mut out, &[g, v]));
     push(&mut out, &[0xFFFF, 0]);
+    Some(out)
+}
+
+fn format6_long(sorted: &[(u16, u32)]) -> Option<Vec<u8>> {
+    let mut out = alloc::vec![0, 6];
+    bin_srch(&mut out, 6, sorted.len())?;
+    for &(g, v) in sorted.iter().chain([&(0xFFFF, 0)]) {
+        push(&mut out, &[g]);
+        out.extend_from_slice(&v.to_be_bytes());
+    }
     Some(out)
 }
 
@@ -72,18 +80,63 @@ fn format8(sorted: &[(u16, u16)]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn sorted(entries: &[(u16, u16)]) -> Vec<(u16, u16)> {
-    let mut sorted: Vec<(u16, u16)> = entries.iter().copied().filter(|&(g, _)| g != 0xFFFF).collect();
+// Format 10's `unit`-byte values from the first glyph to the last. A subset keeps glyph order, so every glyph between
+// kept ones comes from the font's array with its value and none keeps the fill.
+fn format10<V: Copy + Into<u32>>(sorted: &[(u16, V)], unit: usize) -> Option<Vec<u8>> {
+    let first = sorted.first().map_or(0, |e| e.0);
+    let count = sorted.last().map_or(0, |l| usize::from(l.0 - first) + 1);
+    let mut values = alloc::vec![1u32; count];
+    sorted.iter().for_each(|&(g, v)| values[usize::from(g - first)] = v.into());
+    let mut out = alloc::vec![0, 10];
+    push(&mut out, &[u16::try_from(unit).ok()?, first, u16::try_from(count).ok()?]);
+    // A unit wider than a value's 4 bytes takes zeros before them.
+    values.iter().for_each(|&v| {
+        out.extend(core::iter::repeat_n(0, unit.saturating_sub(4)));
+        out.extend_from_slice(&v.to_be_bytes()[4 - unit.min(4)..]);
+    });
+    Some(out)
+}
+
+fn sorted<V: Copy>(entries: &[(u16, V)]) -> Vec<(u16, V)> {
+    let mut sorted: Vec<(u16, V)> = entries.iter().copied().filter(|&(g, _)| g != 0xFFFF).collect();
     sorted.sort_by_key(|&(g, _)| g);
     sorted.dedup_by_key(|&mut (g, _)| g);
     sorted
 }
 
-// The smallest format that holds `entries`, the first listed on a tie, as fontTools writes them. A
-// glyph named twice keeps its first value; no entries is a valid empty lookup.
+// The smallest format that holds `entries`, the first listed on a tie. A glyph named twice keeps its
+// first value; no entries is a valid empty lookup.
 pub(crate) fn build_aat_lookup(entries: &[(u16, u16)]) -> Option<Vec<u8>> {
     let sorted = sorted(entries);
     [format2(&sorted), format4(&sorted), format6(&sorted), format8(&sorted)].into_iter().flatten().min_by_key(Vec::len)
+}
+
+// A class lookup rebuilt in format 10 where its font's is, of the same width, as no other format reads classes and
+// collects glyphs alike. A glyph named twice keeps both units (`format6_twice`).
+pub(crate) fn build_class_lookup(entries: &[(u16, u16)], wide_unit: Option<usize>) -> Option<Vec<u8>> {
+    let mut glyphs: Vec<u16> = entries.iter().map(|&(g, _)| g).collect();
+    glyphs.sort_unstable();
+    match wide_unit {
+        Some(unit) => format10(&sorted(entries), unit),
+        None if glyphs.windows(2).any(|w| w[0] == w[1]) => format6_twice(entries),
+        None => build_aat_lookup(entries),
+    }
+}
+
+// Format 6 with a glyph's two classes in two units, the class it reads first: the start set collects both units,
+// and the one the search lands on takes the class read.
+fn format6_twice(entries: &[(u16, u16)]) -> Option<Vec<u8>> {
+    let mut units: Vec<(u16, u16)> = entries.iter().copied().filter(|&(g, _)| g != 0xFFFF).collect();
+    units.sort_by_key(|&(g, _)| g);
+    for i in 1..units.len() {
+        let g = units[i].0;
+        if units[i - 1].0 == g && midpoint_search(units.len(), |k| Some(g.cmp(&units[k].0))) == Some(i) {
+            let read = units[i - 1].1;
+            units[i - 1].1 = units[i].1;
+            units[i].1 = read;
+        }
+    }
+    format6(&units)
 }
 
 // The same, from the formats whose size depends on the glyphs alone, so values that are offsets past
@@ -93,57 +146,14 @@ pub(crate) fn build_aat_offset_lookup(entries: &[(u16, u16)]) -> Option<Vec<u8>>
     [format4(&sorted), format6(&sorted), format8(&sorted)].into_iter().flatten().min_by_key(Vec::len)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::daecore::daetype::format::aat::Lookup;
-
-    fn read_back(table: &[u8], entries: &[(u16, u16)]) {
-        let lookup = Lookup::parse(table, u16::MAX).expect("the lookup parses");
-        assert_eq!(lookup.entries(), entries, "format {}", table[1]);
-        for &(g, v) in entries {
-            assert_eq!(lookup.value(g), Some(v));
-        }
-    }
-
-    #[test]
-    fn each_shape_takes_its_smallest_format_and_reads_back() {
-        let runs: Vec<(u16, u16)> = (10..400).map(|g| (g, 1 + g / 100)).collect();
-        let dense: Vec<(u16, u16)> = (10..400).map(|g| (g, g * 3)).collect();
-        let pieces: Vec<(u16, u16)> = (0..40).flat_map(|r| (r * 100..r * 100 + 20).map(|g| (g, g ^ 0x55))).collect();
-        let scattered: Vec<(u16, u16)> = (0..300).map(|i| (i * 7, i)).collect();
-        for (entries, format) in [(runs, 2), (pieces, 4), (scattered, 6), (dense, 8), (Vec::new(), 8)] {
-            let table = build_aat_lookup(&entries).expect("a lookup");
-            assert_eq!(table[1], format);
-            read_back(&table, &entries);
-        }
-    }
-
-    // fontTools never writes format 4, so a lookup whose pieces each run with their own values falls
-    // back to format 6, whose searchRange past 16,383 units does not fit in 16 bits.
-    #[test]
-    fn a_lookup_past_format_6s_header_still_reads_back() {
-        let entries: Vec<(u16, u16)> = (0..2_000u16).flat_map(|r| (r * 12..r * 12 + 10).map(|g| (g, g))).collect();
-        assert!(format6(&entries).is_none(), "format 6 wrote a searchRange past 16 bits");
-        let table = build_aat_lookup(&entries).expect("a lookup");
-        assert_eq!(table[1], 4);
-        read_back(&table, &entries);
-    }
-
-    #[test]
-    fn segments_end_with_the_terminator_the_spec_requires() {
-        let table = format6(&[(3, 9), (5, 1)]).expect("format 6");
-        assert_eq!(&table[table.len() - 4..], [0xFF, 0xFF, 0, 0]);
-        assert_eq!(&table[2..12], [0, 4, 0, 2, 0, 8, 0, 1, 0, 0]);
-        let table = format2(&[(3, 9), (4, 9)]).expect("format 2");
-        assert_eq!(&table[2..12], [0, 6, 0, 2, 0, 12, 0, 1, 0, 0]);
-        assert_eq!(&table[table.len() - 6..], [0xFF, 0xFF, 0xFF, 0xFF, 0, 0]);
-    }
-
-    #[test]
-    fn an_offset_lookup_is_sized_by_its_glyphs_alone() {
-        let glyphs: Vec<(u16, u16)> = (0..50).map(|i| (i * 2, 0)).collect();
-        let valued: Vec<(u16, u16)> = glyphs.iter().map(|&(g, _)| (g, 1_000 + g)).collect();
-        assert_eq!(build_aat_offset_lookup(&glyphs).map(|t| t.len()), build_aat_offset_lookup(&valued).map(|t| t.len()));
+// kerx format 6's long rows and columns, 32-bit lookups rebuilt as `build_class_lookup` rebuilds a class lookup.
+pub(crate) fn build_long_lookup(entries: &[(u16, u32)], wide_unit: Option<usize>) -> Option<Vec<u8>> {
+    match wide_unit {
+        Some(unit) => format10(&sorted(entries), unit),
+        None => format6_long(&sorted(entries)),
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/unit/daetype/subsetter/aat/lookup.rs"]
+mod tests;

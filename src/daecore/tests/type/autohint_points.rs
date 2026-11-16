@@ -1,39 +1,39 @@
-use std::collections::BTreeMap;
+use alloc::vec::Vec;
 
-use daegun::daecore::daetype::hinting::auto::{AutoPoints, CollectPen, CONIC, CUBIC, ON_CURVE};
-use daegun::daecore::daetype::outline::OutlinePen;
-use daegun::daecore::daetype::TableBytes;
+use crate::daecore::daetype::hinting::auto::{AutoPoints, CollectPen, CONIC, CUBIC, ON_CURVE};
+use crate::daecore::daetype::outline::OutlinePen;
+use crate::daecore::daetype::Tables;
 
-fn table_map_of(rel: &str) -> BTreeMap<String, TableBytes> {
-    let path = format!("{}/{}", crate::FONTS, rel);
+fn table_map_of(rel: &str) -> Tables {
+    let path = format!("{}/{}", super::FONTS, rel);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing: {path} ({e})"));
-    daegun::daecore::daetype::decoder::extract_ttf_tables(&bytes)
+    crate::daecore::daetype::decoder::extract_ttf_tables(&bytes)
         .unwrap_or_else(|e| panic!("{path} did not parse: {e}"))
 }
 
-fn loca_of(map: &BTreeMap<String, TableBytes>) -> Vec<usize> {
+fn loca_of(map: &Tables) -> Vec<usize> {
     let head = map.get("head").expect("fixture carries head");
     let maxp = map.get("maxp").expect("fixture carries maxp");
-    let fmt = daegun::daecore::daetype::decoder::read_i16_be(head, 50).expect("head carries indexToLocFormat");
-    let n = daegun::daecore::daetype::decoder::read_u16_be(maxp, 4).expect("maxp carries numGlyphs") as usize;
-    daegun::daecore::daetype::instancer::parse_loca(map, fmt, n).expect("loca parses")
+    let fmt = crate::daecore::daetype::decoder::read_i16_be(head, 50).expect("head carries indexToLocFormat");
+    let n = crate::daecore::daetype::decoder::read_u16_be(maxp, 4).expect("maxp carries numGlyphs") as usize;
+    crate::daecore::daetype::instancer::parse_loca(map, fmt, n).expect("loca parses")
 }
 
-fn collect_glyf(rel: &str, gid: u16) -> AutoPoints {
+fn collect_glyf(rel: &str, gid: u32) -> AutoPoints {
     let map = table_map_of(rel);
     let loca = loca_of(&map);
     let mut pen = CollectPen::new();
-    daegun::daecore::daetype::outline::outline_glyf_glyph_with_loca(&map, &loca, gid, &mut pen)
+    crate::daecore::daetype::outline::outline_glyf_glyph_with_loca(&map, &loca, gid, &mut pen)
         .unwrap_or_else(|e| panic!("{rel} gid {gid}: {e:?}"));
     pen.finish()
 }
 
-fn collect_cff(rel: &str, gid: u16) -> AutoPoints {
+fn collect_cff(rel: &str, gid: u32) -> AutoPoints {
     let map = table_map_of(rel);
     let cff = map.get("CFF ").expect("fixture carries CFF");
-    let outlines = daegun::daecore::daetype::outline::CffOutlines::parse(cff).expect("CFF navigation parses");
+    let outlines = crate::daecore::daetype::outline::CffOutlines::parse(cff).expect("CFF navigation parses");
     let mut pen = CollectPen::new();
-    daegun::daecore::daetype::outline::outline_cff_glyph_with(&outlines, cff, gid, &mut pen)
+    crate::daecore::daetype::outline::outline_cff_glyph_with(&outlines, cff, gid, &mut pen)
         .unwrap_or_else(|e| panic!("{rel} gid {gid}: {e:?}"));
     pen.finish()
 }
@@ -142,20 +142,21 @@ fn multiple_contours_tile_the_buffer() {
 
 #[test]
 fn horizontal_bars_never_collapse_to_nothing() {
-    use daegun::daecore::daetype::hinting::auto::AutoHinter;
+    use crate::daecore::daetype::hinting::auto::AutoHinter;
 
     let map = table_map_of("inter/InterVariable.ttf");
     let cmap = map.get("cmap").expect("Inter carries cmap").clone();
-    let upm = daegun::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap();
+    let upm = crate::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap();
     let loca = loca_of(&map);
 
-    let pts_of = |gid: u16| {
+    let pts_of = |gid: u32| {
         let mut pen = CollectPen::new();
-        daegun::daecore::daetype::outline::outline_glyf_glyph_with_loca(&map, &loca, gid, &mut pen).ok()?;
+        crate::daecore::daetype::outline::outline_glyf_glyph_with_loca(&map, &loca, gid, &mut pen).ok()?;
         let p = pen.finish();
         (!p.is_empty()).then_some(p)
     };
-    let gid_of = |c: char| daegun::daecore::daetype::subsetter::cmap_glyph_id(&cmap, c as u32);
+    let lookup = crate::daecore::daetype::subsetter::CmapLookup::new(&cmap);
+    let gid_of = |c: char| lookup.glyph_id(&cmap, c as u32);
 
     let mut hinter = AutoHinter::new(upm, &mut |c| gid_of(c), &mut |g| pts_of(g)).expect("Inter yields zones");
     let e = pts_of(gid_of('E').expect("Inter maps E")).expect("E has an outline");
@@ -176,5 +177,39 @@ fn horizontal_bars_never_collapse_to_nothing() {
             span >= 64 * 3,
             "at {ppem}ppem E spans only {span}/64 vertically, under three pixels",
         );
+    }
+}
+
+// daegun's recorded blue zones for these faces, each overshoot on its zone's outer side: flats told from rounds by
+// the level run around each extremum, and STIX's inverted ascender zone (706 over 673) averaged.
+#[test]
+fn blue_zones_follow_each_faces_flats_and_rounds() {
+    use crate::daecore::daetype::hinting::auto::AutoHinter;
+    let cases: [(&str, [(f32, f32); 6]); 3] = [
+        (
+            "eb-garamond/EBGaramond.ttf",
+            [(653.0, 664.0), (-5.0, -14.0), (705.0, 705.0), (405.0, 414.0), (-3.0, -14.0), (-285.0, -287.0)],
+        ),
+        (
+            "stix-two-math/STIX2Math.otf",
+            [(657.0, 669.0), (0.0, -12.0), (689.0, 689.0), (473.0, 485.0), (0.0, -10.0), (-220.0, -235.0)],
+        ),
+        (
+            "inter/InterVariable.ttf",
+            [(1490.0, 1510.0), (0.0, -20.0), (1490.0, 1539.0), (1118.0, 1132.0), (0.0, -24.0), (-418.0, -426.0)],
+        ),
+    ];
+    for (rel, want) in cases {
+        let f = crate::Font::from_vec(std::fs::read(format!("{}/{rel}", super::FONTS)).expect("the fixture"), 0)
+            .expect("parses");
+        let mut resolve = |c: char| f.glyph_id(c).map(|g| g.0);
+        let mut outline_of = |g: u32| {
+            let mut pen = CollectPen::new();
+            f.outline(crate::GlyphId(g), &crate::Location::default(), &mut pen).ok()?;
+            Some(pen.finish())
+        };
+        let zones = AutoHinter::compute_zones(f.units_per_em(), &mut resolve, &mut outline_of);
+        let got: Vec<(f32, f32)> = zones.zones.iter().map(|z| (z.flat, z.overshoot)).collect();
+        assert_eq!(got, want, "{rel}");
     }
 }

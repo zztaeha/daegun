@@ -1,18 +1,19 @@
-use daegun::Font;
+use crate::{Font, Location};
+use alloc::string::String;
+use alloc::vec::Vec;
 
-// A subset must be able to address every codepoint it was asked to carry.
-// Format 4 stops at the BMP, so anything above it needs a format 12 subtable;
-// without one the glyph is embedded but unreachable through the cmap.
+// A subset must address every codepoint it carries: format 4 stops at the BMP, so anything above needs format 12,
+// without which the glyph is embedded but unreachable through the cmap.
 fn roundtrip(rel: &str, text: &str) -> (usize, usize) {
-    let path = format!("{}/{}", crate::FONTS, rel);
+    let path = format!("{}/{}", super::FONTS, rel);
     let bytes = std::fs::read(&path).expect("font opens");
     let font = Font::from_bytes(&bytes).expect("font parses");
 
-    let wanted: Vec<char> = text.chars().filter(|&c| font.glyph_id(c as u32).is_some()).collect();
-    let subset = font.subset_text(text, &[]).expect("subsets");
-    let out = Font::from_bytes(&subset.ttf).expect("subset parses");
+    let wanted: Vec<char> = text.chars().filter(|&c| font.glyph_id(c).is_some()).collect();
+    let subset = font.subset_text(text, &Location::default()).expect("subsets");
+    let out = Font::from_bytes(&subset.font).expect("subset parses");
 
-    let addressable = wanted.iter().filter(|&&c| out.glyph_id(c as u32).is_some()).count();
+    let addressable = wanted.iter().filter(|&&c| out.glyph_id(c).is_some()).count();
     (addressable, wanted.len())
 }
 

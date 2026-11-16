@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
-
-use daegun::daecore::daetype::outline::OutlinePen;
-use daegun::daecore::daetype::TableBytes;
+use alloc::vec::Vec;
+use crate::daecore::daetype::outline::OutlinePen;
+use crate::daecore::daetype::Tables;
+use crate::daecore::daetype::format::sanitize::Reads;
+use crate::Tag;
 
 #[derive(Default)]
 struct Fnv(u64);
@@ -31,7 +32,7 @@ impl OutlinePen for Fnv {
 
 const FONTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/test-fonts");
 
-type Map = BTreeMap<String, TableBytes>;
+type Map = Tables;
 
 fn bytes_of(rel: &str) -> Vec<u8> {
     let path = format!("{FONTS}/{rel}");
@@ -39,17 +40,17 @@ fn bytes_of(rel: &str) -> Vec<u8> {
 }
 
 fn tables(rel: &str) -> Map {
-    daegun::daecore::daetype::decoder::extract_ttf_tables(&bytes_of(rel))
+    crate::daecore::daetype::decoder::extract_ttf_tables(&bytes_of(rel))
         .unwrap_or_else(|e| panic!("{rel} did not parse: {e}"))
 }
 
-fn n_glyphs(map: &Map) -> u16 {
-    map.get("maxp").and_then(|m| daegun::daecore::daetype::decoder::read_u16_be(m, 4)).unwrap_or(0)
+fn n_glyphs(map: &Map) -> u32 {
+    map.get("maxp").and_then(|m| crate::daecore::daetype::decoder::read_u16_be(m, 4)).map_or(0, u32::from)
 }
 
 fn loca_of(map: &Map) -> Option<Vec<usize>> {
-    let fmt = daegun::daecore::daetype::decoder::read_i16_be(map.get("head")?, 50)?;
-    daegun::daecore::daetype::instancer::parse_loca(map, fmt, n_glyphs(map) as usize).ok()
+    let fmt = crate::daecore::daetype::decoder::read_i16_be(map.get("head")?, 50)?;
+    crate::daecore::daetype::instancer::parse_loca(map, fmt, n_glyphs(map) as usize).ok()
 }
 
 fn check(what: &str, got: u64, want: u64) {
@@ -79,7 +80,7 @@ fn glyf_outlines() {
         let map = tables(rel);
         let Some(loca) = loca_of(&map) else { continue };
         for gid in 0..n_glyphs(&map) {
-            let _ = daegun::daecore::daetype::outline::outline_glyf_glyph_with_loca(&map, &loca, gid, &mut f);
+            let _ = crate::daecore::daetype::outline::outline_glyf_glyph_with_loca(&map, &loca, gid, &mut f);
         }
     }
     check("glyf outlines", f.done(), 0x26a9_d38b_95ba_72a8);
@@ -91,9 +92,9 @@ fn cff_outlines() {
     for rel in CFF_FONTS {
         let map = tables(rel);
         let Some(cff) = map.get("CFF ") else { continue };
-        let Ok(o) = daegun::daecore::daetype::outline::CffOutlines::parse(cff) else { continue };
+        let Ok(o) = crate::daecore::daetype::outline::CffOutlines::parse(cff) else { continue };
         for gid in 0..n_glyphs(&map) {
-            let _ = daegun::daecore::daetype::outline::outline_cff_glyph_with(&o, cff, gid, &mut f);
+            let _ = crate::daecore::daetype::outline::outline_cff_glyph_with(&o, cff, gid, &mut f);
         }
     }
     check("cff outlines", f.done(), 0x9dd2_39fd_886a_05cf);
@@ -101,31 +102,32 @@ fn cff_outlines() {
 
 #[test]
 fn autohinted_outlines() {
-    use daegun::daecore::daetype::hinting::auto::{AutoHinter, CollectPen};
+    use crate::daecore::daetype::hinting::auto::{AutoHinter, CollectPen};
     let mut f = Fnv::new();
     for rel in GLYF_FONTS.iter().chain(CFF_FONTS.iter()) {
         let map = tables(rel);
         let n = n_glyphs(&map);
-        let upm = daegun::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap_or(1000);
+        let upm = crate::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap_or(1000);
         let cmap = map.get("cmap").cloned().unwrap_or_default();
         let loca = loca_of(&map);
         let cff = map.get("CFF ").cloned();
-        let outlines = cff.as_ref().and_then(|c| daegun::daecore::daetype::outline::CffOutlines::parse(c).ok());
-        let collect = |gid: u16| {
+        let outlines = cff.as_ref().and_then(|c| crate::daecore::daetype::outline::CffOutlines::parse(c).ok());
+        let collect = |gid: u32| {
             let mut pen = CollectPen::new();
             match (&outlines, &cff, &loca) {
                 (Some(o), Some(c), _) => {
-                    daegun::daecore::daetype::outline::outline_cff_glyph_with(o, c, gid, &mut pen).ok()?;
+                    crate::daecore::daetype::outline::outline_cff_glyph_with(o, c, gid, &mut pen).ok()?;
                 }
                 (_, _, Some(l)) => {
-                    daegun::daecore::daetype::outline::outline_glyf_glyph_with_loca(&map, l, gid, &mut pen).ok()?;
+                    crate::daecore::daetype::outline::outline_glyf_glyph_with_loca(&map, l, gid, &mut pen).ok()?;
                 }
                 _ => return None,
             }
             let p = pen.finish();
             (!p.is_empty()).then_some(p)
         };
-        let gid_of = |c: char| daegun::daecore::daetype::subsetter::cmap_glyph_id(&cmap, c as u32);
+        let lookup = crate::daecore::daetype::subsetter::CmapLookup::new(&cmap);
+        let gid_of = |c: char| lookup.glyph_id(&cmap, c as u32);
         let Some(mut h) = AutoHinter::new(upm, &mut |c| gid_of(c), &mut |g| collect(g)) else { continue };
         for ppem in [8u16, 11, 16, 24, 40] {
             for gid in 0..n {
@@ -142,30 +144,28 @@ fn autohinted_outlines() {
 
 #[test]
 fn bytecode_hinted_outlines() {
-    use daegun::daecore::daetype::hinting::{HintContext, HintMode};
+    use crate::daecore::daetype::hinting::HintContext;
     let map = tables("test-fixtures/hinted.ttf");
-    let upm = daegun::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap();
+    let upm = crate::daecore::daetype::decoder::read_u16_be(map.get("head").unwrap(), 18).unwrap();
     let loca = loca_of(&map).expect("loca");
     let glyf = map.get("glyf").expect("glyf").clone();
     let n = n_glyphs(&map);
     let mut f = Fnv::new();
     for ppem in [8u16, 11, 16, 24, 40] {
-        for mode in [HintMode::Subpixel, HintMode::Classic] {
-            let Some(mut ctx) = HintContext::new(&map, ppem.into(), upm, mode) else { continue };
-            for gid in 0..n {
-                if let Some(o) = ctx.hint_glyph(&glyf, &loca, gid) {
-                    daegun::daecore::daetype::hinting::draw_hinted(&o, &mut f);
-                }
+        let Some(mut ctx) = HintContext::new(&map, ppem.into(), upm) else { continue };
+        for gid in 0..n {
+            if let Some(o) = ctx.hint_glyph(&glyf, &loca, gid) {
+                crate::daecore::daetype::hinting::draw_hinted(o, &mut f);
             }
         }
     }
-    check("bytecode hinted outlines", f.done(), 0x8808_fc7c_09d4_0c2d);
+    check("bytecode hinted outlines", f.done(), 0xe3ae_51d9_7db5_92f1);
 }
 
 #[test]
 fn shaped_runs() {
-    use daegun::daecore::cache::FontCache;
-    use daegun::daecore::daeshaper::{buffer::Buffer, face::Face, plan::ShapePlan, shape};
+    use crate::daecore::daekit::cache::FontCache;
+    use crate::daecore::daeshaper::{face::Face, pipeline, run::Run};
     const RUNS: &[(&str, &str)] = &[
         ("inter/InterVariable.ttf", "The quick brown fox jumps over the lazy dog"),
         ("inter/InterVariable.ttf", "office affluent difficult"),
@@ -177,30 +177,27 @@ fn shaped_runs() {
     ];
     let mut f = Fnv::new();
     for (rel, text) in RUNS {
-        let fc = FontCache::new(tables(rel));
-        let face = Face::new(&fc, &[]);
-        let mut probe = Buffer::new();
+        let fc = FontCache::new(tables(rel)).expect("the fixture loads");
+        let face = Face::new(&fc);
+        let mut probe = Run::default();
         probe.push_str(text);
-        let direction = shape::guess_segment_properties(&mut probe);
-        let tags = probe.script.map(daegun::daecore::daeshaper::ot::tag::script_tags);
-        let plan = ShapePlan::with_script(
-            probe.script, &face, direction,
-            tags.as_ref().map_or(&[][..], |t| t.as_slice()),
-            &[], &[], &[], &[],
-        );
-        let mut buffer = Buffer::new();
+        let direction = pipeline::settle_script(&mut probe);
+        let tags = probe.script.map(crate::daecore::daeshaper::ot::tag::script_tags);
+        let tags = tags.as_ref().map_or(&[][..], |t| t.as_slice());
+        let plan = crate::tests::plain_plan(&face, probe.script, direction, tags);
+        let mut buffer = Run::default();
         buffer.push_str(text);
-        let dir = shape::guess_segment_properties(&mut buffer);
-        shape::shape(&face, &plan, &mut buffer, dir);
-        let glyphs = shape::shaped_glyphs(&buffer);
+        let dir = pipeline::settle_script(&mut buffer);
+        pipeline::shape(&face, &plan, &mut buffer, dir, &[]);
+        let glyphs = crate::tests::placed(&buffer);
         assert!(!glyphs.is_empty(), "{rel}: shaped nothing");
         for g in &glyphs {
-            f.u64(u64::from(g.glyph_id));
-            f.i64(i64::from(g.x_advance));
-            f.i64(i64::from(g.y_advance));
-            f.i64(i64::from(g.x_offset));
-            f.i64(i64::from(g.y_offset));
-            f.u64(u64::from(g.cluster));
+            f.u64(u64::from(g.0.id));
+            f.i64(i64::from(g.1.advance_x));
+            f.i64(i64::from(g.1.advance_y));
+            f.i64(i64::from(g.1.offset_x));
+            f.i64(i64::from(g.1.offset_y));
+            f.u64(u64::from(g.0.cluster));
         }
     }
     check("shaped runs", f.done(), 0xd2b9_e642_609c_d656);
@@ -213,19 +210,22 @@ fn instanced_fonts() {
         ("inter/InterVariable.ttf", &[("wght", 700.0)]),
         ("eb-garamond/EBGaramond.ttf", &[("wght", 600.0)]),
         ("source-serif/SourceSerif4Variable-Roman.otf", &[("wght", 500.0)]),
-        ("colr-v1-test-glyphs/test_glyphs_variable.ttf", &[("ROTA", 270.0), ("SCSX", 1.5), ("GRR0", -500.0), ("COL1", 1.0), ("CLXI", 100.0)]),
+        (
+            "colr-v1-test-glyphs/test_glyphs_variable.ttf",
+            &[("ROTA", 270.0), ("SCSX", 1.5), ("GRR0", -500.0), ("COL1", 1.0), ("CLXI", 100.0)],
+        ),
     ];
     let mut f = Fnv::new();
     for (rel, axes) in AXES {
         let map = tables(rel);
-        let owned: Vec<(String, f64)> =
-            axes.iter().map(|(t, v)| ((*t).to_string(), *v)).collect();
-        match daegun::daecore::daetype::instancer::instance_font_from_map(&map, &owned) {
+        use crate::daecore::daetype::instancer::AxisTag;
+        let owned: Vec<(AxisTag, f64)> = axes.iter().map(|(t, v)| (t.parse::<AxisTag>().expect("a tag"), *v)).collect();
+        match crate::daecore::daetype::instancer::instance_font_from_map(&map, &Reads::of_tables(&map), &owned) {
             Ok(out) => { f.u64(out.len() as u64); f.bytes(&out); }
-            Err(e) => f.bytes(e.as_bytes()),
+            Err(e) => f.bytes(e.message().as_bytes()),
         }
     }
-    check("instanced fonts", f.done(), 0x266f_2a55_f06c_0f1c);
+    check("instanced fonts", f.done(), 0xc01e_ed2a_5409_fa45);
 }
 
 #[test]
@@ -234,22 +234,22 @@ fn subset_fonts() {
     for rel in GLYF_FONTS.iter().take(4) {
         let raw = bytes_of(rel);
         let n = n_glyphs(&tables(rel));
-        let req: Vec<u16> = (0..n).step_by(7).take(300).collect();
-        match daegun::daecore::daetype::subsetter::subset_ttf(&raw, &req) {
-            Ok(r) => { f.u64(r.ttf.len() as u64); f.bytes(&r.ttf); f.u64(r.gid_map.len() as u64); }
-            Err(e) => f.bytes(e.as_bytes()),
+        let req: Vec<u32> = (0..n).step_by(7).take(300).collect();
+        match crate::daecore::daetype::subsetter::subset_ttf(&raw, &req) {
+            Ok(r) => { f.u64(r.font.len() as u64); f.bytes(&r.font); f.u64(r.gid_map.len() as u64); }
+            Err(e) => f.bytes(e.message().as_bytes()),
         }
     }
     for rel in CFF_FONTS {
         let map = tables(rel);
         let Some(cff) = map.get("CFF ") else { continue };
-        let req: Vec<u16> = (0..n_glyphs(&map)).step_by(5).take(200).collect();
-        match daegun::daecore::daetype::subsetter::subset_cff_compacting(cff, &req) {
-            Ok(r) => { f.u64(r.ttf.len() as u64); f.bytes(&r.ttf); }
-            Err(e) => f.bytes(e.as_bytes()),
+        let req: Vec<u32> = (0..n_glyphs(&map)).step_by(5).take(200).collect();
+        match crate::daecore::daetype::subsetter::subset_cff_compacting(cff, &req) {
+            Ok(r) => { f.u64(r.font.len() as u64); f.bytes(&r.font); }
+            Err(e) => f.bytes(e.message().as_bytes()),
         }
     }
-    check("subset fonts", f.done(), 0xc4a4_5883_a7b1_11ff);
+    check("subset fonts", f.done(), 0x5e6a_0f2a_be60_73a9);
 }
 
 #[test]
@@ -262,31 +262,41 @@ fn color_glyphs() {
     let mut f = Fnv::new();
     for rel in COLR {
         let map = tables(rel);
-        let Some(colr) = map.get("COLR").cloned() else { continue };
+        if !map.contains_key("COLR") {
+            continue;
+        }
         let n = n_glyphs(&map);
-        let palettes = daegun::daecore::daetype::colr_v0::cpal_palette_count(&map).clamp(1, 2);
+        let palettes = crate::daecore::daetype::colr_v0::cpal_palette_count(&map).clamp(1, 2);
         for gid in 0..n {
             for pal in 0..palettes {
-                if let Some(layers) = daegun::daecore::daetype::colr_v0::colr_layers_for_palette(&map, gid, pal) {
-                    for (g, r, gr, b, a, fg) in layers {
-                        for v in [u64::from(g), u64::from(r), u64::from(gr), u64::from(b), u64::from(a), u64::from(fg)] {
+                if let Some(layers) = crate::daecore::daetype::colr_v0::colr_layers_for_palette(&map, gid, pal) {
+                    for l in layers {
+                        let c = l.color;
+                        for v in [l.glyph.0.into(), c.r.into(), c.g.into(), c.b.into(), c.a.into()] {
                             f.u64(v);
                         }
+                        f.u64(u64::from(l.foreground));
                     }
                 }
             }
         }
-        let var = daegun::daecore::daetype::colr_v1::parse_colr_v1_var_data(&colr);
+        // Drawn at the first axes' normalized values, each set in design units on its side of the default.
+        let cache = crate::daecore::daekit::cache::FontCache::new(map.clone()).expect("the font loads");
+        let axes = crate::daecore::daetype::decoder::parse_fvar_axes(&map).unwrap_or_default();
         for loc in [&[][..], &[0.5, -0.25, 1.0][..], &[1.0, 1.0, 1.0][..]] {
+            let side = |a: &crate::daecore::daetype::decoder::Axis, n: f64| {
+                a.default + n * if n < 0.0 { a.default - a.min } else { a.max - a.default }
+            };
+            let design: Vec<(Tag, f64)> = axes.iter().zip(loc).map(|(a, &n)| (a.tag, side(a, n))).collect();
+            let key = cache.axis_key(&design);
             for gid in 0..n {
                 for pal in 0..palettes {
-                    let p = daegun::daecore::daetype::colr_v1::colr_v1_paint_graph_cached(&map, gid, loc, pal, &var);
-                    f.bytes(format!("{p:?}").as_bytes());
+                    f.bytes(format!("{:?}", cache.colr_v1_paint(gid, &key, pal)).as_bytes());
                 }
             }
         }
     }
-    check("color glyphs", f.done(), 0xc19a_a1b8_5271_a959);
+    check("color glyphs", f.done(), 0x0f89_2bbf_18c1_a5bf);
 }
 
 #[test]
@@ -295,29 +305,29 @@ fn metadata_and_cmap() {
     for rel in GLYF_FONTS.iter().chain(CFF_FONTS.iter()) {
         let map = tables(rel);
         if let Some(cmap) = map.get("cmap") {
+            let lookup = crate::daecore::daetype::subsetter::CmapLookup::new(cmap);
             for cp in (0x20u32..0x2500).step_by(3) {
-                f.u64(u64::from(daegun::daecore::daetype::subsetter::cmap_glyph_id(cmap, cp).unwrap_or(0)));
+                f.u64(u64::from(lookup.glyph_id(cmap, cp).unwrap_or(0)));
             }
         }
-        for (id, s) in daegun::daecore::daetype::decoder::parse_all_name_strings(&map) {
+        for (id, s) in crate::daecore::daetype::decoder::parse_all_name_strings::<u16>(&map) {
             f.u64(u64::from(id));
             f.bytes(s.as_bytes());
         }
-        if let Some(o) = daegun::daecore::daetype::decoder::parse_os2(&map) {
+        if let Some(o) = crate::daecore::daetype::decoder::parse_os2(&map) {
             f.u64(u64::from(o.version));
             f.u64(u64::from(o.fs_selection.unwrap_or(0)));
         }
-        if let Ok(axes) = daegun::daecore::daetype::decoder::parse_fvar_axes(&map) {
+        if let Ok(axes) = crate::daecore::daetype::decoder::parse_fvar_axes(&map) {
             for a in axes {
-                f.bytes(a.tag.as_bytes());
+                f.bytes(&a.tag.to_bytes());
                 for v in [a.min, a.default, a.max] { f.i64(v.to_bits() as i64); }
             }
         }
-        for (gid, name) in daegun::daecore::daetype::glyph_names::glyph_names(
-            map.get("post").map(|v| v.as_slice()),
-            map.get("CFF ").map(|v| v.as_slice()),
-            n_glyphs(&map).min(1500),
-        ).into_iter().enumerate() {
+        let (post, cff) = (map.get("post").map(|v| v.as_slice()), map.get("CFF ").map(|v| v.as_slice()));
+        let index = crate::daecore::daetype::glyph_names::NameIndex::new(post, cff);
+        let names = crate::daecore::daetype::glyph_names::glyph_names(&index, post, cff, n_glyphs(&map).min(1500));
+        for (gid, name) in names.into_iter().enumerate() {
             f.u64(gid as u64);
             if let Some(n) = name { f.bytes(n.as_bytes()); }
         }

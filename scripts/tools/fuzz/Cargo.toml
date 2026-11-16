@@ -6,12 +6,19 @@ publish = false
 
 [dependencies]
 daegun = { path = "../../.." }
+daegun-fuzz-harness = { path = "harness" }
+
+[features]
+threading = ["daegun-fuzz-harness/threading"]
 
 [[bin]]
 name = "daegun-fuzz"
 path = "src/main.rs"
 
+# Overflow checks and debug assertions on, so arithmetic a hostile font overflows fails here as a panic.
 [profile.release]
 opt-level = 2
 panic = "unwind"
 debug = true
+overflow-checks = true
+debug-assertions = true

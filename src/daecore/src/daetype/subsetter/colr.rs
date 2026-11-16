@@ -1,205 +1,304 @@
 use crate::daecore::daetype::subsetter::GlyphSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
-use super::super::decoder::{read_offset24, read_u16_be, read_u32_be, write_u16_be};
-use super::super::colr_v0::{colr_v0_header, colr_v0_base_glyphs};
-use super::super::colr_v1::paint_layout;
-use super::super::colr_v1::write::{assemble, rebuild};
-use super::otl::remap_gid;
+use super::super::decoder::{
+    read_offset24, read_u16_be, read_u32_be, read_uint, search_records, write_u16_be, write_u32_be,
+};
+use super::super::colr_v0::{base_glyph_layers, colr_v0_base_glyphs, colr_v0_header, layer_run, CpalV1};
+use super::super::colr_v1::{self, paint_layout};
+use super::super::colr_v1::write::{assemble, layer_range, rebuild};
+use super::remap_gid16;
 use super::subset_budget;
 
-const MAX_BASE_GLYPHS: usize = 65536;
-
-pub fn colr_closure(colr: &[u8], active: &GlyphSet) -> Vec<u16> {
-    let mut found = Vec::new();
-    colr_v0_closure(colr, active, &mut found);
-    colr_v1_closure(colr, active, &mut found);
-    found
+// What COLR's stage keeps: the glyphs then in the set and in the font, whose color drawing can show; each palette
+// index the kept paints use as its rank (0xFFFF to itself), so CPAL keeps only those colors; the LayerList indices.
+pub(crate) struct ColrKept {
+    pub(crate) glyphs: GlyphSet,
+    pub(crate) palettes: BTreeMap<u16, u16>,
+    pub(crate) layers: Vec<(u64, u64)>,
 }
 
+// Nothing kept, as for a font without COLR: its glyph set takes no room.
+impl Default for ColrKept {
+    fn default() -> ColrKept {
+        ColrKept { glyphs: GlyphSet::empty(), palettes: BTreeMap::new(), layers: Vec::new() }
+    }
+}
+
+// The glyphs COLR adds to `glyphs`: version 0's layers of each, then every paint the base glyphs reach. And what the
+// subset keeps by them: those paints' palette indices and each held record's layers.
+pub(crate) fn colr_closure(colr: &[u8], glyphs: &GlyphSet, num_glyphs: u32) -> (GlyphSet, ColrKept) {
+    let (mut found, mut palettes, mut layers) = (GlyphSet::new(), BTreeSet::new(), Vec::new());
+    found.extend(colr_v0_layers(colr, glyphs).map(|&[g0, g1, ..]| u32::from(u16::from_be_bytes([g0, g1]))));
+    let mut based = found.clone();
+    based.union(glyphs);
+    colr_v1_closure(colr, &based, &mut found, &mut palettes, &mut layers);
+    based.union(&found);
+    // Each kept glyph's version 0 layers, as drawing reads them, give their palette indices.
+    palettes.extend(colr_v0_layers(colr, &based).map(|&[_, _, p0, p1]| u16::from_be_bytes([p0, p1])));
+    let mut rank = 0;
+    let palettes = palettes.into_iter().map(|i| (i, if i == 0xFFFF { i } else { rank += 1; rank - 1 })).collect();
+    let glyphs = based.iter().filter(|&g| g < num_glyphs).collect();
+    (found, ColrKept { glyphs, palettes, layers })
+}
+
+// The layers of each record the search finds for a glyph, as drawing reads them: a run past the layers has none.
 // Base glyphs may share layers, so their ranges are merged and each layer is read once.
-fn colr_v0_closure(colr: &[u8], active: &GlyphSet, found: &mut Vec<u16>) {
-    let Some((_, _, layers_off, n_layer_records)) = colr_v0_header(colr) else { return };
+fn colr_v0_layers<'c>(colr: &'c [u8], glyphs: &GlyphSet) -> impl Iterator<Item = &'c [u8; 4]> {
+    let (n_base, base_off, layers_off, _) = colr_v0_header(colr).unwrap_or_default();
+    let layers = colr.get(layers_off..).map(|l| l.as_chunks::<4>().0).unwrap_or_default();
+    let gid_at = |i: usize| read_u16_be(colr, base_off.checked_add(i * 6)?).map(u32::from);
     let mut ranges: Vec<(usize, usize)> = colr_v0_base_glyphs(colr)
         .into_iter()
-        .filter(|(gid, ..)| active.contains(gid))
-        .map(|(_, first, n)| (first, first.saturating_add(n).min(n_layer_records)))
-        .filter(|(start, end)| start < end)
+        .enumerate()
+        .filter(|&(i, (gid, ..))| {
+            glyphs.contains(&gid) && search_records(n_base, gid.into(), gid_at).and_then(Result::ok) == Some(i)
+        })
+        .filter(|&(_, (_, first, n))| layer_run(colr, first, n).is_some())
+        .map(|(_, (_, first, n))| (first, first + n))
         .collect();
     ranges.sort_unstable();
     let mut next = 0;
-    for (start, end) in ranges {
-        for idx in start.max(next)..end {
-            if let Some(layer_gid) = read_u16_be(colr, layers_off + idx * 4) {
-                found.push(layer_gid);
-            }
-        }
+    ranges.into_iter().flat_map(move |(start, end)| {
+        let from = start.max(next);
         next = next.max(end);
-    }
+        &layers[from..end.max(from)]
+    })
 }
 
-// Every paint the kept base glyphs reach, each read once however many glyphs share it, so the walk
-// is linear in the table and needs no budget.
-fn colr_v1_closure(colr: &[u8], active: &GlyphSet, found: &mut Vec<u16>) {
-    if colr.len() < 34 || read_u16_be(colr, 0) != Some(1) { return; }
-    let Some(list) = read_u32_be(colr, 14).filter(|&v| v != 0).map(|v| v as usize) else { return };
-    let layer_list = read_u32_be(colr, 18).filter(|&v| v != 0).map(|v| v as usize);
-    let Some(count) = read_u32_be(colr, list) else { return };
-
-    let mut stack: Vec<usize> = (0..(count as usize).min(MAX_BASE_GLYPHS))
-        .filter_map(|i| {
-            let rec = list.checked_add(4 + i * 6)?;
-            active.contains(&read_u16_be(colr, rec)?).then_some(())?;
-            list.checked_add(read_u32_be(colr, rec + 2)? as usize)
-        })
-        .collect();
-    let mut seen = alloc::vec![0u64; colr.len().div_ceil(64)];
-    while let Some(off) = stack.pop() {
-        let Some(word) = seen.get_mut(off >> 6) else { continue };
-        if *word & (1 << (off & 63)) != 0 { continue; }
-        *word |= 1 << (off & 63);
-        let Some(layout) = colr.get(off).and_then(|&f| paint_layout(f)) else { continue };
-        for &pos in layout.glyph_ids {
-            found.extend(read_u16_be(colr, off + pos));
+// Every paint the base glyphs reach, each read again only with more depth left, none past `MAX_PAINT_DEPTH`, the
+// depth drawing reads to. A glyph a paint names keeps its own record in the subset, so its paint is walked too.
+fn colr_v1_closure(
+    colr: &[u8], glyphs: &GlyphSet, found: &mut GlyphSet, palettes: &mut BTreeSet<u16>, layers: &mut Vec<(u64, u64)>,
+) {
+    let Some(header) = colr_v1::header(colr) else { return };
+    let Some(list) = header.base_glyph_list else { return };
+    let left_at = BTreeMap::new();
+    let fresh = Vec::new();
+    let mut walk = PaintWalk { colr, list, layer_list: header.layer_list, left_at, found, fresh, palettes, layers };
+    // Each glyph's root as drawing finds it, so a record the search misses keeps nothing.
+    for gid in glyphs.iter() {
+        if let Some(root) = colr_v1::lookup_base_glyph_paint_offset(colr, list, gid) {
+            walk.paint(root, colr_v1::MAX_PAINT_DEPTH);
         }
-        if colr[off] == 1 {
-            let (Some(n), Some(first), Some(layers)) = (colr.get(off + 1), read_u32_be(colr, off + 2), layer_list) else { continue };
-            let total = read_u32_be(colr, layers).unwrap_or(0) as usize;
-            let end = (first as usize).saturating_add(usize::from(*n)).min(total);
-            for idx in first as usize..end {
-                stack.extend(read_u32_be(colr, layers + 4 + idx * 4).and_then(|rel| layers.checked_add(rel as usize)));
-            }
-        } else {
-            for &pos in layout.children {
-                stack.extend(read_offset24(colr, off + pos).and_then(|rel| off.checked_add(rel)));
-            }
+    }
+    while let Some(gid) = walk.fresh.pop() {
+        if !glyphs.contains(&gid) && let Some(root) = colr_v1::lookup_base_glyph_paint_offset(colr, list, gid) {
+            walk.paint(root, colr_v1::MAX_PAINT_DEPTH);
         }
     }
 }
 
-// The kept base glyphs under their new IDs, v1 through the instancer's writer. A subset has no fvar,
-// so it is the default master, and the variation data stays behind with the axes.
-pub fn subset_colr(colr: &[u8], active: &GlyphSet, gid_map: &[u16]) -> Option<Vec<u8>> {
-    let has_v0 = colr_v0_header(colr).is_some_and(|(n, ..)| n > 0);
-    let is_v1 = colr.len() >= 34 && read_u16_be(colr, 0) == Some(1);
-    let v1_present = is_v1 && read_u32_be(colr, 14).unwrap_or(0) != 0;
-    if !has_v0 && !v1_present { return None; }
-
-    let v0 = if has_v0 { rebuild_v0(colr, active, gid_map) } else { None };
-    let keep = |g: u16| remap_gid(active, gid_map, g);
-    let remap = |g: u16| gid_map.get(usize::from(g)).copied().unwrap_or(g);
-    let v1 = if v1_present { rebuild(colr, &keep, &remap, None, subset_budget(colr.len())) } else { None };
-    if v0.is_none() && v1.is_none() { return None; }
-
-    let v0 = v0.as_ref().map(|(base, n, layers, m)| (base.as_slice(), *n, layers.as_slice(), *m));
-    assemble(if is_v1 { 1 } else { 0 }, v0, v1)
+struct PaintWalk<'a, 'b> {
+    colr: &'a [u8],
+    list: usize,
+    layer_list: Option<usize>,
+    // The most depth left each paint was walked with: one shared at several depths is walked again from a shallower
+    // place, so it keeps all that place reaches.
+    left_at: BTreeMap<usize, usize>,
+    found: &'b mut GlyphSet,
+    // Each glyph `found` gained, whose own paint is walked next.
+    fresh: Vec<u32>,
+    palettes: &'b mut BTreeSet<u16>,
+    layers: &'b mut Vec<(u64, u64)>,
 }
 
-// Base records and layer records for the kept glyphs. A range several base glyphs name is written
-// once, and a table past u16 counts is not written.
-fn rebuild_v0(colr: &[u8], active: &GlyphSet, gid_map: &[u16]) -> Option<(Vec<u8>, u16, Vec<u8>, u16)> {
-    let (_, _, orig_layers_off, orig_n_layers) = colr_v0_header(colr)?;
-    let mut survivors: Vec<(u16, usize, usize)> = colr_v0_base_glyphs(colr).into_iter()
-        .filter_map(|(gid, first, n)| remap_gid(active, gid_map, gid).map(|ng| (ng, first, n)))
-        .collect();
-    if survivors.is_empty() { return None; }
-    survivors.sort_unstable_by_key(|&(gid, _, _)| gid);
-
-    let mut layers: Vec<u8> = Vec::new();
-    let mut base_records: Vec<u8> = Vec::with_capacity(survivors.len() * 6);
-    let mut written: alloc::collections::BTreeMap<(usize, usize), (u16, u16)> = alloc::collections::BTreeMap::new();
-    for &(gid, first, n) in &survivors {
-        let record = match written.get(&(first, n)) {
-            Some(&record) => record,
-            None => {
-                let new_first = layers.len() / 4;
-                let mut actual_n = 0usize;
-                for idx in first..first.saturating_add(n).min(orig_n_layers) {
-                    let rec = orig_layers_off + idx * 4;
-                    let (Some(orig_gid), Some(pal)) = (read_u16_be(colr, rec), read_u16_be(colr, rec + 2)) else { break };
-                    let mut lrec = [0u8; 4];
-                    write_u16_be(&mut lrec, 0, remap_gid(active, gid_map, orig_gid).unwrap_or(orig_gid));
-                    write_u16_be(&mut lrec, 2, pal);
-                    layers.extend_from_slice(&lrec);
-                    actual_n += 1;
+impl PaintWalk<'_, '_> {
+    // A paint's glyphs, palette indices and layers, then its children in order. A PaintColrGlyph names its glyph
+    // only where it has a base record, whose paint is walked next from its own root, as a subset writes it there.
+    fn paint(&mut self, at: usize, left: usize) {
+        if left == 0 || self.left_at.get(&at).is_some_and(|&l| l >= left) { return; }
+        self.left_at.insert(at, left);
+        let colr = self.colr;
+        let Some(layout) = colr.get(at).and_then(|&f| paint_layout(f)) else { return };
+        let child = |rel: Option<usize>| rel.filter(|&rel| rel != 0).and_then(|rel| at.checked_add(rel));
+        match colr[at] {
+            1 => {
+                let (Some(&n), Some(first)) = (colr.get(at + 1), read_u32_be(colr, at + 2)) else { return };
+                self.layers.extend(layer_range(first, n));
+                let Some(layers) = self.layer_list else { return };
+                let total = read_u32_be(colr, layers).unwrap_or(0) as usize;
+                // A layer past the table's end reads nothing, and past a quarter of a 32-bit usize its place overflows.
+                let end = (first as usize).saturating_add(usize::from(n)).min(total).min(colr.len() / 4);
+                for i in first as usize..end {
+                    let rel = read_u32_be(colr, layers + 4 + i * 4).filter(|&rel| rel != 0);
+                    if let Some(paint) = rel.and_then(|rel| layers.checked_add(rel as usize)) {
+                        self.paint(paint, left - 1);
+                    }
                 }
-                if layers.len() / 4 > usize::from(u16::MAX) {
+            }
+            11 => {
+                let Some(gid) = read_u16_be(colr, at + 1).map(u32::from) else { return };
+                if colr_v1::lookup_base_glyph_paint_offset(colr, self.list, gid).is_some() && self.found.insert(gid) {
+                    self.fresh.push(gid);
+                }
+            }
+            _ => {
+                if let Some(gid) = layout.glyph.and_then(|(pos, w)| read_uint(colr, at + pos, w))
+                    && self.found.insert(gid)
+                {
+                    self.fresh.push(gid);
+                }
+                match colr[at] {
+                    2 | 3 => self.palettes.extend(read_u16_be(colr, at + 1)),
+                    format @ 4..=9 => {
+                        let line = read_offset24(colr, at + 1).and_then(|rel| at.checked_add(rel));
+                        let stride = if format % 2 == 1 { 10 } else { 6 };
+                        if let Some(line) = line {
+                            let stops = read_u16_be(colr, line + 1).map_or(0, usize::from);
+                            let palette = |i: usize| read_u16_be(colr, line + 3 + i * stride + 2);
+                            self.palettes.extend((0..stops).filter_map(palette));
+                        }
+                    }
+                    _ => {}
+                }
+                for &pos in layout.children {
+                    if let Some(paint) = child(read_offset24(colr, at + pos)) {
+                        self.paint(paint, left - 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// COLR for the kept base glyphs under new IDs, indices remapped; version 0, the smaller, where the source is or no kept
+// glyph has a paint, its 14-byte header alone for none kept. None where version 0 keeps no record or loses a layer.
+pub(crate) fn subset_colr(colr: &[u8], kept: &ColrKept, active: &GlyphSet, gid_map: &[u32]) -> Option<Vec<u8>> {
+    let version = read_u16_be(colr, 0)?;
+    let v0 = v0_written(colr, kept, active, gid_map)?;
+    if version == 0 && v0.is_none() {
+        return None;
+    }
+    let v0 = v0.as_ref().map(|(base, n, layers, m)| (base.as_slice(), *n, layers.as_slice(), *m));
+    let list = colr_v1::header(colr).and_then(|h| h.base_glyph_list);
+    let painted = list.is_some_and(|list| {
+        kept.glyphs.iter().any(|g| colr_v1::lookup_base_glyph_paint_offset(colr, list, g).is_some())
+    });
+    if version == 0 || !painted {
+        return assemble(0, v0, None);
+    }
+    let keep = |g: u16| kept.glyphs.contains(&g).then(|| remap_gid16(active, gid_map, g)).flatten();
+    let remap = |g: u32| gid_map.get(g as usize).copied().unwrap_or(g);
+    let v1 = rebuild(colr, &keep, &remap, Some(kept), None, subset_budget(colr.len()))?;
+    assemble(version, v0, Some(v1))
+}
+
+type V0Records = (Vec<u8>, u16, Vec<u8>, u16);
+
+// Kept base glyphs' version 0 records, each with its own copy of its layers (simplest to write); a record drawing reads
+// no layers of, or whose layer is gone, is left out. Some(None) for none; None past 16-bit layers or an unplaced index.
+fn v0_written(colr: &[u8], kept: &ColrKept, active: &GlyphSet, gid_map: &[u32]) -> Option<Option<V0Records>> {
+    if colr_v0_header(colr).is_none() {
+        return Some(None);
+    }
+    let (mut base, mut layers, mut total, mut count) = (Vec::new(), Vec::new(), 0u16, 0u16);
+    for gid in kept.glyphs.iter() {
+        let (Some(new), Some(run)) = (remap_gid16(active, gid_map, gid as u16), base_glyph_layers(colr, gid)) else {
+            continue;
+        };
+        let glyphs: Option<Vec<u16>> =
+            run.iter().map(|&[g0, g1, ..]| remap_gid16(active, gid_map, u16::from_be_bytes([g0, g1]))).collect();
+        let Some(glyphs) = glyphs else { continue };
+        for (glyph, &[.., p0, p1]) in glyphs.into_iter().zip(run) {
+            let palette = *kept.palettes.get(&u16::from_be_bytes([p0, p1]))?;
+            layers.extend([glyph, palette].map(u16::to_be_bytes).concat());
+        }
+        let n = run.len() as u16;
+        base.extend([new, total, n].map(u16::to_be_bytes).concat());
+        (total, count) = (total.checked_add(n)?, count.checked_add(1)?);
+    }
+    Some((count > 0).then_some((base, count, layers, total)))
+}
+
+// CPAL with every palette, each the colors `kept` keeps in index order, palettes left alike sharing records, version
+// 1's types and labels carried. None where no color is kept or the records pass its count.
+pub(crate) fn subset_cpal(cpal: &[u8], kept: &ColrKept) -> Option<Vec<u8>> {
+    let [version, n_colors, n_palettes, n_records] = [0, 2, 4, 6].map(|at| read_u16_be(cpal, at));
+    let (version, n_colors, n_palettes, n_records) = (version?, n_colors?, usize::from(n_palettes?), n_records?);
+    let records = read_u32_be(cpal, 8)? as usize;
+    // An index past the palette's entries has no color, and past the subset's entries it has none still.
+    let colors: Vec<usize> = kept.palettes.keys().map(|&i| usize::from(i)).filter(|&i| i < n_colors.into()).collect();
+    if n_palettes == 0 || colors.is_empty() {
+        return None;
+    }
+    let record = |i: usize| (i < usize::from(n_records)).then(|| cpal.get(records.checked_add(4 * i)?..)?.get(..4));
+    // A palette whose entries pass the color records reads as palette 0, as drawing selects it, and is written so.
+    let first_of = |p: usize| {
+        let first = usize::from(read_u16_be(cpal, 12 + 2 * p)?);
+        let held = first + usize::from(n_colors) <= usize::from(n_records);
+        if held || p == 0 { Some(first) } else { read_u16_be(cpal, 12).map(usize::from) }
+    };
+    let (mut blocks, mut firsts) = (BTreeMap::<Vec<u8>, usize>::new(), BTreeMap::new());
+    let mut written = Vec::new();
+    let mut out = [version, colors.len() as u16, n_palettes as u16, 0].map(u16::to_be_bytes).concat();
+    out.extend([0; 4]);
+    for p in 0..n_palettes {
+        let first = first_of(p)?;
+        let block = match firsts.get(&first) {
+            Some(&block) => block,
+            None => {
+                let kept_colors = colors.iter().map(|&c| record(first + c).flatten()).collect::<Option<Vec<_>>>()?;
+                let kept_colors = kept_colors.concat();
+                let next = blocks.len();
+                let block = *blocks.entry(kept_colors).or_insert_with_key(|kept_colors| {
+                    written.extend_from_slice(kept_colors);
+                    next
+                });
+                if blocks.len() * colors.len() > 0xFFFF {
                     return None;
                 }
-                let record = (new_first as u16, actual_n as u16);
-                written.insert((first, n), record);
-                record
+                firsts.insert(first, block);
+                block
             }
         };
-        base_records.extend([gid, record.0, record.1].map(u16::to_be_bytes).concat());
+        out.extend(((block * colors.len()) as u16).to_be_bytes());
     }
-    let (n, m) = (survivors.len() as u16, (layers.len() / 4) as u16);
-    Some((base_records, n, layers, m))
+    write_u16_be(&mut out, 6, (blocks.len() * colors.len()) as u16);
+    let v1 = (version == 1).then(|| CpalV1::read(cpal)).flatten();
+    let tail = out.len();
+    // The color records and version 1's arrays, as (field, bytes), written in turn after the header; one equal to an
+    // earlier one shares its bytes, the smaller table.
+    let mut packed = alloc::vec![(8, written)];
+    if let Some(v1) = &v1 {
+        out.extend([0; 12]);
+        let array = |at: usize, len: usize| (at != 0).then(|| cpal.get(at..at + len).map(<[u8]>::to_vec)).flatten();
+        packed.extend(array(v1.types, 4 * n_palettes).map(|t| (tail, t)));
+        packed.extend(array(v1.labels, 2 * n_palettes).map(|t| (tail + 4, t)));
+        if v1.entry_labels != 0 {
+            let label = |i: usize| cpal.get(v1.entry_labels + 2 * i..v1.entry_labels + 2 * i + 2);
+            let labels = colors.iter().filter(|&&i| i < usize::from(n_colors)).map(|&i| label(i));
+            let labels = labels.collect::<Option<Vec<_>>>()?.concat();
+            packed.extend((!labels.is_empty()).then_some((tail + 8, labels)));
+        }
+    }
+    let mut placed: Vec<(&[u8], usize)> = Vec::with_capacity(packed.len());
+    for (field, bytes) in &packed {
+        let at = match placed.iter().find(|(placed, _)| placed == bytes) {
+            Some(&(_, at)) => at,
+            None => {
+                placed.push((bytes, out.len()));
+                out.extend_from_slice(bytes);
+                out.len() - bytes.len()
+            }
+        };
+        write_u32_be(&mut out, *field, at as u32);
+    }
+    Some(out)
+}
+
+// The name IDs a subset keeps for CPAL, whether or not it writes the table: a version 1 table's palette labels, all
+// of them, and the labels of its colors `kept` keeps.
+pub(crate) fn cpal_names(cpal: &[u8], kept: &ColrKept) -> BTreeSet<u16> {
+    let Some(v1) = CpalV1::read(cpal).filter(|_| read_u16_be(cpal, 0) == Some(1)) else { return BTreeSet::new() };
+    let count = |at: usize| read_u16_be(cpal, at).map_or(0, usize::from);
+    let label = |array: usize, i: usize| (array != 0).then(|| read_u16_be(cpal, array + 2 * i)).flatten();
+    let palettes = (0..count(4)).filter_map(|i| label(v1.labels, i));
+    let kept_colors = (0..count(2)).filter(|&i| kept.palettes.contains_key(&(i as u16)));
+    let colors = kept_colors.filter_map(|i| label(v1.entry_labels, i));
+    palettes.chain(colors).collect()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // COLR v0 whose base glyphs 1 to `bases` all name the same 40,000 layers of glyph `bases + 1`.
-    fn shared(bases: u16) -> (Vec<u8>, GlyphSet, Vec<u16>) {
-        const LAYERS: u16 = 40_000;
-        let records = 14 + 6 * usize::from(bases);
-        let mut colr = [0u16, bases].map(u16::to_be_bytes).concat();
-        colr.extend(14u32.to_be_bytes());
-        colr.extend((records as u32).to_be_bytes());
-        colr.extend(LAYERS.to_be_bytes());
-        for gid in 1..=bases {
-            colr.extend([gid, 0, LAYERS].map(u16::to_be_bytes).concat());
-        }
-        for _ in 0..LAYERS {
-            colr.extend([bases + 1, 0].map(u16::to_be_bytes).concat());
-        }
-        let mut active = GlyphSet::new();
-        (0..=bases + 1).for_each(|g| { active.insert(g); });
-        (colr, active, (0..=bases + 1).collect())
-    }
-
-    #[test]
-    fn shared_layers_are_written_once() {
-        let (colr, active, gid_map) = shared(2);
-        let out = subset_colr(&colr, &active, &gid_map).expect("a subset COLR");
-        assert_eq!(read_u16_be(&out, 12), Some(40_000), "the layer count");
-        let base = read_u32_be(&out, 4).expect("base records") as usize;
-        for i in 0..2 {
-            let (first, n) = (read_u16_be(&out, base + 6 * i + 2), read_u16_be(&out, base + 6 * i + 4));
-            assert_eq!((first, n), (Some(0), Some(40_000)), "base glyph {i} lost its layers");
-        }
-    }
-
-    #[test]
-    fn layers_past_u16_drop_v0_rather_than_wrap() {
-        let (mut colr, active, gid_map) = shared(2);
-        colr[22..26].copy_from_slice(&[0, 1, 0x9C, 0x3F]);
-        let out = subset_colr(&colr, &active, &gid_map);
-        assert_eq!(out.map(|t| read_u16_be(&t, 12)), None, "79,999 layers were written as a u16 count");
-    }
-
-    // 2,000 glyphs sharing 60 layers walk 242,000 paints between them, past one budget of 100,000 for
-    // the whole subset: each paint is read once, and written once.
-    #[test]
-    fn a_shared_graph_subsets_whole() {
-        let colr = super::super::super::colr_v1::testing::shared_layers(2000, 60, false);
-        let mut active = GlyphSet::new();
-        (0..=2000u16).for_each(|g| { active.insert(g); });
-        let found = colr_closure(&colr, &active);
-        assert!((1000..1060).all(|g| found.contains(&g)), "the closure lost layer glyphs");
-        (1000..1060u16).for_each(|g| { active.insert(g); });
-        let gid_map: Vec<u16> = (0..=2000).collect();
-        let out = subset_colr(&colr, &active, &gid_map).expect("a subset COLR");
-        let list = read_u32_be(&out, 14).expect("a BaseGlyphList") as usize;
-        assert_eq!(read_u32_be(&out, list), Some(2000));
-        assert!(out.len() < colr.len() + 2000 * 6, "the shared layers were written more than once");
-    }
-
-    #[test]
-    fn the_v0_closure_reads_each_layer_once() {
-        let (colr, active, _) = shared(200);
-        let found = colr_closure(&colr, &active);
-        assert!(found.len() <= 40_000, "200 glyphs sharing 40,000 layers found {}", found.len());
-    }
-}
+#[path = "../../../tests/unit/daetype/subsetter/colr.rs"]
+mod tests;

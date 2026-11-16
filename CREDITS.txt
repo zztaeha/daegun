@@ -1,0 +1,268 @@
+daegun's credits
+
+daegun's own code is under the MIT license in LICENSE. This file holds the rest,
+in two parts:
+
+- Shipped in daegun: the notices of the code and data daegun carries from
+  others. Their licenses ask software shipping daegun to ship these notices
+  too, as the release archives and `cargo cinstall` do.
+- Thanks: those whose work daegun was built and tested with.
+
+As one SPDX expression: MIT AND Unicode-3.0 AND ICU AND BSD-2-Clause AND
+BSD-3-Clause.
+
+
+SHIPPED IN DAEGUN
+
+
+The Unicode Character Database
+
+daegun's Unicode tables are built from the Unicode Character Database, and its
+language tags and the languages a font records names in with CLDR's likely
+subtags, both under the Unicode License v3:
+
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2026 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+
+
+The word lists
+
+The `dictionaries` feature's Thai, Lao, Khmer and Myanmar word lists come from
+ICU, under the Unicode License v3 above and, for what IBM wrote of them before
+2016, the ICU License after the headers; the Lao and Myanmar lists come under
+BSD licenses too. Each list's header, as it came:
+
+[word-lists.py writes from here]
+Thai (26,383 words):
+
+Copyright (C) 2016 and later: Unicode, Inc. and others.
+License & terms of use: http://www.unicode.org/copyright.html
+Copyright (c) 2006-2015 International Business Machines Corporation,
+Apple Inc., and others. All Rights Reserved.
+
+Lao (30,550 words):
+
+Copyright (C) 2016 and later: Unicode, Inc. and others.
+License & terms of use: http://www.unicode.org/copyright.html
+Copyright (c) 2015 International Business Machines Corporation
+and others. All Rights Reserved.
+
+Lao Word List from Brian Eugene Wilson, Robert Martin Campbell;
+with special thanks to Erik Mundall, Arlyta Keosamone, and Bualong Nyoukmai.
+
+This word list was created in order to aid in word wrapping issues.
+
+Project:    https://github.com/rober42539/lao-dictionary
+Dictionary: https://github.com/rober42539/lao-dictionary/laodict.txt
+License:    https://github.com/rober42539/lao-dictionary/LICENSE.txt
+Readme:     https://github.com/rober42539/lao-dictionary/README.md
+
+This file is derived from the above dictionary version of Nov 22, 2020
+@4aa4567ebc3f86a09fbc5a6948ea05ea411707e1.
+Modified the header.
+--------------------------------------------------------------------------------
+Copyright (C) 2013 Brian Eugene Wilson, Robert Martin Campbell.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this
+list of conditions and the following disclaimer. Redistributions in binary
+form must reproduce the above copyright notice, this list of conditions and
+the following disclaimer in the documentation and/or other materials
+provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+--------------------------------------------------------------------------------
+
+Khmer (81,028 words):
+
+Copyright (C) 2016 and later: Unicode, Inc. and others.
+License & terms of use: http://www.unicode.org/copyright.html
+Copyright (c) 2011-2015 International Business Machines Corporation
+and others. All Rights Reserved.
+
+Myanmar (41,120 words):
+
+Copyright (C) 2016 and later: Unicode, Inc. and others.
+License & terms of use: http://www.unicode.org/copyright.html
+Copyright (c) 2015 International Business Machines Corporation
+and others. All Rights Reserved.
+
+burmese-word-list.txt from LeRoy Benjamin Sharon,
+with special thanks to Robert Martin Campbell.
+
+This list was created to aid in word wrapping, word segmentation, and spell
+checking. It aims to be an exhaustive list of all words in the Burmese language.
+
+Sources include:
+- The my-l10n project, hosted at https://code.google.com/p/my-l10n/
+- http://sourceforge.net/projects/ncsoft/files/Myanmar-English%20Dictionary/
+
+This list is part of a project hosted at:
+github.com/kanyawtech/myanmar-karen-word-lists
+
+Also for more information and additional projects, see:
+kanyawtech.org
+
+This file is derived from the above dictionary, but:
+modified header; deleted parenthetical annotations and final space; deleted
+duplicate entries; deleted entries with medial or final hyphens, entries
+containing text in Latin/Arabic/NKo script, entries containing medial space,
+equals sign, comma, underscore, colon, exclamation point, semicolon, ellipsis,
+asterisk, solidus, space, or
+\u0361, \u0fff, \u0004, \u0001, \u200b, \u05A1, \u001E, etc.
+--------------------------------------------------------------------------------
+Copyright (c) 2013, LeRoy Benjamin Sharon
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this
+list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright notice, this
+list of conditions and the following disclaimer in the documentation and/or
+other materials provided with the distribution.
+
+Neither the name Myanmar Karen Word Lists, nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+--------------------------------------------------------------------------------
+[word-lists.py writes to here]
+
+The ICU License for ICU 1.8.1 to ICU 57.1, as ICU's license file carries it:
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright (c) 1995-2016 International Business Machines Corporation and others
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, and/or sell copies of the Software, and to permit persons
+to whom the Software is furnished to do so, provided that the above
+copyright notice(s) and this permission notice appear in all copies of
+the Software and that both the above copyright notice(s) and this
+permission notice appear in supporting documentation.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF THIRD PARTY RIGHTS. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+HOLDERS INCLUDED IN THIS NOTICE BE LIABLE FOR ANY CLAIM, OR ANY
+SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES, OR ANY DAMAGES WHATSOEVER
+RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
+CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder
+shall not be used in advertising or otherwise to promote the sale, use
+or other dealings in this Software without prior written authorization
+of the copyright holder.
+
+All trademarks and registered trademarks mentioned herein are the
+property of their respective owners.
+
+
+Microsoft's shaping data
+
+The Universal Shaping Engine's category overrides, and the vowel pairs a dotted
+circle goes between, are built from Microsoft's font-tools, under the MIT
+license:
+
+MIT License
+
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+THANKS
+
+daegun was built and tested with these:
+
+- fontTools, which builds the font fixtures daegun's tests read.
+- text-rendering-tests, whose test fonts daegun's tests read.
+- Viktor Chlumský, whose master's thesis on multi-channel signed distance
+  fields gave daegun's MSDF its method: edges colored at corners, the median
+  of three channels and their pseudo-distances. daegun's code is its own.
+- The test fonts' designers. Each font's license sits beside it in
+  assets/test-fonts.

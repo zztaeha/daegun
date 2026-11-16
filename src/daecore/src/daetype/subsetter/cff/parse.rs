@@ -1,62 +1,77 @@
-use alloc::string::String;
 use alloc::vec::Vec;
+use core::ops::Range;
 use crate::daecore::daetype::decoder::{read_u16_be, read_u32_be};
-use crate::daecore::daetype::format::cff::{walk_cff_dict, DictFlow, DictKind, DictOp};
+use crate::daecore::daetype::format::cff::{read_dict, Dict, DictKind};
+use crate::daecore::Error;
 
 // An INDEX's count and offSize, and where its offsets and data start (both its end when it is empty).
-fn index_header(data: &[u8], off: usize, count_is_32bit: bool) -> Result<(usize, usize, usize, usize), String> {
+fn index_header(data: &[u8], off: usize, count_is_32bit: bool) -> Result<(usize, usize, usize, usize), Error> {
     if data.len() > u32::MAX as usize {
-        return Err("CFF INDEX: table larger than a CFF table can be".into());
+        return Err(Error::malformed("CFF INDEX: table larger than a CFF table can be"));
     }
     let count_size = if count_is_32bit { 4 } else { 2 };
     if off.checked_add(count_size).is_none_or(|end| end > data.len()) {
-        return Err("CFF INDEX: truncated".into());
+        return Err(Error::malformed("CFF INDEX: truncated"));
     }
     let count = if count_is_32bit {
-        read_u32_be(data, off).ok_or("CFF INDEX: truncated")? as usize
+        read_u32_be(data, off).ok_or(Error::malformed("CFF INDEX: truncated"))? as usize
     } else {
-        read_u16_be(data, off).ok_or("CFF INDEX: truncated")? as usize
+        read_u16_be(data, off).ok_or(Error::malformed("CFF INDEX: truncated"))? as usize
     };
     if count == 0 {
         return Ok((0, 0, off + count_size, off + count_size));
     }
     if off + count_size + 1 > data.len() {
-        return Err("CFF INDEX: missing offSize".into());
+        return Err(Error::missing("CFF INDEX: missing offSize"));
     }
     let off_size = data[off + count_size] as usize;
     if !(1..=4).contains(&off_size) {
-        return Err(format!("CFF INDEX: invalid offSize {}", off_size));
+        return Err(Error::owned(
+            crate::daecore::ErrorKind::Malformed,
+            format!("CFF INDEX: invalid offSize {}", off_size),
+        ));
     }
     let offsets_start = off + count_size + 1;
 
-    let offsets_count = count.checked_add(1).ok_or("CFF INDEX: count overflows")?;
+    let offsets_count = count.checked_add(1).ok_or(Error::malformed("CFF INDEX: count overflows"))?;
     let data_start = offsets_count
         .checked_mul(off_size)
         .and_then(|len| offsets_start.checked_add(len))
-        .ok_or("CFF INDEX: offsets array overflows the address space")?;
+        .ok_or(Error::malformed("CFF INDEX: offsets array overflows the address space"))?;
     if data_start > data.len() {
-        return Err("CFF INDEX: offsets array does not fit in the buffer".into());
+        return Err(Error::malformed("CFF INDEX: offsets array does not fit in the buffer"));
     }
     Ok((count, off_size, offsets_start, data_start))
 }
 
+// `index_header` holds `off_size` to 1 through 4; read by width rather than byte by byte, as drawing reads two a glyph.
 fn index_offset(data: &[u8], at: usize, off_size: usize) -> usize {
-    data[at..at + off_size].iter().fold(0, |v, &b| (v << 8) | usize::from(b))
+    let b = &data[at..at + off_size];
+    match *b {
+        [a] => usize::from(a),
+        [a, b] => usize::from(u16::from_be_bytes([a, b])),
+        [a, b, c] => usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c),
+        [a, b, c, d] => u32::from_be_bytes([a, b, c, d]) as usize,
+        _ => b.iter().fold(0, |v, &x| (v << 8) | usize::from(x)),
+    }
 }
 
 // Where an INDEX ends, read from its last offset alone, for one whose objects are not wanted.
-pub fn cff_index_end(data: &[u8], off: usize, count_is_32bit: bool) -> Result<usize, String> {
+pub fn cff_index_end(data: &[u8], off: usize, count_is_32bit: bool) -> Result<usize, Error> {
     let (count, off_size, offsets_start, data_start) = index_header(data, off, count_is_32bit)?;
     if count == 0 {
         return Ok(data_start);
     }
     let data_len = index_offset(data, offsets_start + count * off_size, off_size).saturating_sub(1);
-    data_start.checked_add(data_len).filter(|&end| end <= data.len()).ok_or_else(|| "CFF INDEX: data truncated".into())
+    data_start
+        .checked_add(data_len)
+        .filter(|&end| end <= data.len())
+        .ok_or(Error::malformed("CFF INDEX: data truncated"))
 }
 
-// An INDEX's object count, from its header alone.
-pub(crate) fn cff_index_count(data: &[u8], off: usize) -> Result<usize, String> {
-    index_header(data, off, false).map(|(count, ..)| count)
+// An INDEX's object count, from its header alone, whose offsets the bytes hold.
+pub(crate) fn cff_index_count(data: &[u8], off: usize, count_is_32bit: bool) -> Result<usize, Error> {
+    index_header(data, off, count_is_32bit).map(|(count, ..)| count)
 }
 
 // One object of an INDEX, read through its two offsets without the others.
@@ -67,133 +82,140 @@ pub(crate) fn cff_index_entry(data: &[u8], off: usize, i: usize) -> Option<&[u8]
     data.get(data_start.checked_add(at(i)?)?..data_start.checked_add(at(i + 1)?)?)
 }
 
-pub fn cff_index_spans(data: &[u8], off: usize, count_is_32bit: bool) -> Result<(Vec<(u32, u32)>, usize), String> {
-    let (count, off_size, offsets_start, data_start) = index_header(data, off, count_is_32bit)?;
-    if count == 0 {
-        return Ok((Vec::new(), data_start));
-    }
-    let offsets: Vec<usize> = (0..=count).map(|i| index_offset(data, offsets_start + i * off_size, off_size)).collect();
+pub fn cff_index_spans(data: &[u8], off: usize, count_is_32bit: bool) -> Result<(Vec<(u32, u32)>, usize), Error> {
+    let (index, end) = CffIndex::read(data, off, count_is_32bit)?;
+    Ok(((0..index.len()).filter_map(|i| index.span(data, i)).collect(), end))
+}
 
-    let data_len = offsets[count].saturating_sub(1);
-    if data_start.checked_add(data_len).is_none_or(|end| end > data.len()) {
-        return Err("CFF INDEX: data truncated".into());
-    }
+// An INDEX read where it lies: `read` checks every object's offsets once, so a span reads two of them.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CffIndex {
+    count: usize,
+    off_size: usize,
+    offsets: usize,
+    data: usize,
+}
 
-    let mut spans = Vec::with_capacity(count);
-    for i in 0..count {
-        let start = data_start + offsets[i].saturating_sub(1);
-        let end   = data_start + offsets[i + 1].saturating_sub(1);
-        if start > end || end > data.len() {
-            return Err(format!("CFF INDEX: object {} out of bounds", i));
+impl CffIndex {
+    // The INDEX at `off` and where it ends, refused as `cff_index_spans` refuses it.
+    pub(crate) fn read(data: &[u8], off: usize, count_is_32bit: bool) -> Result<(CffIndex, usize), Error> {
+        let (count, off_size, offsets, data_start) = index_header(data, off, count_is_32bit)?;
+        let index = CffIndex { count, off_size, offsets, data: data_start };
+        if count == 0 {
+            return Ok((index, data_start));
         }
-        spans.push((start as u32, end as u32));
+        let data_len = index.offset(data, count);
+        if data_start.checked_add(data_len).is_none_or(|end| end > data.len()) {
+            return Err(Error::malformed("CFF INDEX: data truncated"));
+        }
+        for i in 0..count {
+            let (start, end) = (index.offset(data, i), index.offset(data, i + 1));
+            if start > end || end > data.len() - data_start {
+                return Err(Error::owned(
+                    crate::daecore::ErrorKind::Malformed,
+                    format!("CFF INDEX: object {} out of bounds", i),
+                ));
+            }
+        }
+        Ok((index, data_start + data_len))
     }
 
-    Ok((spans, data_start + data_len))
+    pub(crate) fn len(&self) -> usize {
+        self.count
+    }
+
+    // Object `i`'s start and end in the table `read` checked, its two offsets read from one slice.
+    pub(crate) fn span(&self, data: &[u8], i: usize) -> Option<(u32, u32)> {
+        if i >= self.count {
+            return None;
+        }
+        let at = self.offsets + i * self.off_size;
+        let (start, end) = data.get(at..at + 2 * self.off_size)?.split_at(self.off_size);
+        let place = |offset: &[u8]| (self.data + index_offset(offset, 0, self.off_size).saturating_sub(1)) as u32;
+        Some((place(start), place(end)))
+    }
+
+    fn offset(&self, data: &[u8], i: usize) -> usize {
+        index_offset(data, self.offsets + i * self.off_size, self.off_size).saturating_sub(1)
+    }
 }
 
 pub fn parse_cff_index_refs(
     data: &[u8],
     off: usize,
     count_is_32bit: bool,
-) -> Result<(Vec<&[u8]>, usize), String> {
+) -> Result<(Vec<&[u8]>, usize), Error> {
     let (spans, end) = cff_index_spans(data, off, count_is_32bit)?;
     let mut objects = Vec::with_capacity(spans.len());
     for (s, e) in spans {
-        objects.push(data.get(s as usize..e as usize).ok_or("CFF INDEX: object out of bounds")?);
+        objects.push(data.get(s as usize..e as usize).ok_or(Error::malformed("CFF INDEX: object out of bounds"))?);
     }
     Ok((objects, end))
 }
 
-pub fn parse_cff_index(
-    data: &[u8],
-    off: usize,
-    count_is_32bit: bool,
-) -> Result<(Vec<Vec<u8>>, usize), String> {
-    let (refs, end) = parse_cff_index_refs(data, off, count_is_32bit)?;
-    Ok((refs.into_iter().map(<[u8]>::to_vec).collect(), end))
+// A CFF table's header and the four INDEXes after it, Name, Top DICT, String and Global Subrs: where
+// each starts, where the last ends, and the one Top DICT's fields.
+pub(crate) struct Header<'a> {
+    pub names: usize,
+    pub top_index: usize,
+    pub strings: usize,
+    pub gsubrs: usize,
+    pub end: usize,
+    pub top_dict: &'a [u8],
+    pub top: Dict,
+    pub charstrings: usize,
 }
 
-#[derive(Debug)]
-pub struct TopDictFields {
-    pub charset_off:     Option<usize>,
-    pub charset_predefined: u8,
-    pub charstrings_off: usize,
-    pub private_size:    usize,
-    pub private_off:     usize,
-    pub fd_array_off:    Option<usize>,
-    pub fd_select_off:   Option<usize>,
-    pub ros:             Option<(i32, i32, i32)>,
-    pub font_matrix_raw: Option<Vec<u8>>,
-}
-
-pub fn parse_top_dict(dict: &[u8]) -> Result<TopDictFields, String> {
-    let mut charset_off   = None;
-    let mut charset_predefined = 0u8;
-    let mut cs_off        = 0usize;
-    let mut priv_size     = 0usize;
-    let mut priv_off      = 0usize;
-    let mut fd_array_off  = None;
-    let mut fd_select_off = None;
-    let mut ros           = None;
-    let mut font_matrix_raw: Option<Vec<u8>> = None;
-
-    walk_cff_dict(dict, DictKind::Cff1, |op, operands, operand_start, op_off| {
-        match op {
-            DictOp::Escaped(30) if operands.len() >= 3 => {
-                let n = operands.len();
-                ros = Some((operands[n - 3], operands[n - 2], operands[n - 1]));
-            }
-            DictOp::Escaped(36) => { if let Some(&v) = operands.last() && v >= 0 { fd_array_off  = Some(v as usize); } }
-            DictOp::Escaped(37) => { if let Some(&v) = operands.last() && v >= 0 { fd_select_off = Some(v as usize); } }
-            DictOp::Escaped(7) => {
-                let mut raw = dict[operand_start..op_off].to_vec();
-                raw.extend_from_slice(&[12, 7]);
-                font_matrix_raw = Some(raw);
-            }
-            DictOp::Single(15) => { if let Some(&v) = operands.last() {
-                if v > 2 { charset_off = Some(v as usize); }
-                else if v >= 0 { charset_predefined = v as u8; }
-            } }
-            DictOp::Single(17) => { if let Some(&v) = operands.last() && v >= 0 { cs_off = v as usize; } }
-            DictOp::Single(18) if operands.len() >= 2 => {
-                let sz = operands[operands.len() - 2];
-                let po = operands[operands.len() - 1];
-                if sz >= 0 && po >= 0 {
-                    priv_size = sz as usize;
-                    priv_off  = po as usize;
-                }
-            }
-            _ => {}
-        }
-        DictFlow::Continue
-    });
-
-    if cs_off == 0 { return Err("CFF Top DICT: missing CharStrings offset".into()); }
-    if priv_off == 0 && fd_array_off.is_none() {
-        return Err("CFF Top DICT: missing Private DICT and FDArray".into());
+pub(crate) fn read_header(cff: &[u8]) -> Result<Header<'_>, Error> {
+    if cff.len() < 4 {
+        return Err(Error::malformed("CFF: file too short"));
     }
-
-    Ok(TopDictFields {
-        charset_off,
-        charset_predefined,
-        charstrings_off: cs_off,
-        private_size:    priv_size,
-        private_off:     priv_off,
-        fd_array_off,
-        fd_select_off,
-        ros,
-        font_matrix_raw,
-    })
+    let names = usize::from(cff[2]);
+    let top_index = cff_index_end(cff, names, false)?;
+    let strings = cff_index_end(cff, top_index, false)?;
+    let gsubrs = cff_index_end(cff, strings, false)?;
+    let end = cff_index_end(cff, gsubrs, false)?;
+    let top_dict = cff_index_entry(cff, top_index, 0).ok_or(Error::malformed("CFF: empty Top DICT INDEX"))?;
+    let top = read_dict(top_dict, DictKind::Cff1);
+    let charstrings = top.charstrings.ok_or(Error::missing("CFF Top DICT: missing CharStrings offset"))?;
+    if top.private.is_none() && top.fd_array.is_none() {
+        return Err(Error::missing("CFF Top DICT: missing Private DICT and FDArray"));
+    }
+    Ok(Header { names, top_index, strings, gsubrs, end, top_dict, top, charstrings })
 }
 
-pub enum CharsetFlow { Continue, Stop }
+// Whether a CFF is read to subset its glyphs: not where its CharStrings count other than maxp's glyphs.
+pub(crate) fn cff_readable(cff: &[u8], num_glyphs: u32) -> bool {
+    let Ok(header) = read_header(cff) else { return true };
+    cff_index_count(cff, header.charstrings, false).is_ok_and(|n| n == num_glyphs as usize)
+}
 
-pub fn walk_charset<F>(cff: &[u8], off: usize, n_glyphs: usize, mut on_entry: F) -> Result<usize, String>
+// A Private DICT, read one way for drawing, subsetting and instancing: outside the table it is empty,
+// and its local Subrs start at its last nonzero Subrs offset when that lies within the table.
+pub(crate) struct Private<'a> {
+    pub dict: &'a [u8],
+    pub vsindex: u16,
+    pub subrs: Option<usize>,
+}
+
+pub(crate) fn read_private(table: &[u8], at: Option<Range<usize>>, kind: DictKind) -> Private<'_> {
+    let (start, dict) = at.and_then(|at| Some((at.start, table.get(at)?))).unwrap_or((0, &[]));
+    let fields = read_dict(dict, kind);
+    let subrs = fields.subrs.and_then(|rel| start.checked_add(rel)).filter(|&abs| abs < table.len());
+    Private { dict, vsindex: fields.vsindex, subrs }
+}
+
+// A local Subrs INDEX, read where it lies. One that doesn't read as an INDEX has none, so only the glyphs that
+// call into it fail.
+pub(crate) fn read_subrs(table: &[u8], at: usize, kind: DictKind) -> CffIndex {
+    CffIndex::read(table, at, kind == DictKind::Cff2).map_or_else(|_| CffIndex::default(), |(index, _)| index)
+}
+
+pub fn walk_charset<F>(cff: &[u8], off: usize, n_glyphs: usize, mut on_entry: F) -> Result<usize, Error>
 where
-    F: FnMut(u16, u16) -> CharsetFlow,
+    F: FnMut(u16, u16),
 {
-    if off >= cff.len() { return Err("CFF charset: offset out of range".into()); }
+    if off >= cff.len() { return Err(Error::malformed("CFF charset: offset out of range")); }
     if n_glyphs <= 1 { return Ok(off); }
     let format = cff[off];
     let mut pos = off + 1;
@@ -201,10 +223,10 @@ where
     match format {
         0 => {
             for gid in 1..n_glyphs {
-                if pos + 2 > cff.len() { return Err("CFF charset format 0: truncated".into()); }
-                let sid = read_u16_be(cff, pos).ok_or("CFF charset format 0: truncated")?;
+                if pos + 2 > cff.len() { return Err(Error::malformed("CFF charset format 0: truncated")); }
+                let sid = read_u16_be(cff, pos).ok_or(Error::malformed("CFF charset format 0: truncated"))?;
                 pos += 2;
-                if matches!(on_entry(gid as u16, sid), CharsetFlow::Stop) { return Ok(pos); }
+                on_entry(gid as u16, sid);
             }
         }
         1 | 2 => {
@@ -212,104 +234,89 @@ where
             while gid < n_glyphs {
                 let need = if format == 1 { 3 } else { 4 };
                 if pos + need > cff.len() {
-                    return Err(format!("CFF charset format {}: truncated", format));
+                    return Err(Error::owned(
+                        crate::daecore::ErrorKind::Malformed,
+                        format!("CFF charset format {}: truncated", format),
+                    ));
                 }
-                let first = read_u16_be(cff, pos).ok_or("CFF charset: truncated")?;
+                let first = read_u16_be(cff, pos).ok_or(Error::malformed("CFF charset: truncated"))?;
                 let n_left = if format == 1 {
-                    let v = *cff.get(pos + 2).ok_or("CFF charset format 1: truncated")? as usize; pos += 3; v
+                    let v = *cff.get(pos + 2).ok_or(Error::malformed("CFF charset format 1: truncated"))? as usize;
+                    pos += 3;
+                    v
                 } else {
-                    let v = read_u16_be(cff, pos + 2).ok_or("CFF charset format 2: truncated")? as usize; pos += 4; v
+                    let v =
+                        read_u16_be(cff, pos + 2).ok_or(Error::malformed("CFF charset format 2: truncated"))? as usize;
+                    pos += 4;
+                    v
                 };
                 let span = (n_left + 1).min(n_glyphs - gid);
                 for k in 0..span {
-                    if matches!(on_entry((gid + k) as u16, first.wrapping_add(k as u16)), CharsetFlow::Stop) {
-                        return Ok(pos);
-                    }
+                    on_entry((gid + k) as u16, first.wrapping_add(k as u16));
                 }
                 gid += span;
             }
         }
-        _ => return Err(format!("CFF charset: unknown format {}", format)),
+        _ => {
+            return Err(Error::owned(
+                crate::daecore::ErrorKind::Unsupported,
+                format!("CFF charset: unknown format {}", format),
+            ));
+        }
     }
     Ok(pos)
 }
 
-pub fn parse_charset_sids(cff: &[u8], off: usize, n_glyphs: usize) -> Result<usize, String> {
-    walk_charset(cff, off, n_glyphs, |_, _| CharsetFlow::Continue)
-}
-
-pub fn parse_private_subrs_offset(private_dict: &[u8]) -> usize {
-    let mut subrs = 0usize;
-    walk_cff_dict(private_dict, DictKind::Cff1, |op, operands, _, _| {
-        if op == DictOp::Single(19)
-            && let Some(&v) = operands.last() {
-                subrs = if v > 0 { v as usize } else { 0 };
-                return DictFlow::Stop;
+// The SIDs of `kept`, ascending glyphs past 0, with `walk_charset`'s errors and wrap: its errors rest on format 0's
+// one bound or the range headers, so only those are read, not an entry a glyph.
+pub fn kept_sids(cff: &[u8], off: usize, n_glyphs: usize, kept: &[u32]) -> Result<Vec<u16>, Error> {
+    if off >= cff.len() { return Err(Error::malformed("CFF charset: offset out of range")); }
+    if n_glyphs <= 1 { return Ok(alloc::vec![0; kept.len()]); }
+    let mut out = Vec::with_capacity(kept.len());
+    match cff[off] {
+        0 => {
+            if off + 1 + 2 * (n_glyphs - 1) > cff.len() {
+                return Err(Error::malformed("CFF charset format 0: truncated"));
             }
-        DictFlow::Continue
-    });
-    subrs
-}
-
-pub fn parse_fd_select_bytes(cff: &[u8], off: usize, n_glyphs: usize) -> Result<Vec<u8>, String> {
-    if off >= cff.len() { return Err("CFF FDSelect: offset out of bounds".into()); }
-    let format = cff[off];
-    let end = match format {
-        0 => off + 1 + n_glyphs,
-        3 => {
-            if off + 3 > cff.len() { return Err("CFF FDSelect format 3: truncated".into()); }
-            let n_ranges = read_u16_be(cff, off + 1)
-                .ok_or("CFF FDSelect format 3: truncated")? as usize;
-            off + 1 + 2 + n_ranges * 3 + 2
+            out.extend(kept.iter().map(|&g| read_u16_be(cff, off + 2 * g as usize - 1).unwrap_or(0)));
         }
-        _ => return Err(format!("CFF FDSelect: unknown format {}", format)),
-    };
-    if end > cff.len() { return Err("CFF FDSelect: data truncated".into()); }
-    Ok(cff[off..end].to_vec())
-}
-
-pub fn parse_fd_dict_private(dict: &[u8]) -> (usize, usize, Option<Vec<u8>>) {
-    let mut priv_size = 0usize;
-    let mut priv_off  = 0usize;
-    let mut font_matrix_raw: Option<Vec<u8>> = None;
-    walk_cff_dict(dict, DictKind::Cff1, |op, operands, operand_start, op_off| {
-        match op {
-            DictOp::Escaped(7) => {
-                let mut raw = dict[operand_start..op_off].to_vec();
-                raw.extend_from_slice(&[12, 7]);
-                font_matrix_raw = Some(raw);
-            }
-            DictOp::Single(18) if operands.len() >= 2 => {
-                let sz = operands[operands.len() - 2];
-                let po = operands[operands.len() - 1];
-                if sz >= 0 && po >= 0 {
-                    priv_size = sz as usize;
-                    priv_off  = po as usize;
+        format @ (1 | 2) => {
+            let need = if format == 1 { 3 } else { 4 };
+            let (mut pos, mut gid, mut next) = (off + 1, 1, kept.iter().peekable());
+            while gid < n_glyphs {
+                if pos + need > cff.len() {
+                    return Err(Error::owned(
+                        crate::daecore::ErrorKind::Malformed,
+                        format!("CFF charset format {format}: truncated"),
+                    ));
                 }
+                let first = read_u16_be(cff, pos).unwrap_or(0);
+                let n_left = match format {
+                    1 => usize::from(cff[pos + 2]),
+                    _ => usize::from(read_u16_be(cff, pos + 2).unwrap_or(0)),
+                };
+                pos += need;
+                let span = n_left + 1;
+                while let Some(g) = next.next_if(|&&g| (g as usize) < gid + span) {
+                    out.push(first.wrapping_add(((*g) as usize - gid) as u16));
+                }
+                gid += span;
             }
-            _ => {}
         }
-        DictFlow::Continue
-    });
-    (priv_size, priv_off, font_matrix_raw)
+        format => {
+            return Err(Error::owned(
+                crate::daecore::ErrorKind::Unsupported,
+                format!("CFF charset: unknown format {format}"),
+            ));
+        }
+    }
+    Ok(out)
+}
+
+pub fn parse_charset_sids(cff: &[u8], off: usize, n_glyphs: usize) -> Result<usize, Error> {
+    walk_charset(cff, off, n_glyphs, |_, _| {})
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use super::super::build::encode_cff_index;
-
-    // An INDEX's end from its last offset is where reading every object ends, for each offSize.
-    #[test]
-    fn an_index_ends_where_its_objects_do() {
-        for len in [0, 10, 300, 70_000] {
-            let mut data = vec![7u8; 3];
-            data.extend(encode_cff_index(&[vec![1; len], vec![2; 5]]).expect("an INDEX"));
-            data.extend([9; 4]);
-            let end = cff_index_spans(&data, 3, false).expect("it parses").1;
-            assert_eq!(cff_index_end(&data, 3, false), Ok(end));
-            assert!(cff_index_end(&data[..end - 1], 3, false).is_err());
-        }
-        assert_eq!(cff_index_end(&[0, 0, 0, 0], 0, true), Ok(4));
-    }
-}
+#[path = "../../../../tests/unit/daetype/subsetter/cff/parse.rs"]
+mod tests;

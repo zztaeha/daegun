@@ -1,22 +1,35 @@
-use alloc::string::String;
+#[cfg(all(not(feature = "std"), not(test)))]
+use crate::daecore::daekit::float::FloatExt;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 use super::decoder::{read_u16_be, read_u32_be, records_fit, search_records};
-use crate::daecore::daetype::TableBytes;
+#[cfg(test)]
+use super::decoder::num_glyphs;
+use crate::daecore::daekit::draw::Rgba;
+use crate::daecore::daetype::Tables;
+use crate::daecore::{GlyphId, NameId};
 
-pub type ColrLayer = (u16, u8, u8, u8, u8, bool);
+/// One layer of a COLR version 0 glyph, drawn back to front: a glyph's outline filled with one color. Laid out as C
+/// reads it.
+#[non_exhaustive]
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ColrLayer {
+    /// The glyph whose outline the layer fills.
+    pub glyph: GlyphId,
+    /// The palette's color; for a foreground layer, black at the alpha the text's color is drawn at.
+    pub color: Rgba,
+    /// Whether the layer takes the text's color in place of `color`.
+    pub foreground: bool,
+}
 
-fn colr_base_glyph_layers(colr: &[u8], gid: u16) -> Option<(usize, usize, usize)> {
-    let n_base     = read_u16_be(colr, 2)? as usize;
-    let base_off   = read_u32_be(colr, 4)? as usize;
-    let layers_off = read_u32_be(colr, 8)? as usize;
-
-    let at = |i: usize| base_off.checked_add(i * 6);
-    let hit = search_records(n_base, gid as u32, |i| read_u16_be(colr, at(i)?).map(u32::from))?.ok()?;
-    let rec = at(hit)?;
-    let first_layer = read_u16_be(colr, rec + 2)? as usize;
-    let n_layers    = read_u16_be(colr, rec + 4)? as usize;
-    Some((first_layer, n_layers, layers_off))
+// A base glyph's layer records, found by a binary search of the base records the spec sorts: none for a glyph without
+// a record, or where the records' count leaves the table, which makes the array absent.
+pub(crate) fn base_glyph_layers(colr: &[u8], gid: u32) -> Option<&[[u8; 4]]> {
+    let (n_base, base_off, ..) = colr_v0_header(colr)?;
+    let records = colr.get(base_off..)?.as_chunks::<6>().0.get(..n_base)?;
+    let word = |r: &[u8; 6], at: usize| u16::from_be_bytes([r[at], r[at + 1]]);
+    let rec = &records[search_records(n_base, gid, |i| Some(word(&records[i], 0).into()))?.ok()?];
+    layer_run(colr, word(rec, 2).into(), word(rec, 4).into())
 }
 
 pub(crate) fn colr_v0_header(colr: &[u8]) -> Option<(usize, usize, usize, usize)> {
@@ -27,6 +40,17 @@ pub(crate) fn colr_v0_header(colr: &[u8]) -> Option<(usize, usize, usize, usize)
     Some((n_base, base_off, layers_off, n_layers))
 }
 
+// A base glyph's run of `n` layer records from `first`: absent unless the whole run lies within the table's layer
+// records, whose later bytes may be version 1 data, and within the table.
+pub(crate) fn layer_run(colr: &[u8], first: usize, n: usize) -> Option<&[[u8; 4]]> {
+    let (_, _, layers_off, n_layer_records) = colr_v0_header(colr)?;
+    if first.checked_add(n)? > n_layer_records {
+        return None;
+    }
+    colr.get(layers_off..)?.as_chunks::<4>().0.get(first..first + n)
+}
+
+// Each base record, as its glyph, first layer and layer count; none where the records' count leaves the table.
 pub(crate) fn colr_v0_base_glyphs(colr: &[u8]) -> Vec<(u16, usize, usize)> {
     let Some((n_base, base_off, _, _)) = colr_v0_header(colr) else { return vec![] };
     if !records_fit(base_off, n_base, 6, colr.len()) { return vec![] }
@@ -41,60 +65,87 @@ pub(crate) fn colr_v0_base_glyphs(colr: &[u8]) -> Vec<(u16, usize, usize)> {
     out
 }
 
-pub fn cpal_palette_count(table_map: &BTreeMap<String, TableBytes>) -> u16 {
+#[cfg(test)]
+pub fn cpal_palette_count(table_map: &Tables) -> u16 {
     table_map.get("CPAL").and_then(|cpal| read_u16_be(cpal, 4)).unwrap_or(0)
 }
 
-#[derive(Debug, PartialEq)]
-pub struct PaletteInfo {
+/// One CPAL palette, as a picker lists it.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[doc(alias("PaletteInfo"))]
+pub struct Palette {
+    /// Its index, the `palette` argument that selects it.
     pub index:      u16,
+    /// Whether the font marks it as readable on a light background.
     pub light_safe: bool,
+    /// Whether the font marks it as readable on a dark background.
     pub dark_safe:  bool,
-    pub name_id:    Option<u16>,
+    /// Its name's ID in the name table; None where the font names it nothing.
+    pub name_id:    Option<NameId>,
 }
 
-pub fn cpal_palette_info(table_map: &BTreeMap<String, TableBytes>) -> Vec<PaletteInfo> {
-    let cpal = match table_map.get("CPAL") { Some(c) => c, None => return vec![] };
-    let version      = read_u16_be(cpal, 0).unwrap_or(0);
-    let num_palettes = match read_u16_be(cpal, 4) { Some(v) => v, None => return vec![] };
+// CPAL's version 1 arrays, which later versions hold too: palette types, palette labels and entry labels, each an
+// offset or 0 for none, their records read where they fit.
+pub(crate) struct CpalV1<'a> {
+    cpal: &'a [u8],
+    pub(crate) types: usize,
+    pub(crate) labels: usize,
+    pub(crate) entry_labels: usize,
+}
 
-    if version == 0 {
-        return (0..num_palettes)
-            .map(|i| PaletteInfo { index: i, light_safe: false, dark_safe: false, name_id: None })
-            .collect();
+impl<'a> CpalV1<'a> {
+    pub(crate) fn read(cpal: &'a [u8]) -> Option<Self> {
+        if read_u16_be(cpal, 0)? == 0 {
+            return None;
+        }
+        let tail = 12 + 2 * usize::from(read_u16_be(cpal, 4)?);
+        let offset = |k: usize| read_u32_be(cpal, tail + k).map_or(0, |o| o as usize);
+        Some(CpalV1 { cpal, types: offset(0), labels: offset(4), entry_labels: offset(8) })
     }
 
-    let v1_off     = 12 + num_palettes as usize * 2;
-    let types_off  = read_u32_be(cpal, v1_off).map(|v| v as usize);
-    let labels_off = read_u32_be(cpal, v1_off + 4).map(|v| v as usize);
+    fn record(array: usize, size: usize, i: usize) -> Option<usize> {
+        array.checked_add(size * i).filter(|_| array != 0)
+    }
 
-    (0..num_palettes).map(|i| {
-        let (light_safe, dark_safe) = match types_off {
-            Some(off) if off != 0 => {
-                let flags = read_u32_be(cpal, off + i as usize * 4).unwrap_or(0);
-                (flags & 0x0001 != 0, flags & 0x0002 != 0)
-            }
-            _ => (false, false),
-        };
-        let name_id = match labels_off {
-            Some(off) if off != 0 => read_u16_be(cpal, off + i as usize * 2).filter(|&v| v != 0xFFFF),
-            _ => None,
-        };
-        PaletteInfo { index: i, light_safe, dark_safe, name_id }
-    }).collect()
+    fn palette_type(&self, i: usize) -> u32 {
+        Self::record(self.types, 4, i).and_then(|at| read_u32_be(self.cpal, at)).unwrap_or(0)
+    }
+
+    // The name ID at `i` in the label array at `array`, None where the font gives none.
+    pub(crate) fn label(&self, array: usize, i: usize) -> Option<NameId> {
+        read_u16_be(self.cpal, Self::record(array, 2, i)?).filter(|&id| id != 0xFFFF).map(NameId)
+    }
 }
 
-// Each palette entry's name ID from a version 1 CPAL, for a picker to label the colors a palette
-// sets; None for an entry without one, and nothing for a version 0 table or one with no labels.
-pub fn cpal_palette_entry_labels(table_map: &BTreeMap<String, TableBytes>) -> Vec<Option<u16>> {
+// Each palette CPAL's bytes hold, none for no bytes, one at a time so C writes them into its caller's buffer.
+pub fn cpal_palettes(cpal: &[u8]) -> impl ExactSizeIterator<Item = Palette> + '_ {
+    let v1 = CpalV1::read(cpal);
+    (0..read_u16_be(cpal, 4).unwrap_or(0)).map(move |index| {
+        let i = usize::from(index);
+        let flags = v1.as_ref().map_or(0, |v1| v1.palette_type(i));
+        let name_id = v1.as_ref().and_then(|v1| v1.label(v1.labels, i));
+        Palette { index, light_safe: flags & 0x0001 != 0, dark_safe: flags & 0x0002 != 0, name_id }
+    })
+}
+
+// Each palette entry's name ID, for a picker to label the colors a palette sets; None for an entry
+// without one, and nothing for a version 0 table or one with no labels.
+pub fn cpal_palette_entry_labels(table_map: &Tables) -> Vec<Option<NameId>> {
     let Some(cpal) = table_map.get("CPAL") else { return vec![] };
-    let (Some(1), Some(n_entries), Some(num_palettes)) = (read_u16_be(cpal, 0), read_u16_be(cpal, 2), read_u16_be(cpal, 4)) else {
+    let (Some(v1), Some(n_entries)) = (CpalV1::read(cpal), read_u16_be(cpal, 2)) else { return vec![] };
+    if v1.entry_labels == 0 {
         return vec![];
-    };
-    let at = 12 + usize::from(num_palettes) * 2 + 8;
-    let Some(labels) = read_u32_be(cpal, at).filter(|&v| v != 0).map(|v| v as usize) else { return vec![] };
-    if !records_fit(labels, usize::from(n_entries), 2, cpal.len()) { return vec![] }
-    (0..usize::from(n_entries)).map(|i| read_u16_be(cpal, labels + i * 2).filter(|&v| v != 0xFFFF)).collect()
+    }
+    (0..usize::from(n_entries)).map(|i| v1.label(v1.entry_labels, i)).collect()
+}
+
+// A palette's colors in entry order, stopping at an entry past the table's color records; an index past the
+// font's palettes reads palette 0, as drawing does.
+pub(crate) fn cpal_palette_colors(cpal: &[u8], palette: u16) -> Vec<Rgba> {
+    let Some(chosen) = CpalPalette::new(cpal, palette) else { return Vec::new() };
+    let entries = u16::try_from(chosen.n_entries).unwrap_or(u16::MAX);
+    (0..entries).map_while(|i| chosen.entry(cpal, i)).map(|(r, g, b, a)| Rgba { r, g, b, a }).collect()
 }
 
 #[derive(Clone, Copy)]
@@ -106,13 +157,18 @@ pub(crate) struct CpalPalette {
 }
 
 impl CpalPalette {
+    // An index past the font's palettes reads palette 0, the default, as CSS's base-palette does; so does one whose
+    // entries run past the color records, where such a palette can't be selected.
     pub(crate) fn new(cpal: &[u8], palette_index: u16) -> Option<CpalPalette> {
         let n_entries    = read_u16_be(cpal, 2)? as usize;
         let num_palettes = read_u16_be(cpal, 4)? as usize;
         let n_records    = read_u16_be(cpal, 6)? as usize;
-        if palette_index as usize >= num_palettes { return None; }
+        if num_palettes == 0 { return None; }
+        let start = |i: usize| read_u16_be(cpal, 12 + i * 2).map(usize::from);
+        let index = usize::from(palette_index);
+        let chosen = start(index).filter(|&s| index < num_palettes && s + n_entries <= n_records);
         let records_off = read_u32_be(cpal, 8)? as usize;
-        let pal_start   = read_u16_be(cpal, 12 + palette_index as usize * 2)? as usize;
+        let pal_start   = chosen.or_else(|| start(0))?;
         Some(CpalPalette { records_off, pal_start, n_entries, n_records })
     }
 
@@ -130,95 +186,58 @@ impl CpalPalette {
     }
 }
 
-pub fn colr_layers_for_palette(
-    table_map: &BTreeMap<String, TableBytes>, gid: u16, palette_index: u16,
-) -> Option<Vec<ColrLayer>> {
-    let colr = table_map.get("COLR")?;
-    let cpal = table_map.get("CPAL")?;
-
-    let (first_layer, n_layers, layers_off) = colr_base_glyph_layers(colr, gid)?;
-    let num_palettes = read_u16_be(cpal, 4)?;
-    if palette_index >= num_palettes { return None; }
-
-    // The run ends within the layer records, not merely within the table, whose later bytes are
-    // version 1 data.
-    let n_layer_records = read_u16_be(colr, 12)? as usize;
-    if first_layer + n_layers > n_layer_records { return None; }
-    if !records_fit(layers_off.checked_add(first_layer * 4)?, n_layers, 4, colr.len()) { return None; }
-    let palette = CpalPalette::new(cpal, palette_index)?;
-    let mut out = Vec::with_capacity(n_layers);
-    for l in 0..n_layers {
-        let rec = layers_off + (first_layer + l) * 4;
-        let layer_gid = read_u16_be(colr, rec)?;
-        let pal_idx   = read_u16_be(colr, rec + 2)?;
-        // The one index CPAL cannot resolve: it means "whatever color the text is", which is the
-        // caller's to supply – hence a flag on the layer rather than a color.
-        if pal_idx == 0xFFFF {
-            out.push((layer_gid, 0, 0, 0, 255, true));
-            continue;
-        }
-        let (r, g, b, a) = palette.entry(cpal, pal_idx)?;
-        out.push((layer_gid, r, g, b, a, false));
+// The color a palette index names with `alpha`, 0 to 1, applied to the entry's own: the exact product, rounded once
+// to a byte. 0xFFFF is the text's color, the caller's, so it is flagged true, black at that alpha.
+pub(crate) fn palette_color(palette: Option<(&[u8], &CpalPalette)>, index: u16, alpha: f64) -> Option<(Rgba, bool)> {
+    let byte = |of: u8| (alpha.clamp(0.0, 1.0) * f64::from(of)).round() as u8;
+    if index == 0xFFFF {
+        return Some((Rgba { r: 0, g: 0, b: 0, a: byte(255) }, true));
     }
-    Some(out)
+    let (cpal, palette) = palette?;
+    let (r, g, b, a) = palette.entry(cpal, index)?;
+    Some((Rgba { r, g, b, a: byte(a) }, false))
 }
 
-pub fn colr_layers(table_map: &BTreeMap<String, TableBytes>, gid: u16) -> Option<Vec<ColrLayer>> {
+// Drawn as `drawn_layers`, with maxp's count of glyphs; a map without maxp limits none.
+#[cfg(test)]
+pub fn colr_layers_for_palette(
+    table_map: &Tables, gid: u32, palette_index: u16,
+) -> Option<Vec<ColrLayer>> {
+    drawn_layers(table_map, gid, palette_index, num_glyphs(table_map).unwrap_or(u16::MAX.into()))
+}
+
+// A base glyph's layers as a font of `glyphs` is drawn: a run of at least one layer, those naming a glyph past the
+// font's or a color past the palette absent. None for no layer or a base past the font.
+pub(crate) fn drawn_layers(
+    table_map: &Tables, gid: u32, palette_index: u16, glyphs: u32,
+) -> Option<Vec<ColrLayer>> {
+    let drawn: Vec<ColrLayer> = each_drawn_layer(table_map, gid, palette_index, glyphs)?.collect();
+    (!drawn.is_empty()).then_some(drawn)
+}
+
+// The same one at a time, as a scene draws them; None where the glyph has no run of layers to read.
+pub(crate) fn each_drawn_layer(
+    table_map: &Tables, gid: u32, palette_index: u16, glyphs: u32,
+) -> Option<impl Iterator<Item = ColrLayer> + '_> {
+    if gid >= glyphs {
+        return None;
+    }
+    let colr = table_map.get("COLR")?;
+    let cpal = table_map.get("CPAL")?;
+    let layers = base_glyph_layers(colr, gid)?;
+    let palette = CpalPalette::new(cpal, palette_index)?;
+    Some(layers.iter().filter_map(move |&[g0, g1, p0, p1]| {
+        let glyph = Some(u32::from(u16::from_be_bytes([g0, g1]))).filter(|&g| g < glyphs)?;
+        let (color, foreground) = palette_color(Some((cpal, &palette)), u16::from_be_bytes([p0, p1]), 1.0)?;
+        Some(ColrLayer { glyph: GlyphId(glyph), color, foreground })
+    }))
+}
+
+#[cfg(test)]
+pub fn colr_layers(table_map: &Tables, gid: u32) -> Option<Vec<ColrLayer>> {
     colr_layers_for_palette(table_map, gid, 0)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // A CPAL of 2 entries a palette, palettes starting at `starts`, `records` colors and, after
-    // them, bytes that are not colors; version 1 with these entry labels when given.
-    fn cpal(starts: &[u16], records: u16, labels: Option<&[u16]>) -> Vec<u8> {
-        let v1 = labels.is_some();
-        let header = 12 + 2 * starts.len() + if v1 { 12 } else { 0 };
-        let mut out = [u16::from(v1), 2, starts.len() as u16, records].map(u16::to_be_bytes).concat();
-        out.extend((header as u32).to_be_bytes());
-        starts.iter().for_each(|s| out.extend(s.to_be_bytes()));
-        let labels_at = header + 4 * usize::from(records) + 4;
-        if v1 {
-            out.extend([0u32, 0, labels_at as u32].map(u32::to_be_bytes).concat());
-        }
-        for i in 0..records {
-            out.extend([i as u8, 0, 0, 255]);
-        }
-        out.extend([0xAB; 4]);
-        labels.unwrap_or_default().iter().for_each(|l| out.extend(l.to_be_bytes()));
-        out
-    }
-
-    // Palette 1 starts at record 2 of 3: its second entry would be the bytes after the records.
-    #[test]
-    fn an_entry_past_the_color_records_is_refused() {
-        let table = cpal(&[0, 2], 3, None);
-        let palette = CpalPalette::new(&table, 1).expect("palette 1");
-        assert_eq!(palette.entry(&table, 0), Some((0, 0, 2, 255)));
-        assert_eq!(palette.entry(&table, 1), None);
-    }
-
-    // A base glyph naming two layers when the table holds one: the second would be the bytes after.
-    #[test]
-    fn a_layer_run_past_the_layer_records_is_refused() {
-        let mut colr = [0u16, 1].map(u16::to_be_bytes).concat();
-        colr.extend([14u32, 20].map(u32::to_be_bytes).concat());
-        colr.extend(1u16.to_be_bytes());
-        colr.extend([5u16, 0, 2].map(u16::to_be_bytes).concat());
-        colr.extend([7u16, 0, 8, 0].map(u16::to_be_bytes).concat());
-        let map: BTreeMap<String, TableBytes> =
-            [("COLR", colr), ("CPAL", cpal(&[0], 2, None))].into_iter().map(|(t, b)| (String::from(t), TableBytes::from(b))).collect();
-        assert_eq!(colr_layers(&map, 5), None);
-    }
-
-    #[test]
-    fn palette_entries_have_their_labels() {
-        let map: BTreeMap<String, TableBytes> =
-            [(String::from("CPAL"), TableBytes::from(cpal(&[0], 2, Some(&[300, 0xFFFF]))))].into_iter().collect();
-        assert_eq!(cpal_palette_entry_labels(&map), [Some(300), None]);
-        let map: BTreeMap<String, TableBytes> = [(String::from("CPAL"), TableBytes::from(cpal(&[0], 2, None)))].into_iter().collect();
-        assert!(cpal_palette_entry_labels(&map).is_empty(), "a version 0 table labels nothing");
-    }
-}
+#[path = "../../tests/unit/daetype/colr_v0.rs"]
+mod tests;

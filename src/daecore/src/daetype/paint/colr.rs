@@ -1,243 +1,480 @@
-use alloc::vec::Vec;
-
-use crate::daecore::daetype::colr_v1::{rotate_matrix, scale_matrix, skew_matrix, ColorStop, Paint as Colr};
-use super::{
-    resolve_stops, Blend, ClipShape, DisplayList, Extend, Gradient, GradientKind, Op, Paint, PathId,
-    Rgba, Stop, Stops,
-};
+use crate::daecore::daetype::colr_v1::{ColorStop, Graph, Node, PaintGraph, Shape, Tree, Walk};
+use super::{Blend, ClipShape, DisplayList, Extend, GradientKind, Mark, Op, Paint, PathId, Rgba, Stop};
 use crate::daecore::daetype::outline::{FillRule, OutlinePen, Path};
-use crate::daecore::daemachine::daemath::matrix::{concat, Matrix, IDENTITY};
-use crate::daecore::daemachine::daemath::normalize_color_line;
+use crate::daecore::daekit::draw::matrix::{concat, transform_box, Matrix, IDENTITY};
+use crate::daecore::daekit::draw::{normalize_color_line, resolve_in_place, Resolved};
+use crate::daecore::{Bounds, GlyphId};
 
-// A level opens at most two layers (a composite), and only these 64 levels are lowered, so a scene nests
-// at most 128 deep, as the header promises, whatever graph it is handed.
+// A level opens at most two layers (a composite), and only these 64 levels are lowered, so a scene nests at most 128
+// deep, as the header promises: the depth a paint graph is walked to.
 const MAX_DEPTH: usize = 64;
 
-// Lowers a color glyph into `out`, clipped to its clip box if any. False, writing nothing, for a
-// glyph the spec says not to draw: an unbounded graph with no clip box.
+// Adds glyph `g`'s outline to the list once: None where it has none or draws nothing.
+type Outline<'a> = dyn FnMut(u32, &mut DisplayList) -> Option<PathId> + 'a;
+
+/// Lowers color glyph `glyph`'s graph into `out` under `ctm`, it and each color glyph it names clipped to its
+/// `clip_box`, as [`Font::color_scene`](crate::Font::color_scene) does. `outline` draws a glyph's outline, false
+/// where it can't. False, writing nothing, for a glyph the spec says not to draw: unbounded, with no clip box.
 pub fn lower(
-    paint: &Colr,
+    glyph: GlyphId,
+    graph: &PaintGraph,
     ctm: Matrix,
-    clip_box: Option<[i32; 4]>,
-    outline: &mut dyn FnMut(u16) -> Option<Path>,
+    clip_box: &dyn Fn(GlyphId) -> Option<Bounds>,
+    outline: &mut dyn FnMut(GlyphId, &mut dyn OutlinePen) -> bool,
     foreground: Rgba,
     out: &mut DisplayList,
 ) -> bool {
-    if clip_box.is_none() && !bounded(paint, 0) {
-        return false;
+    let clip_box = |g| clip_box(GlyphId(g));
+    let outline = &mut |g, out: &mut DisplayList| out.draw_path(|pen| outline(GlyphId(g), pen));
+    lower_graph(glyph.0, &mut Tree::new(graph), Tree::ROOT, ctm, &clip_box, outline, foreground, out)
+}
+
+// As `lower`, from the tree; `outline` adds a glyph's outline to the list itself.
+pub(crate) fn lower_tree(
+    glyph_id: u32,
+    paint: &PaintGraph,
+    clip_box: &dyn Fn(u32) -> Option<Bounds>,
+    outline: &mut Outline<'_>,
+    foreground: Rgba,
+    out: &mut DisplayList,
+) -> bool {
+    lower_graph(glyph_id, &mut Tree::new(paint), Tree::ROOT, IDENTITY, clip_box, outline, foreground, out)
+}
+
+// As `lower_tree`, reading the graph in place from its root at `root`; false for a root that doesn't read. None where
+// the walk ran out of budget or met an unbounded glyph, as what it left out follows a tree's order: lower the tree.
+pub(crate) fn lower_walk(
+    glyph_id: u32,
+    walk: &mut Walk,
+    root: usize,
+    clip_box: &dyn Fn(u32) -> Option<Bounds>,
+    outline: &mut Outline<'_>,
+    foreground: Rgba,
+    out: &mut DisplayList,
+) -> Option<bool> {
+    // A root that doesn't read is a color glyph that draws nothing, as any paint that doesn't read lowers.
+    let layers = walk.reads(root).unwrap_or(0);
+    // About a fill and an outline a layer, and the clip box's two ops and path. Half of Noto Color Emoji's scenes
+    // draw no more than 28 verbs and 48 points a path so counted.
+    let paths = layers + 1;
+    out.reserve(layers + 2, paths, 32 * paths, 48 * paths);
+    let drawn = lower_graph(glyph_id, walk, Some(root), IDENTITY, clip_box, outline, foreground, out);
+    (drawn && !walk.exhausted()).then_some(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_graph<G: Graph>(
+    glyph_id: u32,
+    graph: &mut G,
+    root: G::Child,
+    ctm: Matrix,
+    clip_box: &dyn Fn(u32) -> Option<Bounds>,
+    outline: &mut Outline<'_>,
+    foreground: Rgba,
+    out: &mut DisplayList,
+) -> bool {
+    let own = clip_box(glyph_id);
+    if own.is_none() {
+        if !bounded(graph, root, clip_box, 0) {
+            return false;
+        }
+        graph.restart();
     }
-    let mark = out.ops().len();
-    let mut l = Lowering { outline, fg: foreground, out, interned: Interned::new(), region: None };
-    match clip_box {
+    let mark = out.mark();
+    let mut l = Lowering {
+        graph, outline, clip_box, fg: foreground, out, interned: Interned::new(), boxes: Interned::new(), region: None,
+    };
+    match own {
         Some(b) => {
-            let rect = l.out.push_path(rectangle([b[0], b[1], b[2], b[3]].map(f64::from)));
+            let rect = l.out.add_path(|pen| rectangle(pen, b.corners()));
             l.region = Some((rect, ctm, false));
-            l.out.push(Op::PushClip { shapes: alloc::vec![ClipShape { path: rect, rule: FillRule::NonZero, transform: ctm }] });
-            l.lower_at(paint, ctm, None, 0);
-            l.out.push(Op::PopClip);
-            if !l.out.ops()[mark..].iter().any(|o| matches!(o, Op::Fill { .. })) {
-                l.out.truncate(mark);
-            }
+            l.push_clip(rect, ctm);
+            l.lower_at(root, ctm, None, 0);
+            l.pop_clip(mark);
         }
         None => {
-            l.lower_at(paint, ctm, None, 0);
+            l.lower_at(root, ctm, None, 0);
             // A fill outside every glyph lowers into an empty path, made here a rectangle around all the
             // glyph's bounded content, which holds whatever such a fill can show in a bounded graph.
-            if let Some((region, _, true)) = l.region {
-                let bounds = content_bounds(l.out, mark, region);
-                if let (Some(b), Some(path)) = (bounds, l.out.path_mut(region)) {
-                    *path = rectangle(b);
-                }
+            if let Some((region, _, true)) = l.region
+                && let Some(b) = content_bounds(l.out, mark, region)
+            {
+                l.out.redraw_path(region, |pen| rectangle(pen, b));
             }
         }
     }
     true
 }
 
-// Keyed rather than searched: a paint graph can name tens of thousands of glyphs.
-type Interned = alloc::collections::BTreeMap<u16, Option<PathId>>;
+// Each glyph's path, made once. Searched while a scene names few glyphs, as most name a few dozen, and keyed past
+// that: a paint graph can name tens of thousands.
+pub(crate) struct Interned {
+    len: usize,
+    glyphs: [u32; FEW],
+    paths: [Option<PathId>; FEW],
+    many: alloc::collections::BTreeMap<u32, Option<PathId>>,
+}
 
-struct Lowering<'a> {
-    outline: &'a mut dyn FnMut(u16) -> Option<Path>,
+const FEW: usize = 64;
+
+impl Interned {
+    pub(crate) fn new() -> Self {
+        Interned { len: 0, glyphs: [0; FEW], paths: [None; FEW], many: alloc::collections::BTreeMap::new() }
+    }
+
+    pub(crate) fn get(&self, gid: u32) -> Option<Option<PathId>> {
+        match self.glyphs[..self.len].iter().position(|&g| g == gid) {
+            Some(i) => Some(self.paths[i]),
+            None => self.many.get(&gid).copied(),
+        }
+    }
+
+    pub(crate) fn insert(&mut self, gid: u32, path: Option<PathId>) {
+        if self.len < FEW {
+            (self.glyphs[self.len], self.paths[self.len]) = (gid, path);
+            self.len += 1;
+        } else {
+            self.many.insert(gid, path);
+        }
+    }
+}
+
+struct Lowering<'a, G: Graph> {
+    graph: &'a mut G,
+    outline: &'a mut Outline<'a>,
+    clip_box: &'a dyn Fn(u32) -> Option<Bounds>,
     fg: Rgba,
     out: &'a mut DisplayList,
     interned: Interned,
+    // Each referenced color glyph's clip box as a path, held once as outlines are.
+    boxes: Interned,
     // Where a fill outside every PaintGlyph goes: the clip box, or a rectangle worked out at the end
     // (the flag), with the transform it is drawn under.
     region: Option<(PathId, Matrix, bool)>,
 }
 
-impl Lowering<'_> {
-    fn path(&mut self, gid: u16) -> Option<PathId> {
-        if let Some(&id) = self.interned.get(&gid) {
+impl<G: Graph> Lowering<'_, G> {
+    fn path(&mut self, gid: u32) -> Option<PathId> {
+        if let Some(id) = self.interned.get(gid) {
             return id;
         }
-        let id = match (self.outline)(gid) {
-            Some(path) if !path.is_empty() => Some(self.out.push_path(path)),
-            _ => None,
-        };
+        let id = (self.outline)(gid, self.out);
         self.interned.insert(gid, id);
         id
     }
 
+    fn clip_path(&mut self, gid: u32) -> Option<PathId> {
+        if let Some(id) = self.boxes.get(gid) {
+            return id;
+        }
+        let id = (self.clip_box)(gid).map(|b| self.out.add_path(|pen| rectangle(pen, b.corners())));
+        self.boxes.insert(gid, id);
+        id
+    }
+
+    fn push_clip(&mut self, path: PathId, transform: Matrix) {
+        let shapes = self.out.push_shapes(&[ClipShape { path, rule: FillRule::NonZero, transform }]);
+        self.out.push(Op::PushClip { shapes });
+    }
+
+    // Closes the clip opened at `mark`, and takes it out where nothing inside it is filled.
+    fn pop_clip(&mut self, mark: Mark) {
+        if self.out.ops()[mark.ops..].iter().any(|o| matches!(o, Op::Fill { .. })) {
+            self.out.push(Op::PopClip);
+        } else {
+            self.out.truncate(mark);
+        }
+    }
+
     // `clip` is the innermost PaintGlyph around this paint, with the transform its outline is under:
     // a fill below it fills that outline.
-    fn lower_at(&mut self, paint: &Colr, ctm: Matrix, clip: Option<(PathId, Matrix)>, depth: usize) {
+    fn lower_at(&mut self, at: G::Child, ctm: Matrix, clip: Option<(PathId, Matrix)>, depth: usize) {
         if depth >= MAX_DEPTH {
-            return;
+            return self.graph.skip(at);
         }
-        if let Some((child, m)) = transform_of(paint) {
-            return self.lower_at(child, concat(&m, &ctm), clip, depth + 1);
-        }
-        match paint {
-            Colr::Layers(children) => {
-                for c in children {
-                    self.lower_at(c, ctm, clip, depth + 1);
+        let Some(node) = self.graph.open(at) else { return };
+        let paint = leaf(&node, self.fg, ctm, self.out);
+        let shape = node.shape();
+        self.lower_shape(shape, paint, ctm, clip, depth);
+        self.graph.close();
+    }
+
+    // `paint` is what a fill paints, None for one that paints nothing.
+    fn lower_shape(
+        &mut self,
+        shape: Shape<G::Child, G::Layers>,
+        paint: Option<Paint>,
+        ctm: Matrix,
+        clip: Option<(PathId, Matrix)>,
+        depth: usize,
+    ) {
+        match shape {
+            Shape::Transform(child, m) => self.lower_at(child, concat(&m, &ctm), clip, depth + 1),
+
+            Shape::Layers(layers) => {
+                for layer in self.graph.layers(layers) {
+                    self.lower_at(layer, ctm, clip, depth + 1);
                 }
             }
 
-            Colr::Glyph { child, glyph_id } => {
-                let Some(path) = self.path(*glyph_id) else { return };
-                // A fill under transforms alone fills the outline directly, the fill carrying them.
-                let (mut node, mut node_ctm) = (&**child, ctm);
-                while let Some((c, m)) = transform_of(node) {
-                    (node, node_ctm) = (c, concat(&m, &node_ctm));
-                }
-                if let Some(p) = leaf(node, self.fg, node_ctm) {
-                    self.out.push(Op::Fill { path, paint: p, rule: FillRule::NonZero, transform: ctm });
-                    return;
-                }
-                let mark = self.out.ops().len();
-                self.out.push(Op::PushClip {
-                    shapes: alloc::vec![ClipShape { path, rule: FillRule::NonZero, transform: ctm }],
-                });
-                self.lower_at(child, ctm, Some((path, ctm)), depth + 1);
-                self.out.push(Op::PopClip);
-                if !self.out.ops()[mark..].iter().any(|o| matches!(o, Op::Fill { .. })) {
-                    self.out.truncate(mark);
-                }
+            Shape::Glyph(child, glyph_id) => self.lower_glyph(child, glyph_id, ctm, depth),
+
+            Shape::ColrGlyph(child, glyph_id) => {
+                let Some(rect) = self.clip_path(glyph_id) else { return self.lower_at(child, ctm, clip, depth + 1) };
+                let mark = self.out.mark();
+                self.push_clip(rect, ctm);
+                self.lower_at(child, ctm, clip, depth + 1);
+                self.pop_clip(mark);
             }
 
-            Colr::ColrGlyph { child, .. } => self.lower_at(child, ctm, clip, depth + 1),
-
-            Colr::Composite { source, mode, backdrop } => {
-                let blend = Blend::from_colr(*mode);
-                let mark = self.out.ops().len();
+            Shape::Composite { source, mode: blend, backdrop } => {
+                let mark = self.out.mark();
                 self.out.push(Op::PushLayer { opacity: 1.0, blend: Blend::SrcOver });
                 self.lower_at(backdrop, ctm, clip, depth + 1);
 
                 // With one side empty the group is the other side as drawn or nothing, and needs no
                 // layer: what a scene draws outside a layer is laid on with SrcOver, which associates.
-                if self.out.ops().len() == mark + 1 {
+                if self.out.ops().len() == mark.ops + 1 {
                     self.out.truncate(mark);
                     if keeps_source(blend) {
                         self.lower_at(source, ctm, clip, depth + 1);
+                    } else {
+                        self.graph.skip(source);
                     }
                     return;
                 }
-                let inner = self.out.ops().len();
+                let inner = self.out.mark();
                 self.out.push(Op::PushLayer { opacity: 1.0, blend });
                 self.lower_at(source, ctm, clip, depth + 1);
-                if self.out.ops().len() == inner + 1 {
+                if self.out.ops().len() == inner.ops + 1 {
                     self.out.truncate(inner);
-                    if keeps_backdrop(blend) { self.out.remove(mark) } else { self.out.truncate(mark) }
+                    if keeps_backdrop(blend) { self.out.remove(mark.ops) } else { self.out.truncate(mark) }
                     return;
                 }
                 self.out.push(Op::PopLayer);
                 self.out.push(Op::PopLayer);
             }
 
-            _ => {
+            Shape::Fill => {
                 let target = match clip {
                     Some(c) => Some(c),
                     None => self.region(),
                 };
-                if let (Some((path, transform)), Some(p)) = (target, leaf(paint, self.fg, ctm)) {
+                if let (Some((path, transform)), Some(p)) = (target, paint) {
                     self.out.push(Op::Fill { path, paint: p, rule: FillRule::NonZero, transform });
                 }
             }
         }
     }
 
+    // A fill under transforms alone fills the outline directly, the fill carrying them; anything else under them is
+    // lowered clipped to the outline, from the paint the transforms lead to.
+    fn lower_glyph(&mut self, child: G::Child, glyph_id: u32, ctm: Matrix, depth: usize) {
+        let Some(path) = self.path(glyph_id) else { return self.graph.skip(child) };
+        let (mut at, mut node_ctm, mut node_depth, mut opened) = (child, ctm, depth + 1, 0);
+        let (shape, paint) = loop {
+            let Some(node) = self.graph.open(at) else { break (None, None) };
+            opened += 1;
+            match node.shape() {
+                Shape::Transform(c, m) => (at, node_ctm, node_depth) = (c, concat(&m, &node_ctm), node_depth + 1),
+                shape => break (Some(shape), leaf(&node, self.fg, node_ctm, self.out)),
+            }
+        };
+        if let Some(p) = paint {
+            self.out.push(Op::Fill { path, paint: p, rule: FillRule::NonZero, transform: ctm });
+        } else if let Some(shape) = shape.filter(|s| !matches!(s, Shape::Fill)) {
+            if node_depth < MAX_DEPTH {
+                let mark = self.out.mark();
+                self.push_clip(path, ctm);
+                self.lower_shape(shape, None, node_ctm, Some((path, ctm)), node_depth);
+                self.pop_clip(mark);
+            } else {
+                skip_below(self.graph, shape);
+            }
+        }
+        (0..opened).for_each(|_| self.graph.close());
+    }
+
     fn region(&mut self) -> Option<(PathId, Matrix)> {
         if self.region.is_none() {
-            self.region = Some((self.out.push_path(Path::default()), IDENTITY, true));
+            self.region = Some((self.out.push_path(Path::default().view()), IDENTITY, true));
         }
         self.region.map(|(path, m, _)| (path, m))
     }
 }
 
-// A transforming paint's child and its own transform, in the order `concat` takes them.
-fn transform_of(paint: &Colr) -> Option<(&Colr, Matrix)> {
-    Some(match paint {
-        Colr::Transform { child, matrix } => (child, *matrix),
-        Colr::Translate { child, dx, dy } => (child, [1.0, 0.0, 0.0, 1.0, *dx, *dy]),
-        Colr::Scale { child, sx, sy, center } => (child, scale_matrix(*sx, *sy, *center)),
-        Colr::ScaleUniform { child, s, center } => (child, scale_matrix(*s, *s, *center)),
-        Colr::Rotate { child, angle, center } => (child, rotate_matrix(*angle, *center)),
-        Colr::Skew { child, x_angle, y_angle, center } => (child, skew_matrix(*x_angle, *y_angle, *center)),
-        _ => return None,
-    })
+// Spends on the children of a paint already open what reading them would.
+fn skip_below<G: Graph>(graph: &mut G, shape: Shape<G::Child, G::Layers>) {
+    match shape {
+        Shape::Layers(layers) => graph.layers(layers).for_each(|layer| graph.skip(layer)),
+        Shape::Glyph(child, _) | Shape::ColrGlyph(child, _) | Shape::Transform(child, _) => graph.skip(child),
+        Shape::Composite { source, backdrop, .. } => {
+            graph.skip(source);
+            graph.skip(backdrop);
+        }
+        Shape::Fill => {}
+    }
 }
 
-// The spec's boundedness: an outline bounds what it clips, a fill bounds nothing, and a composite
-// is bounded by its operands as its mode lets it be. Past the lowered depth nothing is drawn.
-fn bounded(paint: &Colr, depth: usize) -> bool {
+// The spec's boundedness: an outline or a clip box bounds what it clips, a fill bounds nothing, and a
+// composite is bounded by its operands as its mode lets it be. Past the lowered depth nothing is drawn.
+fn bounded<G: Graph>(graph: &mut G, at: G::Child, clip_box: &dyn Fn(u32) -> Option<Bounds>, depth: usize) -> bool {
     if depth >= MAX_DEPTH {
         return true;
     }
-    if let Some((child, _)) = transform_of(paint) {
-        return bounded(child, depth + 1);
-    }
-    match paint {
-        Colr::Layers(children) => children.iter().all(|c| bounded(c, depth + 1)),
-        Colr::Glyph { .. } => true,
-        Colr::ColrGlyph { child, .. } => bounded(child, depth + 1),
-        Colr::Composite { source, mode, backdrop } => {
-            let source = || bounded(source, depth + 1);
-            let backdrop = || bounded(backdrop, depth + 1);
-            match Blend::from_colr(*mode) {
-                Blend::Clear => true,
-                Blend::Src | Blend::SrcOut => source(),
-                Blend::Dest | Blend::DestOut => backdrop(),
-                Blend::SrcIn | Blend::DestIn => source() || backdrop(),
-                _ => source() && backdrop(),
+    let Some(node) = graph.open(at) else { return true };
+    let bounded = match node.shape() {
+        Shape::Transform(child, _) => bounded(graph, child, clip_box, depth + 1),
+        Shape::Layers(layers) => graph.layers(layers).all(|layer| bounded(graph, layer, clip_box, depth + 1)),
+        Shape::Glyph(..) => true,
+        Shape::ColrGlyph(child, glyph_id) => clip_box(glyph_id).is_some() || bounded(graph, child, clip_box, depth + 1),
+        Shape::Composite { source, mode, backdrop } => match mode {
+            Blend::Clear => true,
+            Blend::Src | Blend::SrcOut => bounded(graph, source, clip_box, depth + 1),
+            Blend::Dest | Blend::DestOut => bounded(graph, backdrop, clip_box, depth + 1),
+            Blend::SrcIn | Blend::DestIn => {
+                bounded(graph, source, clip_box, depth + 1) || bounded(graph, backdrop, clip_box, depth + 1)
             }
-        }
-        _ => false,
-    }
+            _ => bounded(graph, source, clip_box, depth + 1) && bounded(graph, backdrop, clip_box, depth + 1),
+        },
+        Shape::Fill => false,
+    };
+    graph.close();
+    bounded
 }
 
 // The box around every outline drawn or clipped to since `mark`, other than `skip`, in the space
 // the ops' transforms place them in.
-fn content_bounds(out: &DisplayList, mark: usize, skip: PathId) -> Option<[f64; 4]> {
+fn content_bounds(out: &DisplayList, mark: Mark, skip: PathId) -> Option<[f64; 4]> {
     let mut acc: Option<[f64; 4]> = None;
     let mut add = |path: PathId, m: &Matrix| {
-        let Some((x0, y0, x1, y1)) = (path != skip).then(|| out.path(path)?.bounds()).flatten() else { return };
-        for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
-            let (px, py) = (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
-            let b = acc.get_or_insert([px, py, px, py]);
-            *b = [b[0].min(px), b[1].min(py), b[2].max(px), b[3].max(py)];
-        }
+        let Some(b) = (path != skip).then(|| out.path(path)?.bounds()).flatten() else { return };
+        let t = transform_box(m, [b.x_min, b.y_min, b.x_max, b.y_max]);
+        let b = acc.get_or_insert(t);
+        *b = [b[0].min(t[0]), b[1].min(t[1]), b[2].max(t[2]), b[3].max(t[3])];
     };
-    for op in &out.ops()[mark..] {
+    for op in &out.ops()[mark.ops..] {
         match op {
             Op::Fill { path, transform, .. } => add(*path, transform),
-            Op::PushClip { shapes } => shapes.iter().for_each(|s| add(s.path, &s.transform)),
+            Op::PushClip { shapes } => out.shapes(*shapes).iter().for_each(|s| add(s.path, &s.transform)),
             _ => {}
         }
     }
     acc
 }
 
-fn rectangle([x0, y0, x1, y1]: [f64; 4]) -> Path {
-    let mut p = Path::default();
-    p.move_to(x0 as f32, y0 as f32);
-    p.line_to(x1 as f32, y0 as f32);
-    p.line_to(x1 as f32, y1 as f32);
-    p.line_to(x0 as f32, y1 as f32);
-    p.close();
-    p
+// The box a color glyph paints in its own units: a fill covers the clips around it, carried as boxes through the
+// transforms, an outline its points' box and a color glyph its clip box. None where it paints nothing or isn't drawn.
+pub(crate) fn painted_box<G: Graph>(
+    graph: &mut G,
+    root: G::Child,
+    clip_box: &dyn Fn(u32) -> Option<[i32; 4]>,
+    outline_box: &mut dyn FnMut(u32) -> Option<[f64; 4]>,
+) -> Option<[f64; 4]> {
+    match (Covering { clip_box, outline_box }).cover(graph, root, IDENTITY, Cover::Everywhere, 0) {
+        Cover::Within(b) => Some(b),
+        Cover::Everywhere | Cover::Nothing => None,
+    }
+}
+
+// The box around these outlines' points: a COLR version 0 glyph's, whose layers each fill their outline.
+pub fn layers_box(
+    glyphs: impl Iterator<Item = u32>, outline_box: &mut dyn FnMut(u32) -> Option<[f64; 4]>,
+) -> Option<[f64; 4]> {
+    match glyphs.fold(Cover::Nothing, |acc, g| acc.union(outline_box(g).map_or(Cover::Nothing, Cover::of))) {
+        Cover::Within(b) => Some(b),
+        Cover::Everywhere | Cover::Nothing => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Cover {
+    Everywhere,
+    Within([f64; 4]),
+    Nothing,
+}
+
+impl Cover {
+    fn of([x0, y0, x1, y1]: [f64; 4]) -> Cover {
+        if x0 < x1 && y0 < y1 { Cover::Within([x0, y0, x1, y1]) } else { Cover::Nothing }
+    }
+
+    fn union(self, other: Cover) -> Cover {
+        match (self, other) {
+            (Cover::Everywhere, _) | (_, Cover::Everywhere) => Cover::Everywhere,
+            (Cover::Nothing, c) | (c, Cover::Nothing) => c,
+            (Cover::Within(a), Cover::Within(b)) => {
+                Cover::Within([a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])])
+            }
+        }
+    }
+
+    fn intersect(self, other: Cover) -> Cover {
+        match (self, other) {
+            (Cover::Nothing, _) | (_, Cover::Nothing) => Cover::Nothing,
+            (Cover::Everywhere, c) | (c, Cover::Everywhere) => c,
+            (Cover::Within(a), Cover::Within(b)) => {
+                Cover::of([a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])])
+            }
+        }
+    }
+}
+
+struct Covering<'a> {
+    clip_box: &'a dyn Fn(u32) -> Option<[i32; 4]>,
+    outline_box: &'a mut dyn FnMut(u32) -> Option<[f64; 4]>,
+}
+
+impl Covering<'_> {
+    // Past the lowered depth nothing is drawn. Every fill covers its clip, one that paints nothing too: extents are
+    // the geometry alone, the same whichever palette or colors a glyph is drawn in.
+    fn cover<G: Graph>(&mut self, graph: &mut G, at: G::Child, ctm: Matrix, clip: Cover, depth: usize) -> Cover {
+        if depth >= MAX_DEPTH {
+            return Cover::Nothing;
+        }
+        let Some(node) = graph.open(at) else { return Cover::Nothing };
+        let clipped =
+            |b: Option<[f64; 4]>| clip.intersect(b.map_or(Cover::Nothing, |b| Cover::of(transform_box(&ctm, b))));
+        let cover = match node.shape() {
+            Shape::Transform(child, m) => self.cover(graph, child, concat(&m, &ctm), clip, depth + 1),
+            Shape::Layers(layers) => graph.layers(layers).fold(Cover::Nothing, |acc, layer| {
+                acc.union(self.cover(graph, layer, ctm, clip, depth + 1))
+            }),
+            Shape::Glyph(child, glyph_id) => {
+                let clip = clipped((self.outline_box)(glyph_id));
+                self.cover(graph, child, ctm, clip, depth + 1)
+            }
+            Shape::ColrGlyph(child, glyph_id) => {
+                let clip = match (self.clip_box)(glyph_id) {
+                    Some(b) => clipped(Some(b.map(f64::from))),
+                    None => clip,
+                };
+                self.cover(graph, child, ctm, clip, depth + 1)
+            }
+            Shape::Composite { source, mode, backdrop } => {
+                let backdrop = self.cover(graph, backdrop, ctm, clip, depth + 1);
+                let source = self.cover(graph, source, ctm, clip, depth + 1);
+                match mode {
+                    Blend::Clear => Cover::Nothing,
+                    Blend::Src | Blend::SrcOut => source,
+                    Blend::Dest | Blend::DestOut => backdrop,
+                    Blend::SrcIn | Blend::DestIn => backdrop.intersect(source),
+                    _ => backdrop.union(source),
+                }
+            }
+            Shape::Fill => clip,
+        };
+        graph.close();
+        cover
+    }
+}
+
+fn rectangle(pen: &mut dyn OutlinePen, [x0, y0, x1, y1]: [f64; 4]) {
+    pen.move_to(x0 as f32, y0 as f32);
+    pen.line_to(x1 as f32, y0 as f32);
+    pen.line_to(x1 as f32, y1 as f32);
+    pen.line_to(x0 as f32, y1 as f32);
+    pen.close();
 }
 
 // What a mode leaves of the backdrop under an empty source, and of the source over an empty backdrop:
@@ -250,35 +487,33 @@ fn keeps_source(mode: Blend) -> bool {
     !matches!(mode, Blend::Clear | Blend::Dest | Blend::SrcIn | Blend::DestIn | Blend::DestOut | Blend::SrcAtop)
 }
 
-fn leaf(paint: &Colr, fg: Rgba, ctm: Matrix) -> Option<Paint> {
-    match paint {
-        Colr::Solid { is_foreground, r, g, b, alpha } => {
-            let base = if *is_foreground { fg } else { Rgba::opaque(*r, *g, *b) };
-            Some(Paint::Solid(Rgba { a: scale(base.a, *alpha), ..base }))
-        }
+// A gradient's stops go into `out`, as the fill it paints follows.
+fn leaf<C, L>(node: &Node<'_, C, L>, fg: Rgba, ctm: Matrix, out: &mut DisplayList) -> Option<Paint> {
+    match *node {
+        Node::Solid { color, foreground } => Some(Paint::Solid(painted(color, foreground, fg))),
 
-        Colr::LinearGradient { extend, stops, x0, y0, x1, y1, x2, y2 } => {
-            let (px, py) = project((*x0, *y0), (*x1, *y1), (*x2, *y2))?;
+        Node::LinearGradient { extend, stops, x0, y0, x1, y1, x2, y2 } => {
+            let (px, py) = project((x0, y0), (x1, y1), (x2, y2))?;
             gradient(
-                GradientKind::Linear { x0: *x0 as f32, y0: *y0 as f32, x1: px as f32, y1: py as f32 },
-                stops, *extend, fg, ctm,
+                GradientKind::Linear { x0: x0 as f32, y0: y0 as f32, x1: px as f32, y1: py as f32 },
+                stops, extend, fg, ctm, out,
             )
         }
 
-        Colr::RadialGradient { extend, stops, x0, y0, r0, x1, y1, r1 } => gradient(
+        Node::RadialGradient { extend, stops, x0, y0, r0, x1, y1, r1 } => gradient(
             GradientKind::Radial {
-                x0: *x0 as f32, y0: *y0 as f32, r0: *r0 as f32,
-                x1: *x1 as f32, y1: *y1 as f32, r1: *r1 as f32,
+                x0: x0 as f32, y0: y0 as f32, r0: r0 as f32,
+                x1: x1 as f32, y1: y1 as f32, r1: r1 as f32,
             },
-            stops, *extend, fg, ctm,
+            stops, extend, fg, ctm, out,
         ),
 
-        Colr::SweepGradient { extend, stops, cx, cy, start_angle, end_angle } => gradient(
+        Node::SweepGradient { extend, stops, cx, cy, start_angle, end_angle } => gradient(
             GradientKind::Sweep {
-                cx: *cx as f32, cy: *cy as f32,
-                start_angle: *start_angle as f32, end_angle: *end_angle as f32,
+                cx: cx as f32, cy: cy as f32,
+                start_angle: start_angle as f32, end_angle: end_angle as f32,
             },
-            stops, *extend, fg, ctm,
+            stops, extend, fg, ctm, out,
         ),
 
         _ => None,
@@ -288,35 +523,28 @@ fn leaf(paint: &Colr, fg: Rgba, ctm: Matrix) -> Option<Paint> {
 fn gradient(
     kind: GradientKind,
     stops: &[ColorStop],
-    extend: u8,
+    extend: Extend,
     fg: Rgba,
     ctm: Matrix,
+    out: &mut DisplayList,
 ) -> Option<Paint> {
-    let converted: Vec<Stop> = stops
-        .iter()
-        .map(|s| {
-            let base = if s.is_foreground { fg } else { Rgba::opaque(s.r, s.g, s.b) };
-            Stop { offset: s.offset as f32, color: Rgba { a: scale(base.a, s.alpha), ..base } }
-        })
-        .collect();
-    let (kind, converted) = normalize_color_line(kind, converted);
-    match resolve_stops(converted) {
-        Stops::Nothing => None,
-        Stops::Solid(c) => Some(Paint::Solid(c)),
-        Stops::Many(stops) => {
-            Some(Paint::Gradient(Gradient { kind, stops, extend: spread(extend), transform: ctm }))
-        }
-    }
+    let start = out.stops.len();
+    out.stops.extend(stops.iter().map(|s| Stop { offset: s.offset as f32, color: painted(s.color, s.foreground, fg) }));
+    let line = &mut out.stops[start..];
+    let kind = normalize_color_line(kind, line);
+    let paint = match resolve_in_place(line, extend) {
+        Resolved::Nothing => None,
+        Resolved::Solid(c) => Some(Paint::Solid(c)),
+        Resolved::Many => return Some(Paint::Gradient(out.add_gradient(kind, start, extend, ctm))),
+    };
+    out.stops.truncate(start);
+    paint
 }
 
-// COLR's extend is 0 pad, 1 repeat, 2 reflect, a different order from daemath's `Extend`, which
-// follows SVG's `spreadMethod`: casting one to the other would swap repeat and reflect.
-fn spread(extend: u8) -> Extend {
-    match extend {
-        1 => Extend::Repeat,
-        2 => Extend::Reflect,
-        _ => Extend::Pad,
-    }
+// A paint's or a stop's color as drawn: the palette's opaque, or the text's, at its own alpha scaled by `color`'s.
+fn painted(color: Rgba, foreground: bool, fg: Rgba) -> Rgba {
+    let base = if foreground { fg } else { Rgba { a: 255, ..color } };
+    Rgba { a: scale(base.a, color.a), ..base }
 }
 
 fn scale(a: u8, by: u8) -> u8 {
@@ -340,23 +568,5 @@ fn project(p0: (f64, f64), p1: (f64, f64), p2: (f64, f64)) -> Option<(f64, f64)>
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::daecore::daemachine::daemath::blend::composite;
-
-    // As blend.rs composites each mode: an empty source leaves the backdrop or nothing, and a source
-    // over an empty backdrop leaves itself or nothing.
-    #[test]
-    fn what_a_mode_keeps_is_what_it_composites() {
-        let (color, alpha) = ([0.2f32, 0.5, 0.9], 0.6f32);
-        let alone = (color.map(|v| v * alpha), alpha);
-        for mode in (0..28).map(Blend::from_colr) {
-            let under_empty = composite(mode, [0.0; 3], 0.0, color, alpha);
-            let over_empty = composite(mode, color, alpha, [0.0; 3], 0.0);
-            for (kept, result, what) in [(keeps_backdrop(mode), under_empty, "backdrop"), (keeps_source(mode), over_empty, "source")] {
-                let want = if kept { alone } else { ([0.0; 3], 0.0) };
-                assert_eq!(result, want, "{mode:?} keeps the {what}: {kept}");
-            }
-        }
-    }
-}
+#[path = "../../../tests/unit/daetype/paint/colr.rs"]
+mod tests;

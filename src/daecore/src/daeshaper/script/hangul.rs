@@ -1,279 +1,201 @@
-use crate::daecore::daeshaper::buffer::{Buffer, GlyphInfo};
+// Hangul, after Microsoft's Hangul spec and Core spec 3.12: jamo composed to a syllable the font has, a syllable it
+// lacks split to jamo it has, loose jamo given ljmo, vjmo and tjmo, a tone mark put before its syllable.
+use core::ops::Range;
+
+use super::{MarkAdvances, Model, ModelData, Normalization, Shaper};
 use crate::daecore::daeshaper::face::Face;
-use crate::daecore::daeshaper::ot::map::{feature_flags as ff, MapBuilder};
-use crate::daecore::daeshaper::normalize;
-use crate::daecore::daeshaper::plan::ShapePlan;
-use super::{Shaper, ZeroWidthMarks};
 use crate::daecore::daeshaper::ot::tag::Tag;
+use crate::daecore::daeshaper::plan::{FeatureUse, Features, Plan, Planner};
+use crate::daecore::daeshaper::run::{Mask, Run};
+use crate::daecore::daeshaper::unicode::{hangul_jamo, hangul_syllable, Script, DOTTED_CIRCLE};
 
-pub(crate) const SHAPER: Shaper = Shaper {
-    name: "hangul",
-    collect_features: Some(collect_features),
-    pauses: &[],
-    override_features: Some(override_features),
-    preprocess_text: Some(preprocess_text),
-    postprocess_glyphs: None,
-    // The composing and decomposing here is font-aware in a way the normalizer is not, so the
-    // normalizer is told to keep out of it entirely.
-    normalization_preference: normalize::Mode::None,
-    decompose: None,
-    compose: None,
-    setup_masks: Some(setup_masks),
-    gpos_tag: None,
-    reorder_marks: None,
-    zero_width_marks: ZeroWidthMarks::Never,
-    fallback_position: false,
-};
+pub(crate) struct Hangul;
 
-const LJMO: u8 = 1;
-const VJMO: u8 = 2;
-const TJMO: u8 = 3;
+pub(crate) const MODEL: Hangul = Hangul;
 
-const FEATURES: [&[u8; 4]; 3] = [b"ljmo", b"vjmo", b"tjmo"];
+// The jamo features, by the value a jamo keeps in its script byte; 0 is none.
+const JAMO: [&[u8; 4]; 3] = [b"ljmo", b"vjmo", b"tjmo"];
+const LEADING: u8 = 1;
+const VOWEL: u8 = 2;
+const TRAILING: u8 = 3;
 
-const L_BASE: u32 = 0x1100;
-const V_BASE: u32 = 0x1161;
-const T_BASE: u32 = 0x11A7;
-const L_COUNT: u32 = 19;
-const V_COUNT: u32 = 21;
-const T_COUNT: u32 = 28;
-const N_COUNT: u32 = V_COUNT * T_COUNT;
-const S_COUNT: u32 = L_COUNT * N_COUNT;
-const S_BASE: u32 = 0xAC00;
-
-fn is_composing_l(u: u32) -> bool {
-    (L_BASE..L_BASE + L_COUNT).contains(&u)
+struct Masks {
+    // By jamo value, none at 0.
+    jamo: [Mask; 4],
+    calt: Mask,
 }
 
-fn is_composing_v(u: u32) -> bool {
-    (V_BASE..V_BASE + V_COUNT).contains(&u)
-}
-
-fn is_composing_t(u: u32) -> bool {
-    (T_BASE + 1..T_BASE + T_COUNT).contains(&u)
-}
-
-fn is_precomposed(u: u32) -> bool {
-    (S_BASE..S_BASE + S_COUNT).contains(&u)
-}
-
-fn is_l(u: u32) -> bool {
-    (0x1100..=0x115F).contains(&u) || (0xA960..=0xA97C).contains(&u)
-}
-
-fn is_v(u: u32) -> bool {
-    (0x1160..=0x11A7).contains(&u) || (0xD7B0..=0xD7C6).contains(&u)
-}
-
-fn is_t(u: u32) -> bool {
-    (0x11A8..=0x11FF).contains(&u) || (0xD7CB..=0xD7FB).contains(&u)
-}
-
-fn is_tone(u: u32) -> bool {
-    (0x302E..=0x302F).contains(&u)
-}
-
-fn collect_features(b: &mut MapBuilder, _: Option<Tag>) {
-    for feature in FEATURES {
-        b.add_feature(Tag::from_bytes(feature), ff::NONE, 1);
-    }
-}
-
-fn override_features(b: &mut MapBuilder) {
-    b.add_feature(Tag::from_bytes(b"calt"), ff::NONE, 1);
-}
-
-impl GlyphInfo {
-    fn jamo_feature(&self) -> u8 {
-        self.shaper_auxiliary
+impl Model for Hangul {
+    fn kind(&self) -> Shaper {
+        Shaper::Hangul
     }
 
-    fn set_jamo_feature(&mut self, feature: u8) {
-        self.shaper_auxiliary = feature;
+    fn plan_features(&self, planner: &mut Planner<'_>, _: Option<Tag>) {
+        JAMO.iter().for_each(|&tag| planner.add(Tag::new(tag), FeatureUse::PLAIN));
     }
-}
 
-fn is_zero_width(face: &Face, u: u32) -> bool {
-    face.glyph_index(u).is_some_and(|g| face.glyph_h_advance(g) == 0)
-}
+    // Asked again as a plain feature, calt takes a bit of its own, which `setup_masks` takes off every jamo: the jamo
+    // features alone shape them.
+    fn plan_late_features(&self, planner: &mut Planner<'_>) {
+        planner.add(Tag::new(b"calt"), FeatureUse::PLAIN);
+    }
 
-fn preprocess_text(_: &ShapePlan, face: &Face, buffer: &mut Buffer) {
-    buffer.clear_output();
-    buffer.idx = 0;
+    fn plan_data(&self, features: &Features, _: &Face, _: Option<Script>, _: Option<Tag>) -> Option<ModelData> {
+        let bit = |tag: &[u8; 4]| features.on_bit(Tag::new(tag));
+        let [l, v, t] = JAMO.map(bit);
+        Some(alloc::boxed::Box::new(Masks { jamo: [0, l, v, t], calt: bit(b"calt") }))
+    }
 
-    let mut start = 0;
-    let mut end = 0;
+    fn mark_advances(&self) -> MarkAdvances {
+        MarkAdvances::Keep
+    }
 
-    while buffer.idx < buffer.len {
-        let u = buffer.cur(0).id;
+    // Composing here asks what the font maps, which the normalizer doesn't, so it keeps out entirely.
+    fn normalization(&self) -> Normalization {
+        Normalization::Unrecomposed
+    }
 
-        if is_tone(u) {
-            handle_tone(face, buffer, u, start, end);
-            start = buffer.out_len;
-            end = buffer.out_len;
-            continue;
-        }
+    fn prepare(&self, run: &mut Run, _: &Plan, face: &Face) {
+        compose_syllables(face, run);
+    }
 
-        start = buffer.out_len;
-
-        if is_l(u) && buffer.idx + 1 < buffer.len && is_v(buffer.cur(1).id) {
-            end = handle_jamo_sequence(face, buffer, start);
-            continue;
-        }
-
-        if is_precomposed(u)
-            && let Some(new_end) = handle_precomposed(face, buffer, start) {
-                end = new_end;
-                continue;
+    fn setup_masks(&self, run: &mut Run, plan: &Plan, _: &Face) {
+        let Some(masks) = plan.data::<Masks>() else { return };
+        let len = run.len;
+        for glyph in &mut run.glyphs[..len] {
+            glyph.mask |= masks.jamo.get(usize::from(glyph.script_slot)).copied().unwrap_or(0);
+            if jamo_of(glyph.id).is_some() {
+                glyph.mask &= !masks.calt;
             }
-
-        buffer.next_glyph();
+        }
     }
-
-    buffer.sync();
 }
 
-fn handle_tone(face: &Face, buffer: &mut Buffer, u: u32, start: usize, end: usize) {
-    if start < end && end == buffer.out_len {
-        buffer.unsafe_to_break_from_outbuffer(start, buffer.idx);
-        buffer.next_glyph();
+// Which jamo `code` is, the old and extended ones included.
+fn jamo_of(code: u32) -> Option<u8> {
+    match code {
+        0x1100..=0x115F | 0xA960..=0xA97C => Some(LEADING),
+        0x1160..=0x11A7 | 0xD7B0..=0xD7C6 => Some(VOWEL),
+        0x11A8..=0x11FF | 0xD7CB..=0xD7FB => Some(TRAILING),
+        _ => None,
+    }
+}
 
-        if !is_zero_width(face, u) {
-            buffer.merge_out_grapheme_clusters(start, end + 1);
-            let out = buffer.out_info_mut();
-            let tone = out[end];
-            for i in (0..end - start).rev() {
-                out[i + start + 1] = out[i + start];
-            }
-            out[start] = tone;
+fn is_tone(code: u32) -> bool {
+    matches!(code, 0x302E | 0x302F)
+}
+
+fn has_no_width(face: &Face, code: u32) -> bool {
+    face.glyph_of(code).is_some_and(|glyph| face.width(glyph) == 0)
+}
+
+fn compose_syllables(face: &Face, run: &mut Run) {
+    run.start_rewrite();
+    // The written glyphs of the syllable just formed, which a tone mark after it joins.
+    let mut syllable: Option<Range<usize>> = None;
+    while run.cursor < run.len && !run.failed {
+        let code = run.current().id;
+        let next = run.glyphs[run.cursor + 1..run.len].first().map(|g| g.id);
+        let start = run.written;
+        syllable = if is_tone(code) {
+            place_tone(face, run, code, syllable);
+            None
+        } else if jamo_of(code) == Some(LEADING) && next.is_some_and(|v| jamo_of(v) == Some(VOWEL)) {
+            Some(start..from_jamo(face, run, start))
+        } else if let Some(end) = from_syllable(face, run, start, next) {
+            Some(start..end)
+        } else {
+            run.keep();
+            None
+        };
+    }
+    run.finish_rewrite();
+}
+
+// A tone mark with width after a syllable goes before it, into its cluster: Hangul writes tone marks to the left.
+// With no syllable before it, it takes a dotted circle, going before the circle if it has width and after if not.
+fn place_tone(face: &Face, run: &mut Run, tone: u32, syllable: Option<Range<usize>>) {
+    if let Some(span) = syllable.filter(|s| !s.is_empty() && s.end == run.written) {
+        run.unsafe_to_break_across(span.start, run.cursor);
+        if run.keep() && !has_no_width(face, tone) {
+            run.join_out_clusters(span.start..span.end + 1);
+            run.out_mut()[span.start..=span.end].rotate_right(1);
         }
         return;
     }
-
-    if buffer.insert_dotted_circle && face.has_glyph(0x25CC) {
-        let pair = if is_zero_width(face, u) { [0x25CC, u] } else { [u, 0x25CC] };
-        buffer.replace_glyphs(1, &pair);
+    let circle = DOTTED_CIRCLE as u32;
+    if !run.settings.dotted_circles || !face.maps(circle) {
+        run.keep();
+    } else if has_no_width(face, tone) {
+        run.replace_span(1, &[circle, tone]);
     } else {
-        buffer.next_glyph();
+        run.replace_span(1, &[tone, circle]);
     }
 }
 
-fn handle_jamo_sequence(face: &Face, buffer: &mut Buffer, start: usize) -> usize {
-    let l = buffer.cur(0).id;
-    let v = buffer.cur(1).id;
-
-    let t = if buffer.idx + 2 < buffer.len {
-        let candidate = buffer.cur(2).id;
-        if is_t(candidate) { candidate } else { 0 }
-    } else {
-        0
-    };
-
-    let count = if t != 0 { 3 } else { 2 };
-    let idx = buffer.idx;
-    buffer.unsafe_to_break(idx, idx + count);
-
-    if is_composing_l(l) && is_composing_v(v) && (t == 0 || is_composing_t(t)) {
-        let tindex = if t != 0 { t - T_BASE } else { 0 };
-        let s = S_BASE + (l - L_BASE) * N_COUNT + (v - V_BASE) * T_COUNT + tindex;
-
-        if face.has_glyph(s) {
-            buffer.replace_glyphs(count, &[s]);
-            return start + 1;
-        }
+// Leading jamo, vowel jamo and maybe a trailing jamo at the cursor: their syllable if the font has it, else the jamo
+// each with its feature, one grapheme. Gives the written end.
+fn from_jamo(face: &Face, run: &mut Run, start: usize) -> usize {
+    let at = run.cursor;
+    let (l, v) = (run.glyphs[at].id, run.glyphs[at + 1].id);
+    let t = run.glyphs[at + 2..run.len].first().map(|g| g.id).filter(|&t| jamo_of(t) == Some(TRAILING));
+    let count = if t.is_some() { 3 } else { 2 };
+    run.unsafe_to_break(at..at + count);
+    if let Some(s) = hangul_syllable(l, v, t).filter(|&s| face.maps(s)) {
+        run.replace_span(count, &[s]);
+        return start + 1;
     }
-
-    buffer.cur_mut(0).set_jamo_feature(LJMO);
-    buffer.next_glyph();
-    buffer.cur_mut(0).set_jamo_feature(VJMO);
-    buffer.next_glyph();
-
-    let end = if t != 0 {
-        buffer.cur_mut(0).set_jamo_feature(TJMO);
-        buffer.next_glyph();
-        start + 3
-    } else {
-        start + 2
-    };
-
-    buffer.merge_out_grapheme_clusters(start, end);
-    end
+    for value in [LEADING, VOWEL, TRAILING].into_iter().take(count) {
+        run.current_mut().script_slot = value;
+        run.keep();
+    }
+    if !run.failed {
+        run.join_out_graphemes(start..start + count);
+    }
+    start + count
 }
 
-fn handle_precomposed(face: &Face, buffer: &mut Buffer, start: usize) -> Option<usize> {
-    let s = buffer.cur(0).id;
-    let has_glyph = face.has_glyph(s);
-
-    let lindex = (s - S_BASE) / N_COUNT;
-    let nindex = (s - S_BASE) % N_COUNT;
-    let vindex = nindex / T_COUNT;
-    let tindex = nindex % T_COUNT;
-
-    if tindex == 0 && buffer.idx + 1 < buffer.len && is_composing_t(buffer.cur(1).id) {
-        let combined = s + (buffer.cur(1).id - T_BASE);
-        if face.has_glyph(combined) {
-            buffer.replace_glyphs(2, &[combined]);
+// A precomposed syllable at the cursor: an LV takes a trailing jamo into an LVT the font has, or else goes to jamo, as
+// a syllable the font lacks does where it has them. None where it's no syllable or there's no way to draw it.
+fn from_syllable(face: &Face, run: &mut Run, start: usize, next: Option<u32>) -> Option<usize> {
+    let at = run.cursor;
+    let code = run.current().id;
+    let (l, v, t) = hangul_jamo(code)?;
+    let trailing = next.filter(|&n| t.is_none() && jamo_of(n) == Some(TRAILING));
+    if let Some(lvt) = trailing.and_then(|n| hangul_syllable(l, v, Some(n))) {
+        if face.maps(lvt) {
+            run.replace_span(2, &[lvt]);
             return Some(start + 1);
         }
-        let idx = buffer.idx;
-        buffer.unsafe_to_break(idx, idx + 2);
+        run.unsafe_to_break(at..at + 2);
     }
 
-    let trailing_t = tindex == 0 && buffer.idx + 1 < buffer.len && is_t(buffer.cur(1).id);
-    if !has_glyph || trailing_t {
-        let pieces = [L_BASE + lindex, V_BASE + vindex, T_BASE + tindex];
-        let drawable = face.has_glyph(pieces[0])
-            && face.has_glyph(pieces[1])
-            && (tindex == 0 || face.has_glyph(pieces[2]));
-
-        if drawable {
-            let mut count = if tindex != 0 { 3 } else { 2 };
-            buffer.replace_glyphs(1, &pieces[..count]);
-
-            if has_glyph && tindex == 0 {
-                buffer.next_glyph();
-                count += 1;
-            }
-
-            let end = start + count;
-            let out = buffer.out_info_mut();
-            out[start].set_jamo_feature(LJMO);
-            out[start + 1].set_jamo_feature(VJMO);
-            if start + 2 < end {
-                out[start + 2].set_jamo_feature(TJMO);
-            }
-
-            buffer.merge_out_grapheme_clusters(start, end);
-            return Some(end);
-        }
-    }
-
-    if has_glyph {
-        buffer.next_glyph();
+    let drawn = face.maps(code);
+    if drawn && trailing.is_none() {
+        run.keep();
         return Some(start + 1);
     }
-
-    None
-}
-
-fn setup_masks(plan: &ShapePlan, _: &Face, buffer: &mut Buffer) {
-    let masks = [
-        0,
-        plan.map.one_mask(Tag::from_bytes(b"ljmo")),
-        plan.map.one_mask(Tag::from_bytes(b"vjmo")),
-        plan.map.one_mask(Tag::from_bytes(b"tjmo")),
-    ];
-
-    let calt = plan.map.one_mask(Tag::from_bytes(b"calt"));
-
-    let len = buffer.len;
-    for info in &mut buffer.info[..len] {
-        if let Some(&mask) = masks.get(info.jamo_feature() as usize) {
-            info.mask |= mask;
+    let jamo = [l, v, t.unwrap_or(0)];
+    let parts = &jamo[..2 + usize::from(t.is_some())];
+    if !parts.iter().all(|&j| face.maps(j)) {
+        if trailing.is_some() {
+            run.unsafe_to_break(at..at + 2);
         }
-        let u = info.id;
-        if is_l(u) || is_v(u) || is_t(u) {
-            info.mask &= !calt;
-        }
+        return drawn.then(|| {
+            run.keep();
+            start + 1
+        });
     }
+    run.replace_span(1, parts);
+    // A drawn LV split for its trailing jamo takes the jamo along.
+    let taken = parts.len() + usize::from(drawn);
+    if drawn {
+        run.keep();
+    }
+    if !run.failed {
+        let out = &mut run.out_mut()[start..start + taken];
+        out.iter_mut().zip([LEADING, VOWEL, TRAILING]).for_each(|(glyph, value)| glyph.script_slot = value);
+        run.join_out_graphemes(start..start + taken);
+    }
+    Some(start + taken)
 }

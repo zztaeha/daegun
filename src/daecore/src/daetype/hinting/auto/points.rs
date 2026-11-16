@@ -40,18 +40,53 @@ pub struct CollectPen {
 const TYPICAL_POINTS: usize = 64;
 const TYPICAL_CONTOURS: usize = 8;
 
+// The lists the thread's last points dropped, emptied, lent to its next pen; one past `SPARE_BYTES` is dropped.
+#[cfg(feature = "std")]
+std::thread_local! {
+    static SPARE: core::cell::Cell<Option<AutoPoints>> = const { core::cell::Cell::new(None) };
+}
+
+#[cfg(feature = "std")]
+pub(crate) fn release_thread() {
+    let _ = SPARE.try_with(core::cell::Cell::take);
+}
+
+#[cfg(feature = "std")]
+const SPARE_BYTES: usize = 64 << 10;
+
+// Into an empty slot only: one that holds points keeps them, so no points' drop sets it again.
+impl Drop for AutoPoints {
+    fn drop(&mut self) {
+        #[cfg(feature = "std")]
+        let _ = SPARE.try_with(|slot| {
+            use crate::daecore::daekit::base::sync::heap_of;
+            let held = slot.take();
+            let AutoPoints { x, y, flags, contour_ends } = self;
+            if held.is_some() || heap_of(x) + heap_of(y) + heap_of(flags) + heap_of(contour_ends) > SPARE_BYTES {
+                return slot.set(held);
+            }
+            x.clear();
+            y.clear();
+            flags.clear();
+            contour_ends.clear();
+            slot.set(Some(core::mem::take(self)));
+        });
+    }
+}
+
 impl CollectPen {
     pub fn new() -> CollectPen {
-        CollectPen {
-            pts: AutoPoints {
-                x: Vec::with_capacity(TYPICAL_POINTS),
-                y: Vec::with_capacity(TYPICAL_POINTS),
-                flags: Vec::with_capacity(TYPICAL_POINTS),
-                contour_ends: Vec::with_capacity(TYPICAL_CONTOURS),
-            },
-            contour_start: None,
-            current: (0.0, 0.0),
-        }
+        let typical = || AutoPoints {
+            x: Vec::with_capacity(TYPICAL_POINTS),
+            y: Vec::with_capacity(TYPICAL_POINTS),
+            flags: Vec::with_capacity(TYPICAL_POINTS),
+            contour_ends: Vec::with_capacity(TYPICAL_CONTOURS),
+        };
+        #[cfg(feature = "std")]
+        let pts = SPARE.try_with(core::cell::Cell::take).ok().flatten().unwrap_or_else(typical);
+        #[cfg(not(feature = "std"))]
+        let pts = typical();
+        CollectPen { pts, contour_start: None, current: (0.0, 0.0) }
     }
 
     pub fn finish(mut self) -> AutoPoints {
@@ -115,18 +150,20 @@ impl OutlinePen for CollectPen {
         self.current = (x, y);
     }
 
+    // A curve's points go in together, each list checking its room once.
     fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
         self.open();
-        self.push(cx, cy, CONIC);
-        self.push(x, y, ON_CURVE);
+        self.pts.x.extend_from_slice(&[cx, x]);
+        self.pts.y.extend_from_slice(&[cy, y]);
+        self.pts.flags.extend_from_slice(&[CONIC, ON_CURVE]);
         self.current = (x, y);
     }
 
     fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
         self.open();
-        self.push(c1x, c1y, CUBIC);
-        self.push(c2x, c2y, CUBIC);
-        self.push(x, y, ON_CURVE);
+        self.pts.x.extend_from_slice(&[c1x, c2x, x]);
+        self.pts.y.extend_from_slice(&[c1y, c2y, y]);
+        self.pts.flags.extend_from_slice(&[CUBIC, CUBIC, ON_CURVE]);
         self.current = (x, y);
     }
 
@@ -136,23 +173,5 @@ impl OutlinePen for CollectPen {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // A charstring may draw before it moves, or after it closes: the strays open a contour of their
-    // own at the pen rather than joining the next one or none.
-    #[test]
-    fn drawing_without_a_move_opens_a_contour() {
-        let mut pen = CollectPen::new();
-        pen.line_to(10.0, 0.0);
-        pen.line_to(10.0, 10.0);
-        pen.move_to(0.0, 0.0);
-        pen.line_to(5.0, 5.0);
-        pen.line_to(0.0, 5.0);
-        pen.close();
-        pen.line_to(20.0, 0.0);
-        let pts = pen.finish();
-        assert_eq!(pts.contour_ends, [2, 5, 7]);
-        assert_eq!((pts.x[6], pts.y[6]), (0.0, 0.0), "the strays after the close start where it closed");
-    }
-}
+#[path = "../../../../tests/unit/daetype/hinting/auto/points.rs"]
+mod tests;

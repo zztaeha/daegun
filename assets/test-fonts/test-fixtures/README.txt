@@ -17,7 +17,7 @@ tc.fonts = [f1, f2]
 tc.save('assets/test-fonts/test-fixtures/EBGaramond-InterVariable.ttc')
 "
 
-Used by: src/daegun/tests/api/surface.rs and the C round trip.
+Used by: src/api/rust/tests/api/surface.rs and the C round trip.
 
 ---
 
@@ -53,20 +53,20 @@ Used by: the fuzzer, which seeds from every fixture; no test names it.
 
 ---
 
-carets.ttf, hinted.ttf, colr-clip.ttf, gvar-points.ttf and the three cff-*.otf
-are neither vendored nor derived – they are synthetic, built from nothing by
-daegun's own scripts, and carry no third-party content at all. All are MIT
-with the rest of the project.
+carets.ttf, hinted.ttf, colr-clip.ttf, gvar-points.ttf, math-var.ttf, fuzz-reach.ttf,
+half-edges.otf and the six cff-*.otf are neither vendored nor derived – they are synthetic,
+built from nothing by daegun's own scripts, and carry no third-party content at all. All are
+MIT with the rest of the project.
 
-carets.ttf        scripts/tools/oracles/diff/build_caret_fixture.py
+carets.ttf        scripts/tools/fixtures/build_caret_fixture.py
                   Family name "DaegunCarets". A GDEF LigCaretList with
                   known caret positions, so caret geometry can be asserted
                   against numbers the fixture itself defines rather than
                   against whatever a real font happens to contain.
-                  Used by: src/daegun/tests/api/surface_glyphs.rs and
+                  Used by: src/api/rust/tests/api/surface_glyphs.rs and
                   the C round trip.
 
-hinted.ttf        scripts/tools/oracles/diff/build_hinted_fixture.py
+hinted.ttf        scripts/tools/fixtures/build_hinted_fixture.py
                   Family name "DaegunHinted". Carries real TrueType
                   bytecode (fpgm/prep/glyf instructions) so the interpreter
                   is graded on instructions written for it, at sizes chosen
@@ -87,11 +87,11 @@ hinted.ttf        scripts/tools/oracles/diff/build_hinted_fixture.py
                   where none of them leak, never show.
                   Used by: src/daecore/tests/type/fdef_scope.rs,
                   hint_latency.rs and hint_threading.rs, the fingerprint
-                  suite, the hinting unit tests, src/daegun/tests/api/
+                  suite, the hinting unit tests, src/api/rust/tests/api/
                   autohint.rs, access.rs, prepared.rs and
                   surface_glyphs.rs, and the C round trip.
 
-colr-clip.ttf     scripts/tools/oracles/diff/build_colr_clip_fixture.py
+colr-clip.ttf     scripts/tools/fixtures/build_colr_clip_fixture.py
                   Family name "DaegunColrClip". Color glyphs no vendored
                   font has: N and C paint one glyph through another, so
                   their scenes clip; D nests 64 composites, as deep as a
@@ -101,31 +101,90 @@ colr-clip.ttf     scripts/tools/oracles/diff/build_colr_clip_fixture.py
                   glyphs, P layering 17 composites of 64,000 points (past a
                   scene's limit), R one composite eight times, F a layer in
                   the text color.
-                  Used by: src/daegun/tests/api/surface_glyphs.rs and
+                  Used by: src/api/rust/tests/api/surface_glyphs.rs and
                   colr_v0.rs, the C round trip, and the fuzzer, which seeds
                   from every fixture.
 
-gvar-points.ttf   scripts/tools/oracles/diff/build_gvar_fixture.py
+gvar-points.ttf   scripts/tools/fixtures/build_gvar_fixture.py
                   Family name "DaegunGvarPoints". One wght axis and a gvar
                   laid out byte by byte, since fontTools rewrites any gvar it
                   compiles: point lists with repeated and out-of-range
                   numbers, a list longer than its glyph, phantom deltas on a
                   simple glyph and on a composite.
-                  Used by: src/daegun/tests/api/gvar_points.rs.
+                  Used by: src/api/rust/tests/api/gvar_points.rs.
 
-cff-subrs.otf     scripts/tools/oracles/diff/build_cff_subset_fixtures.py
+math-var.ttf      scripts/tools/fixtures/build_math_var_fixture.py
+                  Family name "DaegunMathVar". One wght axis, a GDEF
+                  holding only an item variation store, and a MATH whose
+                  constants, italic correction, accent, kern, correction
+                  height and assembly name its rows, since no vendored
+                  math font varies. The numbers are its own, each delta
+                  even so a value at half an axis is whole.
+                  Used by: src/api/rust/tests/api/tables.rs and the C
+                  round trip.
+
+cff-subrs.otf     scripts/tools/fixtures/build_cff_subset_fixtures.py
 cff-cid.otf       (one script writes all three into the directory given)
 cff-expert.otf    cff-subrs: name-keyed, global and local Subrs, a full Top
                   DICT, and seacs bare, after a hint and inside a
                   subroutine. cff-cid: CID-keyed, two FDs with their own
-                  Subrs and FontNames, FDSelect format 3, and a seac whose
-                  components no CID-keyed font can name. cff-expert: the
-                  predefined Expert charset.
-                  Used by: src/daegun/tests/api/cff_subset.rs and the
+                  Subrs and FontNames, FDSelect format 3, and a seac, its
+                  endchar in FD 1's Subrs, whose components its charset
+                  holds as CIDs 34 and 125, each drawing its own FD's
+                  stroke. cff-expert: the predefined Expert charset.
+                  Used by: src/api/rust/tests/api/cff_subset.rs and the
                   subsetter's CFF unit tests.
 
+jstf-levels.ttf   scripts/tools/fixtures/build_jstf_fixture.py
+                  Scheherazade New cut to a few letters, with a JSTF of two
+                  priority levels, which no vendored font has.
+                  Used by: the fuzzer, to reach shape_justified.
+
+fuzz-reach.ttf    scripts/tools/fixtures/build_fuzz_reach_fixture.py
+                  Family name "DaegunFuzzReach". Every glyph a MATH
+                  construction with a three-part assembly both ways, BASE
+                  and JSTF for each of the three scripts it lists, and a
+                  named instance with a PostScript name, so a fuzzer
+                  reaches each of those readers whatever glyph or script
+                  it picks.
+                  Used by: src/api/rust/tests/api/tables.rs and both
+                  fuzzers' seeds.
+
+half-edges.otf    scripts/tools/fixtures/build_half_edges_fixture.py
+                  Family name "DaegunHalfEdges". Boxes whose edges lie on
+                  halves, either sign, where a reader's rounding shows: three
+                  CFF outlines kept fractional, and two COLR v1 glyphs scaling
+                  a square by 0.5 and -0.5 about (1, 1).
+                  Used by: src/daecore/tests/unit/daekit/cache/metrics.rs,
+                  src/api/rust/tests/api/color_load.rs, and the fuzzer, which
+                  seeds from every fixture.
+
+cff-operators.otf scripts/tools/fixtures/build_cff_operators_fixture.py
+                  Family name "DaegunCffOperators". Raw Type 2 programs no
+                  pen writes: each arithmetic, storage and stack operator,
+                  index and roll past the stack, random from a negative
+                  initialRandomSeed, a reserved escape, a 16.16 index,
+                  stems declared after the first hintmask, a mask with
+                  operands once the count is fixed, 96 and 98 stems, and a
+                  mask cut short by the charstring's end.
+                  Used by: src/api/rust/tests/api/outline_decoders.rs and
+                  cff_hinting.rs.
+
+cff-matrix.otf    scripts/tools/fixtures/build_cff_matrix_fixture.py
+cff-matrix-name.otf
+                  (one script writes both into the directory given)
+                  FontMatrix cases.
+                  cff-matrix: CID-keyed, its Top DICT sheared, one FD
+                  inheriting that, two concatenating a half and a double
+                  scale (the half with an offset), and one whose scalings
+                  lie too far apart, read as the identity. cff-matrix-name:
+                  name-keyed, a Top DICT scaled by a half and moved by
+                  3 and 4 em, whose em is left unapplied without FDs.
+                  Used by: src/api/rust/tests/api/outline_decoders.rs and
+                  cff_hinting.rs.
+
 Regenerate any of them by running its script; each takes an output path (the
-CFF script a directory).
+CFF subset and matrix scripts a directory).
 
 ---
 

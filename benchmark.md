@@ -1,323 +1,169 @@
-# daegun benchmarks
+# daegun 2.0.0 – benchmarks
 
-Every latency benchmark the `latency` filter runs: 30 tests across four targets, plus the C harness.
-`outline_sweep`'s three sweeps over a whole font are run by name and are not listed. Nothing here is a
-summary of something else.
+daegun's own timings, from one run of its bench on 2026-11-16 on the machine below. Each section's method says how
+it was measured.
 
-Re-measured for 1.2.0. Every figure below is the best of three consecutive runs, which is what the
-closing note recommends.
-
-## Machine
+## System
 
 | | |
 |---|---|
-| CPU | Apple M1 Pro |
-| Cores | 10 physical / 10 logical |
-| Cache line | 128 bytes |
-| RAM | 32 GB |
-| OS | darwin 27.0.0 |
+| Model | MacBook Pro 14-inch |
+| OS | macOS 27.2.1 |
+| CPU | Apple M1 Pro, 10 cores: 8 performance, 2 efficiency |
+| Memory | 32 GB |
+| Storage | 512 GB |
+| Build | daegun's release profile: LTO, one codegen unit |
 
-## Configuration
+## Operations
+
+### Method
 
 | | |
 |---|---|
-| daegun | 1.2.0 |
-| rustc | 1.99.0 (b940084d7 2026-09-28) |
-| Profile | release |
-| `opt-level` | 3 |
-| `lto` | true |
-| `codegen-units` | 1 |
-| `panic` | abort |
-| `overflow-checks` | false |
-| `strip` | debuginfo |
-| Command | `cargo test --release --test <target> latency -- --ignored --nocapture --test-threads=1` |
+| What | daegun's latency tests in `src/`, each timing one operation, run one at a time on one thread |
+| Rounds | 24 kept, each a fresh process, after a warm-up round that's thrown away |
+| Figure | Each run's median, then each operation's best median across the 24 rounds |
+| Per round | The lowest and highest median a single round gave |
+| To run it | One round: `cargo test --release --lib -- --ignored --nocapture --test-threads=1 tests::daeshaper::latency:: tests::daetype::outline_latency:: tests::daetype::hint_latency:: tests::daetype::colr_latency::`, then `cargo test --release --test api -- --ignored --nocapture --test-threads=1 latency` |
 
-## What changed in 1.2.0
+### Results
 
-daegun no longer rasterizes, so the two rasterizing sections are gone, and with them the
-`rasterize_glyph` rows in sections 1 and 7. In their place are the calls a rasterizer of your own
-makes instead, all on Inter's `g`: `prepared_outline` and `flatten` at 16px, and `glyph_quads`, which
-takes no size.
-
-Everything else was measured against 1.1.7, built from its release tag with its own fixtures, on the
-same day, machine and compiler: three rounds with the two versions interleaved, best of three each.
-Shaping, the glyf outlines, the autohinter's whole-face sweeps, opening a font and section 6's float
-math are within a few percent of 1.1.7. These rows are not:
-
-| | 1.1.7 | 1.2.0 | why |
+| # | Operation | Time | Per round |
 |---|---|---|---|
-| `glyph_id` | 63.2 ns | 44.5 ns | the best cmap subtable is chosen at the font's first lookup |
-| `outline_glyph` | 248.3 ns | 270.5 ns | a TrueType outline is drawn at its origin, as FreeType and HarfBuzz draw it, which reads the glyph's side bearing: 18 ns, measured with it turned off |
-| `outline_glyf_eb_garamond_composite` | 1.333 µs | 1.416 µs | components are read with the checks a malformed composite needs |
-| `outline_cff_stix` | 11.166 µs | 14.042 µs | the CFF pen numbers points for hint masks, finds a seac wherever its endchar sits and draws a charstring that draws before it moves; no single cause |
-| `outline_cff_sweep` | 2.304 ms | 2.467 ms | the same |
-| `autohint_inter_h` | 458 ns | 625 ns | blue zones are fitted to the size, segments link by a sorted search a crafted outline cannot make quadratic, and edges are swept once; the whole-face sweeps are unchanged |
-| `autohint_stix_h` | 1.208 µs | 1.500 µs | the same, and the CFF pen above |
-| `hint_glyph_bytecode` | 792 ns | 1.500 µs | hinting as FreeType does: each glyph starts from the twilight zone the CVT program left (1.1.7 zeroed it), IUP interpolates from the unscaled outline, Subpixel keeps all of v40's backward compatibility, and heavy instructions are charged against a work budget |
-| `hint_glyph_context_cached` | 791 ns | 1.500 µs | the same |
-| `hint_glyph_context_per_glyph` | 3.375 µs | 6.208 µs | the same, and a new context keeps a copy of what the CVT program left, for each glyph to start from |
-| `colr_v1_paint_graph_static` | 35.500 µs | 39.792 µs | each paint is charged against a budget, so a crafted graph cannot run without end: the largest new cost in its profile |
-| `cache_colr_variable` | 39.958 µs | 43.583 µs | the same |
-| `colr_v1_paint_graph_variable` | 549.9 µs | 754.7 µs | the same 16,800 region scalars a sweep, each about 1.4 times slower: every axis is checked for a range the spec says to ignore, one that runs backward or crosses zero |
+| 1 | `shape_arabic_joined_run_scheherazade` | 5.47 µs | 5.47 µs–5.66 µs |
+| 2 | `shape_cjk_sentence_source_han` | 692.0 ns | 692.0 ns–724.0 ns |
+| 3 | `shape_devanagari_conjuncts_noto` | 5.42 µs | 5.42 µs–5.67 µs |
+| 4 | `shape_latin_ligatures_eb_garamond` | 2.10 µs | 2.10 µs–2.23 µs |
+| 5 | `shape_latin_sentence_inter` | 5.89 µs | 5.89 µs–6.21 µs |
+| 6 | `shape_myanmar_syllables_noto` | 13.88 µs | 13.88 µs–14.34 µs |
+| 7 | `cache_colr_variable` | 28.46 µs | 28.46 µs–29.46 µs |
+| 8 | `colr_v1_paint_graph_static` | 19.42 µs | 19.42 µs–20.25 µs |
+| 9 | `colr_v1_paint_graph_variable` | 28.46 µs | 28.46 µs–30.38 µs |
+| 10 | `hint_glyph_bytecode` | 875.0 ns | 875.0 ns–958.0 ns |
+| 11 | `hint_glyph_context_cached` | 917.0 ns | 917.0 ns–958.0 ns |
+| 12 | `hint_glyph_context_per_glyph` | 2.50 µs | 2.50 µs–2.67 µs |
+| 13 | `autohint_inter_H` | 375.0 ns | 375.0 ns–375.0 ns |
+| 14 | `autohint_stix_H` | 1.04 µs | 1.04 µs–1.08 µs |
+| 15 | `autohint_sweep_inter` | 4.10 ms | 4.10 ms–4.37 ms |
+| 16 | `autohint_sweep_stix` | 8.82 ms | 8.82 ms–9.31 ms |
+| 17 | `outline_cff_stix` | 12.50 µs | 12.50 µs–13.33 µs |
+| 18 | `outline_cff_sweep` | 2.39 ms | 2.39 ms–2.52 ms |
+| 19 | `outline_glyf_eb_garamond_composite` | 2.08 µs | 2.08 µs–2.21 µs |
+| 20 | `outline_glyf_scheherazade` | 8.83 µs | 8.83 µs–9.17 µs |
+| 21 | `outline_glyf_sweep` | 2.58 ms | 2.58 ms–2.74 ms |
+| 22 | `font_open` | 15.54 µs | 15.54 µs–17.79 µs |
+| 23 | `font_open_owned` | 260.4 ns | 260.4 ns–281.2 ns |
+| 24 | `units_per_em` | 0.3 ns | 0.3 ns–0.4 ns |
+| 25 | `glyph_id` | 0.7 ns | 0.7 ns–0.7 ns |
+| 26 | `advance` | 4.3 ns | 4.3 ns–4.6 ns |
+| 27 | `advance at wght 700` | 11.5 ns | 11.5 ns–12.3 ns |
+| 28 | `outline` | 273.0 ns | 273.0 ns–290.2 ns |
+| 29 | `ascender` | 0.4 ns | 0.4 ns–0.5 ns |
+| 30 | `descender` | 0.4 ns | 0.4 ns–0.5 ns |
+| 31 | `cap_height` | 0.8 ns | 0.8 ns–0.8 ns |
+| 32 | `glyph_count` | 0.3 ns | 0.3 ns–0.4 ns |
+| 33 | `line_metrics` | 2.0 ns | 2.0 ns–2.2 ns |
+| 34 | `quads` | 455.5 ns | 455.5 ns–475.8 ns |
+| 35 | `prepared_outline` | 330.6 ns | 330.6 ns–354.8 ns |
+| 36 | `flatten` | 897.2 ns | 897.2 ns–950.2 ns |
+| 37 | `raster_glyph` | 689.4 ns | 689.4 ns–732.3 ns |
 
-`line_metrics` reads 9.9 ns against 9.2 with the same code as 1.1.7; that difference is not
-attributed. The cached path a caller takes, `cache_colr_variable`, keeps the region scalars for a
-location, which is why it is seventeen times faster than `colr_v1_paint_graph_variable`.
+## Scenes
 
-Section 6 changed with daemachine's own work. Gradients now blend as the OpenType spec says, in linear
-light with alpha premultiplied: a linear one takes 11.8 ns a pixel against 14.6 for 1.1.7's sRGB blend,
-a sweep 23.8 against 30.7, and a radial 23.1 against 21.0, the one row slower. The last row is a
-linear gradient blended in sRGB, as Chrome does it: 7.4. SrcOver composites in 4.0 rather than 5.5, and
-f64 `round` without std takes 0.78 ns rather than 1.40. The blending anchor, `blend` in SrcOver, reads
-2.0 ns rather than 1.0: `#[inline]` now lets a caller's crate inline these functions, and in this LTO
-build it also reshapes a loop that calls `blend` directly. `composite`, what a rasterizer calls, is
-the faster for it.
+### Method
 
-`f32 round` reads 0.763 ns against 0.671 for another reason: 1.2.0 changed the benchmark's own loop,
-from `chunks_exact(4)` to `as_chunks::<4>()`, and run with the old loop it reads 0.671 too. The blend
-rows read the same with either loop. `blend HardLight` swings between runs: 3.38 to 4.04 ns for 1.1.7
-across these three.
-
-Compare releases on figures measured the same day.
-
----
-
-## 1. Rust API
-
-`--test api` · `api_latency` · 200 rounds after 50 warmup
-
-| | min | median |
-|---|---|---|
-| `from_bytes`, borrowed | 15.208 µs | 15.333 µs |
-| `from_vec`, owned | 1.125 µs | 1.333 µs |
-| `flatten` | 983.8 ns | 987.3 ns |
-| `prepared_outline` | 805.8 ns | 822.3 ns |
-| `glyph_quads` | 454.0 ns | 456.1 ns |
-| `outline_glyph` | 270.5 ns | 271.0 ns |
-| `glyph_id` | 44.5 ns | 44.8 ns |
-| `advance_widths` ×1 | 19.8 ns | 20.0 ns |
-| `line_metrics` | 9.9 ns | 10.0 ns |
-| `descender` | 6.4 ns | 6.5 ns |
-| `ascender` | 6.4 ns | 6.5 ns |
-| `cap_height` | 0.8 ns | 0.8 ns |
-| `upm` | 0.3 ns | 0.3 ns |
-| `num_glyphs` | 0.3 ns | 0.3 ns |
-
----
-
-## 2. Shaping
-
-`--test shaper` · 5 tests · one shaped run per sample
-
-| test | font | n | min | median | p95 |
-|---|---|---|---|---|---|
-| `shape_cjk_sentence_source_han` | Source Han Sans JP, 30 chars | 120,000 | 917 ns | 1.041 µs | 1.083 µs |
-| `shape_latin_ligatures_eb_garamond` | EB Garamond, liga fires repeatedly | 20,000 | 2.916 µs | 3.042 µs | 3.167 µs |
-| `shape_arabic_joined_run_scheherazade` | Scheherazade New, one fully joined run | 15,000 | 8.250 µs | 8.458 µs | 8.750 µs |
-| `shape_devanagari_conjuncts_noto` | Noto Sans Devanagari, conjuncts and matra reordering | 8,000 | 8.417 µs | 8.625 µs | 8.875 µs |
-| `shape_latin_sentence_inter` | Inter, 78-character sentence | 20,000 | 9.458 µs | 9.625 µs | 9.917 µs |
-
----
-
-## 3. Outlines
-
-`--test type` · `outline_latency` · 9 tests
-
-| test | scope | n | min | median |
-|---|---|---|---|---|
-| `autohint_inter_h` | Inter `H` at 13 ppem, glyf, collect + grid fit | 20,000 | 625 ns | 709 ns |
-| `outline_glyf_eb_garamond_composite` | EB Garamond gid 2244, 7-component composite | 50,000 | 1.416 µs | 1.541 µs |
-| `autohint_stix_h` | STIX `H` at 13 ppem, CFF, collect + grid fit | 20,000 | 1.500 µs | 1.625 µs |
-| `outline_glyf_scheherazade` | Scheherazade gid 1583, 1,683 points | 20,000 | 9.041 µs | 9.167 µs |
-| `outline_cff_stix` | STIX gid 2257, 5,819-byte Type 2 charstring | 2,000 | 14.042 µs | 14.166 µs |
-| `outline_glyf_sweep` | EB Garamond, 3,247 glyphs, whole face | 60 | 2.356 ms | 2.423 ms |
-| `outline_cff_sweep` | STIX, 5,543 glyphs, 123,321 segments | 30 | 2.467 ms | 2.511 ms |
-| `autohint_sweep_inter` | Inter, 2,937 glyphs, 131,498 points | 20 | 6.862 ms | 7.034 ms |
-| `autohint_sweep_stix` | STIX, 5,543 glyphs, 211,893 points | 10 | 14.540 ms | 14.837 ms |
-
----
-
-## 4. Hinting
-
-`--test type` · `hint_latency` · 3 tests
-
-| test | scope | n | min | median |
-|---|---|---|---|---|
-| `hint_glyph_bytecode` | 5 hinted glyphs at 16 ppem | 40,000 | 1.500 µs | 1.625 µs |
-| `hint_glyph_context_cached` | 5 glyphs through `FontCache` | 40,000 | 1.500 µs | 1.625 µs |
-| `hint_glyph_context_per_glyph` | 5 glyphs, `HintContext` rebuilt each time | 4,000 | 6.208 µs | 6.625 µs |
-
----
-
-## 5. Color
-
-`--test type` · `colr_latency` · 3 tests
-
-| test | scope | n | min | median |
-|---|---|---|---|---|
-| `colr_v1_paint_graph_static` | 200 base glyphs, whole sweep | 2,000 | 39.792 µs | 40.167 µs |
-| `cache_colr_variable` | 200 base glyphs through `FontCache` | 2,000 | 43.583 µs | 44.083 µs |
-| `colr_v1_paint_graph_variable` | 200 base glyphs, whole sweep | 2,000 | 754.708 µs | 765.334 µs |
-
----
-
-## 6. Math
-
-`--test machine` · 9 tests · daegun is `no_std` and carries its own float math
-
-### `float_ext_against_std` – ratio > 1 means daegun is slower
-
-| | daegun | std | ratio |
-|---|---|---|---|
-| `f32 abs` | 0.244 ns | 0.244 ns | 1.00× |
-| `f64 abs` | 0.234 ns | 0.234 ns | 1.00× |
-| `f32 round_ties_even` | 0.376 ns | 0.244 ns | 1.54× |
-| `f32 floor` | 0.397 ns | 0.244 ns | 1.63× |
-| `f64 trunc` | 0.539 ns | 0.234 ns | 2.30× |
-| `f64 round_ties_even` | 0.549 ns | 0.234 ns | 2.35× |
-| `f64 ceil` | 0.621 ns | 0.234 ns | 2.65× |
-| `f32 round` | 0.763 ns | 0.244 ns | 3.13× |
-| `f64 round` | 0.783 ns | 0.234 ns | 3.35× |
-| `f64 floor` | 0.834 ns | 0.234 ns | 3.56× |
-
-### `sqrt_against_std` – Newton iteration against one hardware instruction
-
-| | daegun | std | ratio |
-|---|---|---|---|
-| `f32 sqrt` | 2.340 ns | 0.295 ns | 7.93× |
-| `f64 sqrt` | 2.706 ns | 0.315 ns | 8.59× |
-
-### `trig_against_std`
-
-| | daegun | std | ratio |
-|---|---|---|---|
-| `f64 sin_cos` | 4.089 ns | 6.927 ns | 0.59× |
-| `f64 atan2` | 7.589 ns | 7.589 ns | 1.00× |
-
-### `rounding_old_against_new` – ratio < 1 means the new one is faster
-
-| | new | old | ratio |
-|---|---|---|---|
-| `round_ties_even` | 0.549 ns | 1.933 ns | 0.28× |
-| `round` | 0.783 ns | 1.404 ns | 0.56× |
-| `ceil` | 0.621 ns | 0.743 ns | 0.84× |
-| `floor` | 0.834 ns | 0.987 ns | 0.84× |
-| `trunc` | 0.539 ns | 0.621 ns | 0.87× |
-
-### `atan2_cost_breakdown`
-
-| | first | second | ratio |
-|---|---|---|---|
-| atan2 vs one divide | 7.192 ns | 0.336 ns | 21.40× |
-| atan2 vs horner20 | 7.162 ns | 3.286 ns | 2.18× |
-| horner20 vs one divide | 3.296 ns | 0.336 ns | 9.81× |
-| estrin20 vs horner20 | 2.156 ns | 3.286 ns | 0.66× |
-
-### `atan_polynomial_shape` – 11 coefficients, identical inputs
-
-| | first | second | ratio |
-|---|---|---|---|
-| estrin4 vs current | 1.312 ns | 1.271 ns | 1.03× |
-
-### `atan_reduction_shape` – ratio < 1 means the first named is faster
-
-| | first | second | ratio |
-|---|---|---|---|
-| hybrid, one arm | 3.571 ns | 4.028 ns | 0.89× |
-| branchless, scattered | 5.605 ns | 5.666 ns | 0.99× |
-| branchless, raster sweep | 5.605 ns | 5.524 ns | 1.01× |
-| hybrid, mid range | 6.765 ns | 6.592 ns | 1.03× |
-| hybrid, raster sweep | 6.205 ns | 5.513 ns | 1.13× |
-| hybrid, scattered | 6.836 ns | 5.666 ns | 1.21× |
-| branchless, one arm | 5.605 ns | 4.028 ns | 1.39× |
-
-### `sqrt_iteration_shape`
-
-| | first | second | ratio |
-|---|---|---|---|
-| rsqrt 4 vs current | 2.777 ns | 2.696 ns | 1.03× |
-| rsqrt 5 vs current | 3.520 ns | 2.706 ns | 1.30× |
-| current vs std sqrt | 2.706 ns | 0.305 ns | 8.87× |
-
-Accuracy against std, worst ulp over 60,000 values in [1e-8, 1e8]:
-
-| | worst ulp |
+| | |
 |---|---|
-| newton on root, 4 passes | 1 |
-| newton on reciprocal, 5 passes | 2 |
-| newton on reciprocal, 4 passes | 3 |
+| What | Real work through the public API, each scene's rows run once an iteration |
+| Figure | Each row's median iteration, over 6 seconds a scene |
+| Caches | Nothing drawn before is replayed: Outlines draws glyphs new to the font object, Variable moves to a weight not seen before, and `shape`'s cache is cleared before each shape, outside the clock |
 
-### `daemath_baseline` – blending, per pixel, anchored on SrcOver
+### Results
 
-| | ns/px | anchor | ratio |
+| # | Scene | Work | Time |
 |---|---|---|---|
-| blend Multiply | 1.638 | 1.953 | 0.84× |
-| blend HardLight | 4.873 | 1.953 | 2.50× |
-| blend HslSaturation | 7.253 | 1.973 | 3.68× |
-| composite SrcOver | 3.957 | 2.045 | 1.93× |
+| 1 | Scripts | Latin, Inter | 7.17 µs |
+| 2 | Scripts | Latin ligatures, EB Garamond | 2.92 µs |
+| 3 | Scripts | Arabic, Scheherazade New | 6.75 µs |
+| 4 | Scripts | Devanagari, Noto Sans | 6.46 µs |
+| 5 | Scripts | Khmer, Noto Sans | 7.00 µs |
+| 6 | Scripts | Japanese, Source Han Sans | 1.29 µs |
+| 7 | Scripts | Myanmar, Noto Sans | 15.33 µs |
+| 8 | Outlines | glyf, Inter | 15.88 µs |
+| 9 | Outlines | glyf with composites, EB Garamond | 31.12 µs |
+| 10 | Outlines | CFF, STIX Two | 15.79 µs |
+| 11 | Outlines | CFF2, Source Han Sans | 56.33 µs |
+| 12 | Variable | Inter, weight animating | 25.71 µs |
+| 13 | Variable | Source Serif 4 (CFF2), weight animating | 62.79 µs |
+| 14 | Variable | Source Han Sans (CFF2), weight animating | 49.04 µs |
+| 15 | Hinting | Bytecode, Irianis ADF | 214.04 µs |
+| 16 | Hinting | Autohinter, Inter | 88.12 µs |
+| 17 | Hinting | Autohinter, STIX Two | 98.21 µs |
+| 18 | Picker | Open 14 fonts, bytes handed over | 4.42 µs |
+| 19 | Picker | Open 14 fonts, bytes copied | 645.92 µs |
+| 20 | Picker | First metrics read, 14 fonts | 750.0 ns |
+| 21 | Color | Bungee Tint (COLR v0), every color glyph | 979.96 µs |
+| 22 | Color | COLR v1 test glyphs, location moving | 104.71 µs |
 
-### `daemath_baseline` – gradients, per pixel, anchored on linear
+## Rasterizer
 
-| | ns/px | anchor | ratio |
-|---|---|---|---|
-| gradient linear | 11.790 | anchor | 1.00× |
-| gradient radial | 23.082 | 11.902 | 1.94× |
-| gradient sweep | 23.793 | 11.790 | 2.02× |
-| gradient linear, sRGB | 7.446 | 11.821 | 0.63× |
+### Method
 
----
+| | |
+|---|---|
+| Text | "Sphinx of black quartz, judge my vow." in Inter (TrueType, whose contours overlap) and STIX Two Math (CFF), unhinted, outlines warm in daegun's cache |
+| End to end | From the font, as a caller draws each glyph |
+| Coverage alone | The sentence's outlines, prepared once in pixels, each filled through `Rasterizer::path` |
+| Stripes (LCD) | End to end, three samples a pixel through the five-tap filter |
+| Rounds | 21, interleaved, each a batch of at least 2 ms a job, the median batch kept |
+| Accuracy | Each pixel against the exact coverage of the curves, each curve cut into 512 chords: the worst and the mean gap, in levels of 255 |
 
-## 7. The C ABI
+`path` takes any path, so it finds where contours meet and resolves those rows exactly, where summing them would
+over-darken. Inter's contours overlap, which is what its coverage rows pay for; end to end, daegun learns each
+glyph's overlaps once and sums it straight.
 
-`src/c-wrapper/tests/latency.c` · 200 rounds after 50 warmup · both sides on a release build
+### Inter, TrueType
 
-| | Rust min | C min | Rust median | C median |
-|---|---|---|---|---|
-| `from_bytes`, borrowed | 15.208 µs | 15.000 µs | 15.333 µs | 15.000 µs |
-| `from_vec`, owned | 1.125 µs | 1.000 µs | 1.333 µs | 1.000 µs |
-| `flatten` | 983.8 ns | 1.004 µs | 987.3 ns | 1.010 µs |
-| `prepared_outline` | 805.8 ns | 852.0 ns | 822.3 ns | 856.0 ns |
-| `glyph_quads` | 454.0 ns | 486.0 ns | 456.1 ns | 490.0 ns |
-| `outline_glyph` | 270.5 ns | 302.0 ns | 271.0 ns | 304.0 ns |
-| `glyph_id` | 44.5 ns | 48.0 ns | 44.8 ns | 48.0 ns |
-| `advance_widths` ×1 | 19.8 ns | 48.0 ns | 20.0 ns | 50.0 ns |
-| `upm` | 0.3 ns | 0.0 ns | 0.3 ns | 0.0 ns |
+| px | End to end | Coverage alone | Stripes (LCD) | Worst gap | Mean gap |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 11.18 µs | 42.93 µs | 25.08 µs | 6.2 | 0.95 |
+| 20 | 14.98 µs | 43.96 µs | 40.87 µs | 6.6 | 0.73 |
+| 40 | 24.62 µs | 54.01 µs | 84.89 µs | 7.2 | 0.45 |
+| 80 | 50.96 µs | 94.34 µs | 219.42 µs | 9.2 | 0.25 |
+| 160 | 138.23 µs | 216.85 µs | 537.75 µs | 10.0 | 0.14 |
+| 200 | 203.08 µs | 304.04 µs | 707.69 µs | 9.9 | 0.11 |
 
-The C column comes off `clock_gettime` over batches of 500, which quantizes it to 2 ns steps. Read
-the cheap rows as an upper bound rather than a figure – `upm` at 0.0 ns means "below what this clock
-can see", not free. The two open rows are timed one call a sample instead, at the clock's 1 µs
-resolution on this machine, so they read low: C is not faster than Rust there.
+### STIX Two Math, CFF
 
-The first C run of the session read `from_bytes` at 35 µs; every run after it, of either version,
-read 15. That is one reason every figure here is the best of three.
+| px | End to end | Coverage alone | Stripes (LCD) | Worst gap | Mean gap |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 11.44 µs | 25.14 µs | 24.65 µs | 5.5 | 0.92 |
+| 20 | 16.63 µs | 26.15 µs | 42.99 µs | 6.2 | 0.72 |
+| 40 | 27.95 µs | 37.34 µs | 88.71 µs | 6.1 | 0.43 |
+| 80 | 56.56 µs | 69.31 µs | 238.99 µs | 8.1 | 0.23 |
+| 160 | 156.90 µs | 182.81 µs | 581.48 µs | 8.1 | 0.12 |
+| 200 | 224.69 µs | 270.75 µs | 734.75 µs | 9.3 | 0.10 |
 
----
+### Distance fields
 
-## About these numbers
+The sentence's SDF and MSDF from the same outlines. Each field is kept as bytes, as an atlas keeps it, and read back
+between texels, bilinear, 4 by 4 a texel, against whether the curves wind each point: a misread is a point read on
+the wrong side, and in brackets those more than a tenth of a pixel from the curves.
 
-They are latency tests living beside the ordinary ones, marked `#[ignore]` because they measure
-rather than assert. The gate runs what can fail; these report, and are run by hand.
+Inter, TrueType:
 
-Every figure is the best of three consecutive runs. A single run of this suite moves by several
-percent between passes, so a lone number is not a baseline.
+| px | Spread | SDF | MSDF | SDF misreads | MSDF misreads | Points read |
+|---:|---:|---:|---:|---:|---:|---:|
+| 16 | 2 | 821.19 µs | 2.08 ms | 1,068 (333) | 624 (92) | 72,624 |
+| 32 | 4 | 2.09 ms | 4.56 ms | 1,227 (293) | 678 (19) | 297,248 |
+| 64 | 4 | 3.07 ms | 7.28 ms | 1,597 (282) | 973 (9) | 829,408 |
+| 128 | 8 | 8.17 ms | 20.59 ms | 5,184 (262) | 4,747 (6) | 3,320,224 |
 
-`--test-threads=1` is not optional. The reports are multi-line and interleave into nonsense without
-it, which makes them look broken rather than unread.
+STIX Two Math, CFF:
 
-`min` rather than mean is the number to watch for a regression, being the least polluted by whatever
-else the machine was doing. Section 7 is not a cargo target and has to be built against a release
-staticlib, or it measures a debug library and reports several times the real cost:
-
-```sh
-cargo rustc --release --features capi --crate-type staticlib
-cc -std=c11 -O2 -I src/c-wrapper src/c-wrapper/tests/latency.c target/release/libdaegun.a \
-   <system libraries, as daegun.h lists them> -o clat && ./clat assets/test-fonts/inter/InterVariable.ttf
-```
-
-Each sweep in sections 3 to 5 runs a different face, so divide by the glyph count before reading
-anything across their rows. `DAEGUN_SWEEP_FONT` repoints `outline_glyf_sweep`; every other sweep is
-fixed to the face named beside it.
-
-For counters rather than wall clock, `scripts/tools/perf/pmu.sh` drives Instruments, and
-`insn-diff.py` and `pmu-attribute.py` beside it attribute the difference between two builds down to
-the function.
+| px | Spread | SDF | MSDF | SDF misreads | MSDF misreads | Points read |
+|---:|---:|---:|---:|---:|---:|---:|
+| 16 | 2 | 1.14 ms | 2.86 ms | 2,415 (1,121) | 1,684 (677) | 70,560 |
+| 32 | 4 | 2.93 ms | 6.00 ms | 1,772 (446) | 1,084 (122) | 286,464 |
+| 64 | 4 | 4.27 ms | 9.42 ms | 1,471 (309) | 807 (29) | 794,672 |
+| 128 | 8 | 11.22 ms | 25.31 ms | 2,258 (247) | 1,545 (17) | 3,182,336 |

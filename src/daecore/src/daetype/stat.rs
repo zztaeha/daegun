@@ -1,252 +1,256 @@
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
-use super::decoder::{read_u16_be, read_u32_be, parse_all_name_strings, records_fit};
-use crate::daecore::daetype::TableBytes;
+use super::decoder::{each_name_string, read_fixed, read_u16_be, read_u32_be, records_fit, window, NameText};
+use crate::daecore::daetype::Tables;
+use crate::daecore::{Error, Tag};
 
-#[derive(Debug, PartialEq)]
-pub struct StatAxis { pub tag: String, pub name: Option<String>, pub ordering: u16 }
-
-// `older_sibling` marks a value that describes other fonts of the family rather than this one.
-#[derive(Debug, PartialEq)]
-pub enum StatAxisValue {
-    Single { axis_index: u16, name: Option<String>, value: f64, elidable: bool, older_sibling: bool },
-    Range {
-        axis_index: u16, name: Option<String>, nominal: f64, min: f64, max: f64, elidable: bool, older_sibling: bool,
-    },
-    Linked {
-        axis_index: u16, name: Option<String>, value: f64, linked_value: f64, elidable: bool, older_sibling: bool,
-    },
-    Combo  { name: Option<String>, values: Vec<(u16, f64)>, elidable: bool, older_sibling: bool },
+/// One of STAT's design axes.
+#[non_exhaustive]
+#[derive(Debug, PartialEq, Clone)]
+pub struct StatAxis {
+    /// The axis's tag, as fvar's would be.
+    pub tag: Tag,
+    /// Its name, none where the name table has no record for it.
+    pub name: Option<String>,
+    /// Where the axis falls when names are put together, lowest first.
+    pub ordering: u16,
 }
 
-const OLDER_SIBLING_FONT_ATTRIBUTE: u16 = 0x0001;
+/// A value STAT names on its axes, in user coordinates.
+#[non_exhaustive]
+#[derive(Debug, PartialEq, Clone)]
+pub enum StatAxisValue {
+    /// One value on one axis.
+    Single {
+        /// Which of STAT's axes, by index.
+        axis_index: u16,
+        /// Its name, none where the name table has no record for it.
+        name: Option<String>,
+        /// The value.
+        value: f64,
+        /// Whether the name is left out when names are put together.
+        elidable: bool,
+        /// Whether it describes other fonts of the family rather than this one.
+        older_sibling: bool,
+    },
+    /// A range on one axis, with the value it is named for.
+    Range {
+        /// Which of STAT's axes, by index.
+        axis_index: u16,
+        /// Its name, none where the name table has no record for it.
+        name: Option<String>,
+        /// The value the name is for.
+        nominal: f64,
+        /// The lowest value in the range.
+        min: f64,
+        /// The highest value in the range.
+        max: f64,
+        /// Whether the name is left out when names are put together.
+        elidable: bool,
+        /// Whether it describes other fonts of the family rather than this one.
+        older_sibling: bool,
+    },
+    /// One value on one axis, with the value linked to it, as bold is to regular.
+    Linked {
+        /// Which of STAT's axes, by index.
+        axis_index: u16,
+        /// Its name, none where the name table has no record for it.
+        name: Option<String>,
+        /// The value.
+        value: f64,
+        /// The value linked to it.
+        linked_value: f64,
+        /// Whether the name is left out when names are put together.
+        elidable: bool,
+        /// Whether it describes other fonts of the family rather than this one.
+        older_sibling: bool,
+    },
+    /// Values on several axes, named together.
+    Combo {
+        /// Its name, none where the name table has no record for it.
+        name: Option<String>,
+        /// Each value with the index of its axis.
+        values: Vec<(u16, f64)>,
+        /// Whether the name is left out when names are put together.
+        elidable: bool,
+        /// Whether it describes other fonts of the family rather than this one.
+        older_sibling: bool,
+    },
+}
+
+pub(crate) const OLDER_SIBLING_FONT_ATTRIBUTE: u16 = 0x0001;
 const ELIDABLE_AXIS_VALUE_NAME: u16 = 0x0002;
 
-fn read_fixed(data: &[u8], off: usize) -> Option<f64> {
-    read_u32_be(data, off).map(|v| v as i32 as f64 / 65536.0)
+// A STAT table as the public API and instancing both read it.
+pub(crate) struct Stat<'a> {
+    pub data: &'a [u8],
+    axis_size: usize,
+    axis_count: usize,
+    axes_at: usize,
+    value_count: usize,
+    values_at: usize,
 }
 
-pub type StatInfo = (Vec<StatAxis>, Vec<StatAxisValue>, Option<String>);
+// An AxisValue table: where it lies, its flags and name, and what it describes.
+pub(crate) struct AxisValue {
+    pub at: usize,
+    pub len: usize,
+    pub flags: u16,
+    pub name_id: u16,
+    pub kind: ValueKind,
+}
+
+pub(crate) enum ValueKind {
+    Single { axis: u16, value: f64 },
+    Range { axis: u16, nominal: f64, min: f64, max: f64 },
+    Linked { axis: u16, value: f64, linked: f64 },
+    Combo(Vec<(u16, f64)>),
+}
+
+impl<'a> Stat<'a> {
+    // The header must lie in the table. The design axes are absent where their count leaves it or designAxisSize is
+    // narrower than an AxisRecord, and the value offsets where theirs does.
+    pub fn read(data: &'a [u8]) -> Result<Self, Error> {
+        let field = |at: usize| read_u16_be(data, at).map(usize::from);
+        let wide = |at: usize| read_u32_be(data, at).map(|v| v as usize);
+        let (Some(axis_size), Some(axis_count), Some(axes_at), Some(value_count), Some(values_at)) =
+            (field(4), field(6), wide(8), field(12), wide(14))
+        else {
+            return Err(Error::malformed("STAT: header truncated"));
+        };
+        let fits = |at, count, size| records_fit(at, count, size, data.len());
+        let axis_count = if axis_size >= 8 && fits(axes_at, axis_count, axis_size) { axis_count } else { 0 };
+        let value_count = if fits(values_at, value_count, 2) { value_count } else { 0 };
+        Ok(Stat { data, axis_size, axis_count, axes_at, value_count, values_at })
+    }
+
+    // The design axis records, as they lie.
+    pub fn design_axes(&self) -> &'a [u8] {
+        self.data.get(self.axes_at..self.axes_at + self.axis_count * self.axis_size).unwrap_or_default()
+    }
+
+    // Each design axis: its tag, name ID and ordering.
+    pub fn axes(&self) -> impl Iterator<Item = ([u8; 4], u16, u16)> + '_ {
+        (0..self.axis_count).filter_map(|i| {
+            let rec = self.axes_at + i * self.axis_size;
+            Some((*window::<4>(self.data, rec)?, read_u16_be(self.data, rec + 4)?, read_u16_be(self.data, rec + 6)?))
+        })
+    }
+
+    // Each AxisValue table that reads. One naming an axis the table lacks is left out, as is a
+    // combination naming one; combinations hold one record per six bytes of the table between them.
+    pub fn values(&self) -> impl Iterator<Item = AxisValue> + '_ {
+        let mut combo_left = self.data.len() / 6;
+        (0..self.value_count).filter_map(move |i| {
+            let at = self.values_at + usize::from(read_u16_be(self.data, self.values_at + 2 * i)?);
+            self.value(at, &mut combo_left)
+        })
+    }
+
+    fn value(&self, at: usize, combo_left: &mut usize) -> Option<AxisValue> {
+        let data = self.data;
+        let fixed = |k: usize| read_fixed(data, at + k);
+        let on_an_axis = |rec: usize| read_u16_be(data, rec).filter(|&axis| usize::from(axis) < self.axis_count);
+        let (kind, len) = match read_u16_be(data, at)? {
+            1 => (ValueKind::Single { axis: on_an_axis(at + 2)?, value: fixed(8)? }, 12),
+            2 => (
+                ValueKind::Range { axis: on_an_axis(at + 2)?, nominal: fixed(8)?, min: fixed(12)?, max: fixed(16)? },
+                20,
+            ),
+            3 => (ValueKind::Linked { axis: on_an_axis(at + 2)?, value: fixed(8)?, linked: fixed(12)? }, 16),
+            4 => {
+                let count = usize::from(read_u16_be(data, at + 2)?);
+                if !records_fit(at + 8, count, 6, data.len()) {
+                    return None;
+                }
+                *combo_left = combo_left.checked_sub(count)?;
+                let records = (0..count).map(|j| Some((on_an_axis(at + 8 + 6 * j)?, fixed(10 + 6 * j)?)));
+                (ValueKind::Combo(records.collect::<Option<_>>()?), 8 + 6 * count)
+            }
+            _ => return None,
+        };
+        Some(AxisValue { at, len, flags: read_u16_be(data, at + 4)?, name_id: read_u16_be(data, at + 6)?, kind })
+    }
+
+    // STAT 1.1's name for a font whose every value is elided.
+    pub fn elided_fallback(&self) -> Option<u16> {
+        (read_u16_be(self.data, 2)? >= 1).then(|| read_u16_be(self.data, 18)).flatten()
+    }
+}
+
+// Whether this STAT is read at all: major version 1, as the spec defines it, with the header its minor version gives,
+// 18 bytes at 1.0 and 20 from 1.1. Axis records or values past the table are absent where they're read.
+pub(crate) fn has_data(stat: &[u8]) -> bool {
+    let header = if read_u16_be(stat, 2).is_some_and(|minor| minor >= 1) { 20 } else { 18 };
+    stat.len() >= header && read_u16_be(stat, 0) == Some(1)
+}
+
+// The axes, the values and the elided fallback name, each name Rust's own copy or the place C keeps it.
+pub type StatInfo<A = StatAxis, V = StatAxisValue, N = String> = (Vec<A>, Vec<V>, Option<N>);
 
 pub fn parse_stat(
-    table_map: &BTreeMap<String, TableBytes>,
-) -> Result<StatInfo, String> {
-    let stat = table_map.get("STAT").ok_or("missing STAT")?;
-    if stat.len() < 18 { return Err("STAT: header truncated".into()); }
-
-    let minor_version               = read_u16_be(stat, 2).ok_or("STAT: header truncated")?;
-    let design_axis_size            = read_u16_be(stat, 4).ok_or("STAT: header truncated")? as usize;
-    let design_axis_count           = read_u16_be(stat, 6).ok_or("STAT: header truncated")? as usize;
-    let design_axes_offset          = read_u32_be(stat, 8).ok_or("STAT: header truncated")? as usize;
-    let axis_value_count            = read_u16_be(stat, 12).ok_or("STAT: header truncated")? as usize;
-    let offset_to_axis_value_offsets = read_u32_be(stat, 14).ok_or("STAT: header truncated")? as usize;
-
-    let names = parse_all_name_strings(table_map);
+    table_map: &Tables,
+) -> Result<StatInfo, Error> {
     // Each axis and value gets its name's own copy, so a name that every value names cannot multiply
     // past the bytes the two tables could hold between them.
-    let mut name_budget = stat.len().saturating_mul(16).saturating_add(names.values().map(String::len).sum());
-    let mut name_of = |id: u16| -> Option<String> {
-        let name = names.get(&id)?;
-        name_budget = name_budget.checked_sub(name.len())?;
-        Some(name.clone())
-    };
-
-    const STAT_AXIS_RECORD_SIZE: usize = 8;
-    if design_axis_count > 0 && design_axis_size < STAT_AXIS_RECORD_SIZE {
-        return Err("STAT: designAxisSize is narrower than an AxisRecord".into());
-    }
-    if !records_fit(design_axes_offset, design_axis_count, design_axis_size, stat.len()) {
-        return Err("STAT: design axis array does not fit the table".into());
-    }
-    let mut axes = Vec::with_capacity(design_axis_count);
-    for i in 0..design_axis_count {
-        let rec = design_axes_offset + i * design_axis_size;
-        let tag_bytes = stat.get(rec..rec + 4).ok_or("STAT: design axis truncated")?;
-        let tag      = String::from_utf8_lossy(tag_bytes).to_string();
-        let name_id  = read_u16_be(stat, rec + 4).ok_or("STAT: design axis truncated")?;
-        let ordering = read_u16_be(stat, rec + 6).ok_or("STAT: design axis truncated")?;
-        axes.push(StatAxis { tag, name: name_of(name_id), ordering });
-    }
-
-    if !records_fit(offset_to_axis_value_offsets, axis_value_count, 2, stat.len()) {
-        return Err("STAT: axis value offset array does not fit the table".into());
-    }
-    let mut combo_records_left = stat.len() / 6;
-
-    let mut values = Vec::with_capacity(axis_value_count);
-    for i in 0..axis_value_count {
-        let off_rec = offset_to_axis_value_offsets + i * 2;
-        let rel_off = read_u16_be(stat, off_rec).ok_or("STAT: axis value offset truncated")? as usize;
-        let av = offset_to_axis_value_offsets + rel_off;
-
-        let format = match read_u16_be(stat, av) { Some(f) => f, None => continue };
-        // An axis index must be below designAxisCount; a value naming another axis is left out.
-        let on_an_axis = |axis_index: u16| usize::from(axis_index) < design_axis_count;
-        let flag = |flags: u16, bit: u16| flags & bit != 0;
-        match format {
-            1 => {
-                let (Some(axis_index), Some(flags), Some(name_id), Some(value)) = (
-                    read_u16_be(stat, av + 2), read_u16_be(stat, av + 4),
-                    read_u16_be(stat, av + 6), read_fixed(stat, av + 8),
-                ) else { continue };
-                if !on_an_axis(axis_index) { continue; }
-                values.push(StatAxisValue::Single {
-                    axis_index, name: name_of(name_id), value,
-                    elidable: flag(flags, ELIDABLE_AXIS_VALUE_NAME),
-                    older_sibling: flag(flags, OLDER_SIBLING_FONT_ATTRIBUTE),
-                });
-            }
-            2 => {
-                let (Some(axis_index), Some(flags), Some(name_id), Some(nominal), Some(min), Some(max)) = (
-                    read_u16_be(stat, av + 2), read_u16_be(stat, av + 4), read_u16_be(stat, av + 6),
-                    read_fixed(stat, av + 8), read_fixed(stat, av + 12), read_fixed(stat, av + 16),
-                ) else { continue };
-                if !on_an_axis(axis_index) { continue; }
-                values.push(StatAxisValue::Range {
-                    axis_index, name: name_of(name_id), nominal, min, max,
-                    elidable: flag(flags, ELIDABLE_AXIS_VALUE_NAME),
-                    older_sibling: flag(flags, OLDER_SIBLING_FONT_ATTRIBUTE),
-                });
-            }
-            3 => {
-                let (Some(axis_index), Some(flags), Some(name_id), Some(value), Some(linked_value)) = (
-                    read_u16_be(stat, av + 2), read_u16_be(stat, av + 4), read_u16_be(stat, av + 6),
-                    read_fixed(stat, av + 8), read_fixed(stat, av + 12),
-                ) else { continue };
-                if !on_an_axis(axis_index) { continue; }
-                values.push(StatAxisValue::Linked {
-                    axis_index, name: name_of(name_id), value, linked_value,
-                    elidable: flag(flags, ELIDABLE_AXIS_VALUE_NAME),
-                    older_sibling: flag(flags, OLDER_SIBLING_FONT_ATTRIBUTE),
-                });
-            }
-            4 => {
-                let (Some(record_count), Some(flags), Some(name_id)) = (
-                    read_u16_be(stat, av + 2), read_u16_be(stat, av + 4), read_u16_be(stat, av + 6),
-                ) else { continue };
-                let record_count = record_count as usize;
-                if !records_fit(av.saturating_add(8), record_count, 6, stat.len()) { continue; }
-                let Some(left) = combo_records_left.checked_sub(record_count) else { continue };
-                combo_records_left = left;
-
-                let mut combo_values = Vec::with_capacity(record_count);
-                let mut ok = true;
-                for j in 0..record_count {
-                    let rec = av + 8 + j * 6;
-                    match (read_u16_be(stat, rec), read_fixed(stat, rec + 2)) {
-                        (Some(axis_index), Some(value)) if on_an_axis(axis_index) => {
-                            combo_values.push((axis_index, value));
-                        }
-                        _ => { ok = false; break; }
-                    }
-                }
-                if !ok { continue; }
-                values.push(StatAxisValue::Combo {
-                    name: name_of(name_id), values: combo_values,
-                    elidable: flag(flags, ELIDABLE_AXIS_VALUE_NAME),
-                    older_sibling: flag(flags, OLDER_SIBLING_FONT_ATTRIBUTE),
-                });
-            }
-            _ => continue,
+    let names = |table_map: &Tables, stat_len: usize| {
+        let mut names = NameText::default();
+        each_name_string(table_map, &mut names);
+        let mut name_budget = stat_len.saturating_mul(16).saturating_add(names.bytes());
+        move |id: u16| -> Option<String> {
+            let name = names.get(id)?;
+            name_budget = name_budget.checked_sub(name.len())?;
+            Some(name.into())
         }
-    }
-
-    let elided_fallback_name = if minor_version >= 1 && stat.len() >= 20 {
-        read_u16_be(stat, 18).and_then(&mut name_of)
-    } else {
-        None
     };
+    let axis = |tag, name, ordering| StatAxis { tag, name, ordering };
+    let value = |kind, name, elidable, older_sibling| match kind {
+        ValueKind::Single { axis, value } => {
+            StatAxisValue::Single { axis_index: axis, name, value, elidable, older_sibling }
+        }
+        ValueKind::Range { axis, nominal, min, max } => {
+            StatAxisValue::Range { axis_index: axis, name, nominal, min, max, elidable, older_sibling }
+        }
+        ValueKind::Linked { axis, value, linked } => StatAxisValue::Linked {
+            axis_index: axis,
+            name,
+            value,
+            linked_value: linked,
+            elidable,
+            older_sibling,
+        },
+        ValueKind::Combo(values) => StatAxisValue::Combo { name, values, elidable, older_sibling },
+    };
+    parse_stat_with(table_map, names, axis, value)
+}
 
+// STAT's axes, values and elided fallback name in order, each axis and value made by its closure and each name taken
+// by the lookup `names` makes once the table reads: Rust's own copy of it, or the place C keeps it.
+pub(crate) fn parse_stat_with<N, F: FnMut(u16) -> Option<N>, A, V>(
+    table_map: &Tables,
+    names: impl FnOnce(&Tables, usize) -> F,
+    mut axis: impl FnMut(Tag, Option<N>, u16) -> A,
+    mut value: impl FnMut(ValueKind, Option<N>, bool, bool) -> V,
+) -> Result<StatInfo<A, V, N>, Error> {
+    let stat = Stat::read(table_map.get("STAT").ok_or(Error::missing("missing STAT"))?)?;
+    let mut name_of = names(table_map, stat.data.len());
+    let axes = stat.axes()
+        .map(|(tag, name_id, ordering)| axis(Tag::new(&tag), name_of(name_id), ordering))
+        .collect();
+    let values = stat.values()
+        .map(|v| {
+            let (name, elidable, older_sibling) = (
+                name_of(v.name_id),
+                v.flags & ELIDABLE_AXIS_VALUE_NAME != 0,
+                v.flags & OLDER_SIBLING_FONT_ATTRIBUTE != 0,
+            );
+            value(v.kind, name, elidable, older_sibling)
+        })
+        .collect();
+    let elided_fallback_name = stat.elided_fallback().and_then(&mut name_of);
     Ok((axes, values, elided_fallback_name))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn words(w: &[u16]) -> Vec<u8> {
-        w.iter().flat_map(|v| v.to_be_bytes()).collect()
-    }
-
-    // Mac Roman names by ID.
-    fn name_table(names: &[(u16, &[u8])]) -> Vec<u8> {
-        let mut t = words(&[0, names.len() as u16, 6 + 12 * names.len() as u16]);
-        let mut storage: Vec<u8> = Vec::new();
-        for (id, s) in names {
-            t.extend(words(&[1, 0, 0, *id, s.len() as u16, storage.len() as u16]));
-            storage.extend(*s);
-        }
-        t.extend(storage);
-        t
-    }
-
-    // STAT 1.2 over the axes `axes` (tag and name ID), its axis value offsets `offsets` counted from
-    // their own start and the value tables `tables` after them.
-    fn tables(
-        names: Vec<u8>, axes: &[(&[u8; 4], u16)], offsets: &[u16], tables: &[u8],
-    ) -> BTreeMap<String, TableBytes> {
-        let values_at = 20 + 8 * axes.len() as u32;
-        let mut stat = words(&[1, 2, 8, axes.len() as u16]);
-        stat.extend(20u32.to_be_bytes());
-        stat.extend(words(&[offsets.len() as u16]));
-        stat.extend(values_at.to_be_bytes());
-        stat.extend(words(&[0]));
-        for (i, (tag, name)) in axes.iter().enumerate() {
-            stat.extend(*tag);
-            stat.extend(words(&[*name, i as u16]));
-        }
-        stat.extend(offsets.iter().flat_map(|o| o.to_be_bytes()));
-        stat.extend(tables);
-        [("name", names), ("STAT", stat)].into_iter().map(|(t, b)| (String::from(t), TableBytes::from(b))).collect()
-    }
-
-    // A format 1 value on `axis` with `flags`, named 257, at weight 700.
-    fn single(axis: u16, flags: u16) -> Vec<u8> {
-        words(&[1, axis, flags, 257, 700, 0])
-    }
-
-    // 1,024 values all naming one 65,535-byte name, 196,605 bytes once decoded: copied for each, they
-    // would hold 201 MB, from a 2 KB STAT.
-    #[test]
-    fn a_long_name_named_by_every_value_is_not_copied_past_a_bound() {
-        let long = alloc::vec![0xA0u8; 65_535];
-        let value = words(&[1, 0, 0, 256, 700, 0]);
-        let map = tables(name_table(&[(256, &long)]), &[(b"wght", 256)], &[2048; 1024], &value);
-        let (axes, values, _) = parse_stat(&map).expect("a STAT");
-        let value_name = |v: &StatAxisValue| match v { StatAxisValue::Single { name, .. } => name.clone(), _ => None };
-        let held: usize = axes.iter().filter_map(|a| a.name.as_ref()).map(String::len).sum::<usize>()
-            + values.iter().filter_map(value_name).map(|n| n.len()).sum::<usize>();
-        let bound = 16 * map.get("STAT").map_or(0, |t| t.len()) + 196_605;
-        assert!(held <= bound, "held {held} bytes of names, past {bound}");
-        assert_eq!(values.len(), 1024);
-    }
-
-    // One design axis: a value on axis 7, or a combination naming it, is left out rather than handed
-    // to a caller who would index the axes with it.
-    #[test]
-    fn a_value_on_no_axis_is_left_out() {
-        let names = name_table(&[(256, b"Weight"), (257, b"Bold")]);
-        let combo = words(&[4, 2, 0, 257, 0, 700, 0, 7, 1, 0]);
-        let map = tables(names, &[(b"wght", 256)], &[6, 18, 30], &[single(0, 0), single(7, 0), combo].concat());
-        let (_, values, _) = parse_stat(&map).expect("a STAT");
-        assert_eq!(values.len(), 1);
-        assert!(matches!(values[0], StatAxisValue::Single { axis_index: 0, .. }));
-    }
-
-    #[test]
-    fn values_describing_older_siblings_say_so() {
-        let names = name_table(&[(256, b"Weight"), (257, b"Bold")]);
-        let map = tables(names, &[(b"wght", 256)], &[4, 16], &[single(0, 0x0001), single(0, 0x0002)].concat());
-        let (_, values, _) = parse_stat(&map).expect("a STAT");
-        let flags: Vec<_> = values
-            .iter()
-            .map(|v| match v {
-                StatAxisValue::Single { elidable, older_sibling, .. } => (*elidable, *older_sibling),
-                _ => (true, true),
-            })
-            .collect();
-        assert_eq!(flags, [(false, true), (true, false)]);
-    }
-}
+#[path = "../../tests/unit/daetype/stat.rs"]
+mod tests;

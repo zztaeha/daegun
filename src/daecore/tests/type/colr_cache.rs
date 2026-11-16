@@ -1,37 +1,49 @@
-use daegun::daecore::cache::FontCache;
+use crate::daecore::daekit::cache::FontCache;
+use alloc::string::String;
+use alloc::vec::Vec;
 
-const LOCATIONS: [&[f64]; 4] = [&[], &[0.5, -0.25, 1.0], &[1.0, 1.0, 1.0], &[0.5, 0.5, 0.5]];
+const LOCATIONS: [&[(&str, f64)]; 4] = [
+    &[],
+    &[("SWPS", 45.0), ("SWPE", -20.0), ("SWC1", 1.0)],
+    &[("SWPS", 90.0), ("SWPE", 90.0), ("SWC1", 2.0)],
+    &[("SWPS", 45.0), ("SWPE", 45.0), ("SWC1", 1.0)],
+];
 
+// One cache walked through the locations out of order draws each glyph as a cache built for that location alone.
 #[test]
 fn cached_paint_matches_uncached_across_locations() {
     let rel = "colr-v1-test-glyphs/test_glyphs_variable.ttf";
-    let path = format!("{}/{}", crate::FONTS, rel);
+    let path = format!("{}/{}", super::FONTS, rel);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing: {path} ({e})"));
-    let map = daegun::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("parses");
-    let colr = map.get("COLR").expect("COLR present").clone();
-    let var = daegun::daecore::daetype::colr_v1::parse_colr_v1_var_data(&colr);
-    let n = daegun::daecore::daetype::decoder::read_u16_be(map.get("maxp").expect("maxp"), 4).expect("n");
-    let cache = FontCache::new(map.clone());
+    let map = crate::daecore::daetype::decoder::extract_ttf_tables(&bytes).expect("parses");
+    let n = crate::daecore::daetype::decoder::read_u16_be(map.get("maxp").expect("maxp"), 4)
+        .map(u32::from)
+        .expect("n");
+    let cache = FontCache::new(map.clone()).expect("the fixture loads");
+    let wants: Vec<Vec<String>> = LOCATIONS
+        .iter()
+        .map(|axes| {
+            let alone = FontCache::new(map.clone()).expect("the fixture loads");
+            let key = alone.axis_key(axes);
+            (0..n).map(|gid| format!("{:?}", alone.colr_v1_paint(gid, &key, 0))).collect()
+        })
+        .collect();
+    assert!(wants[1] != wants[2], "the locations draw alike, so nothing was really compared");
 
     let order = [0, 1, 2, 3, 1, 0, 3, 2, 3, 3, 0, 1];
-    let mut compared = 0usize;
     let mut resolved = 0usize;
     for &i in &order {
-        let loc = LOCATIONS[i];
+        let key = cache.axis_key(LOCATIONS[i]);
         for gid in 0..n {
-            let want = daegun::daecore::daetype::colr_v1::colr_v1_paint_graph_cached(&map, gid, loc, 0, &var);
-            let got = cache.colr_v1_paint(gid, loc, 0);
+            let got = cache.colr_v1_paint(gid, &key, 0);
             assert_eq!(
-                format!("{want:?}"),
+                wants[i][gid as usize],
                 format!("{got:?}"),
-                "gid {gid} at {loc:?} differs between the cached and uncached paths",
+                "gid {gid} at {:?} differs between the cached and uncached paths",
+                LOCATIONS[i],
             );
-            compared += 1;
-            if want.is_some() {
-                resolved += 1;
-            }
+            resolved += usize::from(got.is_some());
         }
     }
-    assert!(compared > 0, "compared nothing");
     assert!(resolved > 0, "no glyph resolved to a paint graph, so nothing was really compared");
 }

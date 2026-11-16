@@ -5,11 +5,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import trie
-
-VERSION = (17, 0, 0)
+import ucd
+from rows import wrapped
+from categories import emit_consts
 
 def read_license():
-    path = os.path.join(DATA, "UnicodeLicense.txt")
+    path = os.path.join(ucd.DATA, "UnicodeLicense.txt")
     if not os.path.exists(path):
         sys.exit(
             "missing {}\n  curl -sS -o {} https://www.unicode.org/license.txt".format(path, path)
@@ -17,83 +18,45 @@ def read_license():
     with open(path, encoding="utf-8") as f:
         return f.read().strip()
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "..", "..", "data", "unicode")
 OUT = os.path.join(HERE, "..", "..", "..", "src", "daecore", "src", "daeshaper", "generated", "unicode_tables.rs")
 
-GC_ORDER = [
-    "Cn", "Cc", "Cf", "Co", "Cs", "Ll", "Lm", "Lo", "Lt", "Lu",
-    "Mc", "Me", "Mn", "Nd", "Nl", "No", "Pc", "Pd", "Pe", "Pf",
-    "Pi", "Po", "Ps", "Sc", "Sk", "Sm", "So", "Zl", "Zp", "Zs",
+# The general categories in the tables' numbering, with the names the API gives them.
+GENERAL_CATEGORIES = [
+    ("Cn", "Unassigned"), ("Cc", "Control"), ("Cf", "Format"), ("Co", "PrivateUse"), ("Cs", "Surrogate"),
+    ("Ll", "LowercaseLetter"), ("Lm", "ModifierLetter"), ("Lo", "OtherLetter"), ("Lt", "TitlecaseLetter"),
+    ("Lu", "UppercaseLetter"), ("Mc", "SpacingMark"), ("Me", "EnclosingMark"), ("Mn", "NonspacingMark"),
+    ("Nd", "DecimalNumber"), ("Nl", "LetterNumber"), ("No", "OtherNumber"), ("Pc", "ConnectPunctuation"),
+    ("Pd", "DashPunctuation"), ("Pe", "ClosePunctuation"), ("Pf", "FinalPunctuation"), ("Pi", "InitialPunctuation"),
+    ("Po", "OtherPunctuation"), ("Ps", "OpenPunctuation"), ("Sc", "CurrencySymbol"), ("Sk", "ModifierSymbol"),
+    ("Sm", "MathSymbol"), ("So", "OtherSymbol"), ("Zl", "LineSeparator"), ("Zp", "ParagraphSeparator"),
+    ("Zs", "SpaceSeparator"),
 ]
-GC_INDEX = {name: i for i, name in enumerate(GC_ORDER)}
+# Each category's rustdoc, by its short name.
+GC_DOCS = {
+    "Cn": "no character assigned", "Cc": "a C0 or C1 control code", "Cf": "a format control, which draws nothing",
+    "Co": "a private use character", "Cs": "a surrogate code point", "Ll": "a lowercase letter",
+    "Lm": "a modifier letter", "Lo": "another letter, such as one of a script without case",
+    "Lt": "a titlecase digraph", "Lu": "an uppercase letter",
+    "Mc": "a spacing mark, which takes room of its own", "Me": "an enclosing mark", "Mn": "a nonspacing mark",
+    "Nd": "a decimal digit", "Nl": "a letterlike number, such as a Roman numeral",
+    "No": "another number, such as a fraction or a superscript digit", "Pc": "a connector, such as the underscore",
+    "Pd": "a dash or hyphen", "Pe": "a closing bracket", "Pf": "a closing quotation mark",
+    "Pi": "an opening quotation mark", "Po": "other punctuation", "Ps": "an opening bracket",
+    "Sc": "a currency symbol", "Sk": "a modifier symbol, such as a spacing accent", "Sm": "a math symbol",
+    "So": "another symbol", "Zl": "the line separator", "Zp": "the paragraph separator", "Zs": "a space",
+}
+GC_INDEX = {short: i for i, (short, _) in enumerate(GENERAL_CATEGORIES)}
 
-JT_U, JT_L, JT_R, JT_D, JT_ALAPH, JT_DALATH_RISH, JT_T = 0, 1, 2, 3, 4, 5, 7
-JT_BY_LETTER = {"U": JT_U, "L": JT_L, "R": JT_R, "D": JT_D, "C": JT_D, "T": JT_T}
+# The Arabic shaper's state table has a column for each joining type below 6; transparent ones skip it.
+JOINING_TYPES = [
+    ("U", 0, "NonJoining"), ("L", 1, "LeftJoining"), ("R", 2, "RightJoining"), ("D", 3, "DualJoining"),
+    ("ALAPH", 4, "Alaph"), ("DALATH RISH", 5, "DalathRish"), ("T", 7, "Transparent"),
+]
+JT = {key: value for key, value, _ in JOINING_TYPES}
 
-def data_path(name):
-    p = os.path.join(DATA, name)
-    if not os.path.exists(p):
-        sys.exit("missing {} – see this file's docstring for the fetch command".format(p))
-    return p
 
-def parse_semicolon_ranges(name, wanted=None, value_col=1):
-    out = []
-    with open(data_path(name), encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(";")]
-            if len(parts) <= value_col:
-                continue
-            value = parts[value_col]
-            if wanted is not None and value != wanted:
-                continue
-            rng = parts[0]
-            if ".." in rng:
-                lo, hi = rng.split("..")
-            else:
-                lo = hi = rng
-            out.append((int(lo, 16), int(hi, 16), value))
-    return out
-
-def parse_unicode_data():
-    gc = {}
-    ccc = {}
-    decomp = {}
-    pending_first = None
-
-    with open(data_path("UnicodeData.txt"), encoding="utf-8") as f:
-        for line in f:
-            fields = line.rstrip("\n").split(";")
-            if len(fields) < 6:
-                continue
-            cp = int(fields[0], 16)
-            name = fields[1]
-            cat = fields[2]
-            klass = int(fields[3]) if fields[3] else 0
-            dec = fields[5].strip()
-
-            if name.endswith(", First>"):
-                pending_first = (cp, cat, klass)
-                continue
-            if name.endswith(", Last>") and pending_first is not None:
-                start, scat, sklass = pending_first
-                for c in range(start, cp + 1):
-                    gc[c] = scat
-                    if sklass:
-                        ccc[c] = sklass
-                pending_first = None
-                continue
-
-            gc[cp] = cat
-            if klass:
-                ccc[cp] = klass
-            if dec and not dec.startswith("<"):
-                parts = [int(x, 16) for x in dec.split()]
-                if len(parts) in (1, 2):
-                    decomp[cp] = parts
-    return gc, ccc, decomp
+# Default ignorables that fonts draw as spacing glyphs: the Hangul fillers and Duployan's shorthand format controls.
+VISIBLE_IGNORABLES = {0x115F, 0x1160, 0x3164, 0xFFA0, 0x1BCA0, 0x1BCA1, 0x1BCA2, 0x1BCA3}
 
 def to_ranges(by_cp, default, encode):
     items = sorted(by_cp.items())
@@ -113,8 +76,8 @@ def check_values(source, raw, known):
     if unknown:
         sys.exit(
             "{}: {} this generator does not number: {}\n"
-            "  Add each to the matching list, and check whether the Rust side needs to know about it"
-            " too – the numbering is shared with daeshaper/unicode/.".format(
+            "  Add each to the matching list, and check whether the rules in daeshaper/unicode/ need it"
+            " too.".format(
                 source, "a value" if len(unknown) == 1 else "values", ", ".join(unknown)))
 
 def merge_named_ranges(raw, encode, default):
@@ -134,74 +97,15 @@ def merge_named_ranges(raw, encode, default):
             ranges.append([cp, cp, v])
     return [(a, b, c) for a, b, c in ranges]
 
-TRIE_FIELDS = [
-    ("script", "u16", 0xFFFF),
-    ("general_category", "u8", 0),
-    ("combining_class", "u8", 0),
-    ("default_ignorable", "u8", 0),
-    ("extended_pictographic", "u8", 0),
-    ("joining_type", "u8", 0xFF),
-    ("grapheme_break", "u8", 0),
-    ("word_break", "u8", 0),
-    ("bidi_class", "u8", 0),
-    ("indic_conjunct_break", "u8", 0),
-    ("line_break", "u8", 0),
-    ("east_asian_width", "u8", 0),
-    ("vertical_orientation", "u8", 0),
-]
-
-def emit_trie(f, columns):
-    records, top, mid, leaf, leaf_bits, mid_bits = trie.build(
-        columns, [default for _, _, default in TRIE_FIELDS]
-    )
-
-    f.write("""// Every per-codepoint property, in one record.
-//
-// All thirteen at once for a codepoint, reached by three array indexes rather than a binary search
-// through each of thirteen sorted range tables.
-#[derive(Clone, Copy)]
-pub(crate) struct Props {
-""")
-    for name, ty, _ in TRIE_FIELDS:
-        f.write("    pub(crate) {}: {},\n".format(name, ty))
-    f.write("}\n\n")
-
-    f.write("// The distinct property combinations Unicode actually uses. Indexed by `PROPS_LEAF`.\n")
-    f.write("pub(crate) static PROPS: &[Props; {}] = &[\n".format(len(records)))
-    for rec in records:
-        fields = ", ".join("{}: {}".format(n, v) for (n, _, _), v in zip(TRIE_FIELDS, rec))
-        f.write("    Props {{ {} }},\n".format(fields))
-    f.write("];\n\n")
-
-    f.write("// Block shape, searched for this table's data. The descent reads these, so a\n")
-    f.write("// regeneration that lands on a different shape moves the lookup with it.\n")
-    f.write("pub(crate) const PROPS_LEAF_BITS: u32 = {};\n".format(leaf_bits))
-    f.write("pub(crate) const PROPS_MID_BITS: u32 = {};\n\n".format(mid_bits))
-
-    f.write("// Stage 1: `cp >> {}` to a `PROPS_MID` block.\n".format(leaf_bits + mid_bits))
-    trie.emit_flat(f, "PROPS_TOP", top)
-    f.write("// Stage 2: a mid block plus `(cp >> {}) & {}` to a `PROPS_LEAF` block.\n"
-            .format(leaf_bits, (1 << mid_bits) - 1))
-    trie.emit_flat(f, "PROPS_MID", mid)
-    f.write("// Stage 3: a leaf block plus `cp & {}` to a `PROPS` record.\n".format((1 << leaf_bits) - 1))
-    trie.emit_flat(f, "PROPS_LEAF", leaf)
-
-    return len(records), len(mid) >> mid_bits, len(leaf) >> leaf_bits
-
 def bidi_long_to_short():
-    out = {}
-    with open(data_path("PropertyValueAliases.txt"), encoding="utf-8") as f:
-        for line in f:
-            parts = [p.strip() for p in line.split("#", 1)[0].split(";")]
-            if len(parts) >= 3 and parts[0] == "bc":
-                out[parts[2]] = parts[1]
+    out = {f[2]: f[1] for f in ucd.rows("PropertyValueAliases.txt") if len(f) >= 3 and f[0] == "bc"}
     assert out, "PropertyValueAliases.txt lists no bidi classes – its shape changed"
     return out
 
 def parse_bidi_missing(name):
     long_to_short = bidi_long_to_short()
     out = []
-    with open(data_path(name), encoding="utf-8") as f:
+    with open(ucd.path(name), encoding="utf-8") as f:
         for line in f:
             if "@missing:" not in line:
                 continue
@@ -236,98 +140,155 @@ LINE_BREAK = [
 ]
 EAST_ASIAN_WIDTH = ["N", "A", "F", "H", "Na", "W"]
 
-VERTICAL_ORIENTATION = ["R", "Tr", "Tu", "U"]
+VERTICAL_ORIENTATION = [("R", "Rotated"), ("Tr", "TransformedRotated"), ("Tu", "TransformedUpright"), ("U", "Upright")]
+VO_DOCS = {
+    "R": "`R`: sideways, turned a quarter clockwise, as Latin letters set.",
+    "Tr": "`Tr`: upright in a vertical form where one is drawn, else sideways.",
+    "Tu": "`Tu`: upright, in a vertical form where one is drawn.",
+    "U": "`U`: upright, as CJK ideographs set.",
+}
+
+INDIC_CONJUNCT_BREAK = [None, "Consonant", "Extend", "Linker"]
+
+def named(enum, names):
+    return lambda v: "{}::{}".format(enum, names[v])
+
+def joining_type(v):
+    names = {value: name for _, value, name in JOINING_TYPES}
+    return "JoiningType::{}".format(names[v])
+
+# The bits of a record's `flags`, its yes-or-no properties. Each but the first two stands before a search, which runs
+# only where it is set.
+FLAGS = ["DEFAULT_IGNORABLE", "EXTENDED_PICTOGRAPHIC", "DECOMPOSES", "COMPOSES_SECOND", "HAS_MIRROR", "BRACKET",
+         "SCRIPT_EXTENSIONS"]
+FLAG = {name: 1 << i for i, name in enumerate(FLAGS)}
+
+# Hangul's algorithmic compositions: syllables decompose, vowels follow a leading consonant and trailing consonants an
+# LV syllable.
+HANGUL_SYLLABLES = range(0xAC00, 0xD7A4)
+HANGUL_SECONDS = list(range(0x1161, 0x1176)) + list(range(0x11A8, 0x11C3))
+
+# Each field's type, the value of a code point the data leaves out, and how a value is written.
+TRIE_FIELDS = [
+    ("script", "u16", 0xFFFF, str),
+    ("general_category", "GeneralCategory", 0, named("GeneralCategory", [n for _, n in GENERAL_CATEGORIES])),
+    ("combining_class", "u8", 0, str),
+    ("flags", "u8", 0, str),
+    ("joining_type", "JoiningType", JT["U"], joining_type),
+    ("grapheme_break", "u8", 0, str),
+    ("word_break", "u8", 0, str),
+    ("bidi_class", "BidiClass", 0, named("BidiClass", BIDI_CLASS)),
+    ("indic_conjunct_break", "u8", 0, str),
+    ("line_break", "LineBreakClass", 0, named("LineBreakClass", LINE_BREAK)),
+    ("east_asian_width", "u8", 0, str),
+    ("vertical_orientation", "VerticalOrientation", 0,
+     named("VerticalOrientation", [n for _, n in VERTICAL_ORIENTATION])),
+]
+
+def emit_enum(f, name, variants, vis="pub(crate)", derives="Clone, Copy, PartialEq, Eq, Debug", acronyms=False,
+              doc=None, docs=None, closed=None, open_set=False):
+    if doc:
+        f.write("/// {}\n".format(doc))
+    if open_set:
+        f.write("#[non_exhaustive]\n")
+    if closed:
+        f.write("#[expect(clippy::exhaustive_enums, reason = \"{}\")]\n".format(closed))
+    if acronyms:
+        f.write("#[allow(clippy::upper_case_acronyms, reason = \"the standard's own names for its values\")]\n")
+    f.write("#[derive({})]\n#[repr(u8)]\n{} enum {} {{\n".format(derives, vis, name))
+    for i, (value, variant) in enumerate(variants):
+        if docs:
+            f.write("    /// {}\n".format(docs[i]))
+        f.write("    {} = {},\n".format(variant, value))
+    f.write("}\n\n")
 
 def parse_incb(name):
-    order = {"Consonant": 1, "Extend": 2, "Linker": 3}
+    order = {name: i for i, name in enumerate(INDIC_CONJUNCT_BREAK) if name}
     out = []
-    with open(data_path(name), encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = [x.strip() for x in line.split(";")]
-            if len(parts) < 3 or parts[1] != "InCB":
-                continue
-            code = order.get(parts[2])
-            if code is None:
-                continue
-            lo, _, hi = parts[0].partition("..")
-            out.append((int(lo, 16), int(hi or lo, 16), code))
+    for f in ucd.rows(name):
+        if len(f) >= 3 and f[1] == "InCB" and f[2] in order:
+            lo, _, hi = f[0].partition("..")
+            out.append((int(lo, 16), int(hi or lo, 16), order[f[2]]))
     return out
 
 def parse_bracket_pairs(name):
-    out = []
-    with open(data_path(name), encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(";")]
-            if len(parts) < 3:
-                continue
-            out.append((int(parts[0], 16), int(parts[1], 16), 1 if parts[2] == "o" else 0))
-    return sorted(out)
+    return sorted((int(f[0], 16), int(f[1], 16), 1 if f[2] == "o" else 0) for f in ucd.rows(name) if len(f) >= 3)
 
 def main():
-    gc_by_cp, ccc_by_cp, decomp = parse_unicode_data()
+    gc_by_cp, ccc_by_cp, decomp = ucd.unicode_data()
 
     gc_ranges = to_ranges(gc_by_cp, 0, lambda c: GC_INDEX.get(c, 0))
     ccc_ranges = to_ranges(ccc_by_cp, 0, lambda k: k)
 
-    scripts_raw = parse_semicolon_ranges("Scripts.txt")
+    scripts_raw = ucd.ranges("Scripts.txt")
     script_names = sorted({v for _, _, v in scripts_raw})
     script_index = {n: i for i, n in enumerate(script_names)}
     script_ranges = merge_named_ranges(scripts_raw, lambda v: script_index[v], -1)
 
-    iso_by_long = {}
-    with open(data_path("PropertyValueAliases.txt"), encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line.startswith("sc ;"):
-                continue
-            parts = [p.strip() for p in line.split(";")]
-            if len(parts) >= 3:
-                iso_by_long[parts[2]] = parts[1]
+    iso_by_long = {f[2]: f[1] for f in ucd.rows("PropertyValueAliases.txt") if len(f) >= 3 and f[0] == "sc"}
     missing = [n for n in script_names if n not in iso_by_long]
     if missing:
         sys.exit("no ISO 15924 code for: {}".format(", ".join(missing)))
     script_isos = [iso_by_long[n] for n in script_names]
 
-    ignorable_raw = parse_semicolon_ranges(
+    # Script_Extensions by script name, adjacent ranges of one set merged. Each set puts its largest script first:
+    # a run of these characters alone takes it, so a lone tatweel reads as Arabic, not Adlam.
+    long_by_iso = {iso: long for long, iso in iso_by_long.items()}
+    script_size = {}
+    for lo, hi, name in scripts_raw:
+        script_size[name] = script_size.get(name, 0) + hi - lo + 1
+    extension_sets, extensions = [], []
+    for lo, hi, codes in ucd.ranges("ScriptExtensions.txt"):
+        names = tuple(sorted((long_by_iso[c] for c in codes.split()), key=lambda n: (-script_size[n], n)))
+        if names not in extension_sets:
+            extension_sets.append(names)
+        k = extension_sets.index(names)
+        if extensions and extensions[-1][1] + 1 == lo and extensions[-1][2] == k:
+            extensions[-1] = (extensions[-1][0], hi, k)
+        else:
+            extensions.append((lo, hi, k))
+    assert all(a[1] < b[0] for a, b in zip(extensions, extensions[1:])), "Script_Extensions ranges overlap"
+
+    ignorable_raw = ucd.ranges(
         "DerivedCoreProperties.txt", wanted="Default_Ignorable_Code_Point"
     )
-    ignorable_ranges = merge_named_ranges(ignorable_raw, lambda _v: 1, -1)
+    ignorable_raw = [(cp, cp, v) for lo, hi, v in ignorable_raw for cp in range(lo, hi + 1)
+                     if cp not in VISIBLE_IGNORABLES]
 
-    pictographic_raw = parse_semicolon_ranges("emoji-data.txt", wanted="Extended_Pictographic")
-    pictographic_ranges = merge_named_ranges(pictographic_raw, lambda _v: 1, -1)
+    pictographic_raw = ucd.ranges("emoji-data.txt", wanted="Extended_Pictographic")
 
-    joining = {}
-    with open(data_path("ArabicShaping.txt"), encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(";")]
-            if len(parts) < 4:
-                continue
-            group = parts[3]
-            if group == "ALAPH":
-                jt = JT_ALAPH
-            elif group == "DALATH RISH":
-                jt = JT_DALATH_RISH
-            else:
-                jt = JT_BY_LETTER.get(parts[2], JT_U)
-            joining[int(parts[0], 16)] = jt
-    jt_ranges = to_ranges(joining, 255, lambda v: v)
+    joining, joiners = {}, set()
+    for parts in ucd.rows("ArabicShaping.txt"):
+        if len(parts) < 4:
+            continue
+        group = parts[3]
+        joining[int(parts[0], 16)] = JT[group if group in ("ALAPH", "DALATH RISH") else parts[2].replace("C", "D")]
+        if parts[2] not in ("T", "U"):
+            joiners.add(int(parts[0], 16))
+    # What ArabicShaping.txt leaves out is transparent if a nonspacing or enclosing mark or a format character, else
+    # non-joining.
+    for cp, gc in gc_by_cp.items():
+        if cp not in joining and gc in ("Mn", "Me", "Cf"):
+            joining[cp] = JT["T"]
+    jt_ranges = to_ranges(joining, JT["U"], lambda v: v)
+
+    script_of = {cp: name for lo, hi, name in scripts_raw for cp in range(lo, hi + 1)}
+    arabic_joining = sorted({script_of[cp] for cp in joiners} - {"Common", "Inherited"})
+    bidi = {cp: value for lo, hi, value in ucd.ranges("DerivedBidiClass.txt") for cp in range(lo, hi + 1)}
+    letters = {}
+    for cp, name in script_of.items():
+        if gc_by_cp.get(cp, "").startswith("L"):
+            tally = letters.setdefault(name, [0, 0])
+            tally[bidi.get(cp) in ("R", "AL")] += 1
+    right_to_left = sorted(n for n, (ltr, rtl) in letters.items() if rtl > ltr)
 
     gcb_index = {name: i for i, name in enumerate(GRAPHEME_BREAK)}
-    gcb_raw = parse_semicolon_ranges("GraphemeBreakProperty.txt")
+    gcb_raw = ucd.ranges("GraphemeBreakProperty.txt")
     check_values("GraphemeBreakProperty.txt", gcb_raw, GRAPHEME_BREAK)
     gcb_ranges = merge_named_ranges(gcb_raw, lambda v: gcb_index.get(v, 0), 0)
 
     wb_index = {name: i for i, name in enumerate(WORD_BREAK)}
-    wb_raw = parse_semicolon_ranges("WordBreakProperty.txt")
+    wb_raw = ucd.ranges("WordBreakProperty.txt")
     check_values("WordBreakProperty.txt", wb_raw, WORD_BREAK)
     wb_ranges = merge_named_ranges(wb_raw, lambda v: wb_index.get(v, 0), 0)
 
@@ -339,7 +300,7 @@ def main():
             continue  # 0 is the table default; storing it would just bloat the ranges
         for cp in range(lo, hi + 1):
             bc_per[cp] = bc_index[short]
-    for lo, hi, value in parse_semicolon_ranges("DerivedBidiClass.txt"):
+    for lo, hi, value in ucd.ranges("DerivedBidiClass.txt"):
         short = bc_long_to_short.get(value, value)
         code = bc_index.get(short)
         if code is None:
@@ -354,40 +315,38 @@ def main():
     bracket_pairs = parse_bracket_pairs("BidiBrackets.txt")
 
     lb_index = {name: i for i, name in enumerate(LINE_BREAK)}
-    lb_raw = parse_semicolon_ranges("LineBreak.txt")
+    lb_raw = ucd.ranges("LineBreak.txt")
     check_values("LineBreak.txt", lb_raw, LINE_BREAK)
     lb_ranges = merge_named_ranges(lb_raw, lambda v: lb_index.get(v, 0), 0)
 
     eaw_index = {name: i for i, name in enumerate(EAST_ASIAN_WIDTH)}
-    eaw_raw = parse_semicolon_ranges("EastAsianWidth.txt")
+    eaw_raw = ucd.ranges("EastAsianWidth.txt")
     check_values("EastAsianWidth.txt", eaw_raw, EAST_ASIAN_WIDTH)
     eaw_ranges = merge_named_ranges(eaw_raw, lambda v: eaw_index.get(v, 0), 0)
 
-    vo_index = {name: i for i, name in enumerate(VERTICAL_ORIENTATION)}
-    vo_raw = parse_semicolon_ranges("VerticalOrientation.txt")
-    check_values("VerticalOrientation.txt", vo_raw, VERTICAL_ORIENTATION)
+    vo_index = {name: i for i, (name, _) in enumerate(VERTICAL_ORIENTATION)}
+    vo_raw = ucd.ranges("VerticalOrientation.txt")
+    check_values("VerticalOrientation.txt", vo_raw, vo_index)
     vo_ranges = merge_named_ranges(vo_raw, lambda v: vo_index.get(v, 0), 0)
 
     incb_ranges = merge_named_ranges(parse_incb("DerivedCoreProperties.txt"), lambda v: v, 0)
 
-    mirroring = []
-    with open(data_path("BidiMirroring.txt"), encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(";")]
-            if len(parts) < 2 or not parts[1]:
-                continue
-            mirroring.append((int(parts[0], 16), int(parts[1].split()[0], 16)))
-    mirroring.sort()
+    mirroring = sorted((int(f[0], 16), int(f[1].split()[0], 16)) for f in ucd.rows("BidiMirroring.txt")
+                       if len(f) >= 2 and f[1])
 
-    exclusions = set()
-    with open(data_path("CompositionExclusions.txt"), encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if line:
-                exclusions.add(int(line.split()[0], 16))
+    # Each vertical presentation form stands for the character its `<vertical>` decomposition names, fullwidth where
+    # that is ASCII. Two forms name the low line; the wavy one's stands for U+FE4F WAVY LOW LINE.
+    stands_for = {}
+    for f in ucd.rows("UnicodeData.txt"):
+        named = f[5].removeprefix("<vertical> ")
+        if named != f[5] and " " not in named:
+            named = int(named, 16)
+            stands_for[int(f[0], 16)] = named + 0xFEE0 if named < 0x80 else named
+    stands_for[0xFE34] = 0xFE4F
+    vertical_forms = sorted((c, form) for form, c in stands_for.items())
+    assert len({c for c, _ in vertical_forms}) == len(vertical_forms), "two vertical forms stand for one character"
+
+    exclusions = {int(f[0].split()[0], 16) for f in ucd.rows("CompositionExclusions.txt")}
 
     decomp_pairs = sorted((cp, p) for cp, p in decomp.items() if len(p) == 2)
     decomp_singles = sorted((cp, p[0]) for cp, p in decomp.items() if len(p) == 1)
@@ -399,11 +358,24 @@ def main():
         comp.append((a, b, cp))
     comp.sort()
 
+    flags = {}
+    def flag(cps, name):
+        for cp in cps:
+            flags[cp] = flags.get(cp, 0) | FLAG[name]
+    flag((cp for cp, _, _ in ignorable_raw), "DEFAULT_IGNORABLE")
+    flag((cp for lo, hi, _ in pictographic_raw for cp in range(lo, hi + 1)), "EXTENDED_PICTOGRAPHIC")
+    flag(list(decomp) + list(HANGUL_SYLLABLES), "DECOMPOSES")
+    flag([b for _, b, _ in comp] + HANGUL_SECONDS, "COMPOSES_SECOND")
+    flag([cp for cp, _ in mirroring], "HAS_MIRROR")
+    flag([cp for cp, _, _ in bracket_pairs], "BRACKET")
+    flag((cp for lo, hi, _ in extensions for cp in range(lo, hi + 1)), "SCRIPT_EXTENSIONS")
+    flag_ranges = to_ranges(flags, 0, lambda v: v)
+
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
         f.write("// GENERATED FILE – do not edit by hand.\n")
         f.write("// Regenerate with: python3 scripts/tools/gen/unicode-tables.py\n")
-        f.write("// Source: Unicode Character Database {}.{}.{}\n".format(*VERSION))
+        f.write("// Source: Unicode Character Database {}.{}.{}\n".format(*ucd.VERSION))
         f.write("//\n")
         f.write("// The notice below is required by the license the data is used under, and is\n")
         f.write("// reproduced verbatim from scripts/data/unicode/UnicodeLicense.txt. It covers the\n")
@@ -413,43 +385,125 @@ def main():
         for line in read_license().splitlines():
             f.write("//\n" if not line.strip() else "// {}\n".format(line))
         f.write("\n")
-        f.write("pub(crate) static SCRIPT_NAMES: &[&str] = &[\n")
+        f.write("use crate::daecore::daeshaper::run::Direction;\n")
+        f.write("use crate::daecore::daeshaper::unicode::{Script, Trie};\n\n")
+        f.write("// C strings, so the C ABI lends one as it is.\n")
+        f.write("pub(crate) static SCRIPT_NAMES: &[&core::ffi::CStr] = &[\n")
         for n in script_names:
-            f.write('    "{}",\n'.format(n))
+            f.write('    c"{}",\n'.format(n))
         f.write("];\n\n")
 
-        f.write("// The two scripts itemization treats as taking their script from context.\n")
-        f.write("// Emitted rather than searched for: `SCRIPT_NAMES` is sorted, so these indices move\n")
-        f.write("// whenever Unicode adds a script, and comparing two `u16`s beats the string\n")
-        f.write("// comparisons they replace, once per character.\n")
-        for name in ("Common", "Inherited"):
-            f.write("pub(crate) const SCRIPT_{}: u16 = {};\n".format(name.upper(), script_index[name]))
-        f.write("\n")
+        f.write("impl Script {\n")
+        for n in script_names:
+            f.write("    /// {}, ISO 15924 `{}`.\n".format(n.replace("_", " "), iso_by_long[n]))
+            f.write("    pub const {}: Script = Script({});\n".format(n.upper(), script_index[n]))
+        f.write("}\n\n")
+
+        def scripts(comment, name, names):
+            f.write(comment)
+            f.write("pub(crate) static {}: &[Script] = &[\n".format(name))
+            for n in names:
+                f.write("    Script::{},\n".format(n.upper()))
+            f.write("];\n\n")
+
+        f.write("// Each script's direction: right to left where most of its letters are of Bidi class R or AL,\n")
+        f.write("// else left to right.\n")
+        f.write("pub(crate) static SCRIPT_DIRECTIONS: &[Direction] = &[\n")
+        for n in script_names:
+            f.write("    Direction::{},\n".format("RightToLeft" if n in right_to_left else "LeftToRight"))
+        f.write("];\n\n")
+        scripts("// Scripts with letters that join as Arabic's do, by their joining types.\n",
+                "ARABIC_JOINING", arabic_joining)
 
         f.write("// ISO 15924 short codes, parallel to SCRIPT_NAMES. OpenType tags derive from these.\n")
         f.write("pub(crate) static SCRIPT_ISO_CODES: &[&str] = &[\n")
         for c in script_isos:
             f.write('    "{}",\n'.format(c))
         f.write("];\n\n")
+        # A perfect hash of the lowercased codes: the first odd multiplier from the golden ratio's that sends each
+        # to a slot of its own among 2,048, read with one multiply and two loads where a binary search took eight.
+        keys = [int.from_bytes(c.lower().encode(), "big") for c in script_isos]
+        assert len(keys) < 255 and len(set(keys)) == len(keys)
+        slot = lambda k, m: (k * m & 0xFFFFFFFF) >> 21
+        mul = next(m for m in range(0x9E3779B1, 1 << 32, 2) if len({slot(k, m) for k in keys}) == len(keys))
+        slots = [0] * 2048
+        for i, k in enumerate(keys):
+            slots[slot(k, mul)] = i + 1
+        f.write("// Each script's ISO 15924 code lowercased as a big-endian u32, by script id.\n")
+        f.write("pub(crate) static SCRIPT_ISO_KEYS: &[u32] = &[\n")
+        for k in keys:
+            f.write("    0x{:08X},\n".format(k))
+        f.write("];\n\n")
+        f.write("// Where a lowercased code lands, (code * SCRIPT_ISO_MUL) >> 21: its script id plus one, else 0.\n")
+        f.write("pub(crate) const SCRIPT_ISO_MUL: u32 = 0x{:08X};\n".format(mul))
+        f.write("pub(crate) static SCRIPT_ISO_SLOTS: [u8; 2048] = [\n")
+        for row in range(0, 2048, 24):
+            f.write("    " + " ".join("{},".format(v) for v in slots[row:row + 24]) + "\n")
+        f.write("];\n\n")
 
-        trie_stats = emit_trie(f, [
-            script_ranges, gc_ranges, ccc_ranges, ignorable_ranges, pictographic_ranges,
-            jt_ranges, gcb_ranges, wb_ranges, bc_ranges, incb_ranges, lb_ranges,
-            eaw_ranges, vo_ranges,
-        ])
+        gc_docs = ["`{}`: {}.".format(short, GC_DOCS[short]) for short, _ in GENERAL_CATEGORIES]
+        emit_enum(f, "GeneralCategory", enumerate(n for _, n in GENERAL_CATEGORIES), vis="pub",
+                  doc="A character's Unicode General_Category.", docs=gc_docs,
+                  closed="Unicode's stability policy fixes the set", derives="Clone, Copy, PartialEq, Eq, Hash, Debug")
+        emit_enum(f, "JoiningType", [(value, name) for _, value, name in JOINING_TYPES],
+                  derives="Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug")
+        emit_enum(f, "BidiClass", enumerate(BIDI_CLASS), acronyms=True)
+        emit_enum(f, "LineBreakClass", enumerate(LINE_BREAK), acronyms=True)
+        emit_enum(f, "VerticalOrientation", enumerate(n for _, n in VERTICAL_ORIENTATION), vis="pub",
+                  derives="Clone, Copy, PartialEq, Eq, Hash, Debug", open_set=True,
+                  doc="How a character sets in vertical text, its Unicode Vertical_Orientation (UAX #50).",
+                  docs=[VO_DOCS[short] for short, _ in VERTICAL_ORIENTATION])
+        emit_consts(f, "grapheme_break", enumerate(GRAPHEME_BREAK), "UAX #29's values; the rules name a subset")
+        emit_consts(f, "word_break", enumerate(WORD_BREAK), "UAX #29's values; the rules name a subset")
+        emit_consts(f, "indic_conjunct_break", enumerate(INDIC_CONJUNCT_BREAK))
+        emit_consts(f, "east_asian_width", enumerate(EAST_ASIAN_WIDTH), "UAX #11's values; LB30 names a subset")
+        f.write("// The bits of a record's `flags`.\n")
+        f.write("pub(crate) mod flag {\n")
+        for i, name in enumerate(FLAGS):
+            f.write("    pub(crate) const {}: u8 = 1 << {};\n".format(name, i))
+        f.write("}\n\n")
 
-        f.write("// `(codepoint, paired codepoint, 1 if opening)`, sorted, for UAX #9's N0.\n")
-        f.write("pub(crate) static BIDI_BRACKETS: &[(u32, u32, u8)] = &[\n")
-        for cp, paired, is_open in bracket_pairs:
-            f.write("    (0x{:04X}, 0x{:04X}, {}),\n".format(cp, paired, is_open))
+        columns = [
+            script_ranges, gc_ranges, ccc_ranges, flag_ranges, jt_ranges, gcb_ranges, wb_ranges, bc_ranges,
+            incb_ranges, lb_ranges, eaw_ranges, vo_ranges,
+        ]
+        trie_stats = trie.emit(
+            f, "PROPS", "Props", [(name, ty) for name, ty, _, _ in TRIE_FIELDS],
+            [[(lo, hi, fmt(v)) for lo, hi, v in column] for column, (*_, fmt) in zip(columns, TRIE_FIELDS)],
+            [fmt(default) for _, _, default, fmt in TRIE_FIELDS],
+            "// Every Unicode property the engine reads of a code point, in one record.\n",
+        )
+
+        mirror_of = dict(mirroring)
+        assert all(mirror_of.get(cp) == paired for cp, paired, _ in bracket_pairs), \
+            "a bracket pairs with other than its mirror; BIDI_BRACKETS needs its pairs again"
+        f.write("// The brackets UAX #9's N0 pairs, sorted, true where one opens. Each pairs with its mirror.\n")
+        f.write("pub(crate) static BIDI_BRACKETS: &[(u32, bool)] = &[\n")
+        for cp, _, is_open in bracket_pairs:
+            f.write("    (0x{:04X}, {}),\n".format(cp, "true" if is_open else "false"))
+        f.write("];\n\n")
+
+        f.write("// Script_Extensions where it is more than a character's own script: sorted ranges, "
+                "each naming its set\n")
+        f.write("// in SCRIPT_EXTENSION_SETS, whose scripts come largest first.\n")
+        f.write("pub(crate) static SCRIPT_EXTENSIONS: &[(u32, u32, u16)] = &[\n")
+        for lo, hi, k in extensions:
+            f.write("    (0x{:04X}, 0x{:04X}, {}),\n".format(lo, hi, k))
+        f.write("];\n\n")
+        f.write("pub(crate) static SCRIPT_EXTENSION_SETS: &[&[Script]] = &[\n")
+        for names in extension_sets:
+            scripts = ["Script::" + n.upper() for n in names]
+            one = "    &[{}],".format(", ".join(scripts))
+            if len(one) <= 120:
+                f.write(one + "\n")
+            else:
+                f.write("    &[\n{}\n    ],\n".format("\n".join(wrapped(" " * 8, [s + "," for s in scripts]))))
         f.write("];\n\n")
 
         pair_bmp = [(cp, a, b) for cp, (a, b) in decomp_pairs if cp <= 0xFFFF]
         pair_supp = [(cp, a, b) for cp, (a, b) in decomp_pairs if cp > 0xFFFF]
         assert all(a <= 0xFFFF and b <= 0xFFFF for _, a, b in pair_bmp), \
             "a BMP-keyed pair decomposes to a supplementary codepoint; DECOMPOSE_PAIR_BMP can no longer be u16"
-        assert [r[0] for r in pair_bmp] + [r[0] for r in pair_supp] == [cp for cp, _ in decomp_pairs], \
-            "DECOMPOSE_PAIR's BMP rows are no longer a sorted prefix; COMPOSE_INDEX would name the wrong entries"
 
         f.write("// Canonical pair decompositions, composed form and both parts all in the BMP.\n")
         f.write("// Half the width of a `u32` triple, and it holds all but 46 of the rows.\n")
@@ -458,9 +512,7 @@ def main():
             f.write("    (0x{:04X}, 0x{:04X}, 0x{:04X}),\n".format(cp, a, b))
         f.write("];\n\n")
 
-        f.write("// The rest, where something does not fit a `u16`. Logically this continues\n")
-        f.write("// `DECOMPOSE_PAIR_BMP`: index `n` here is index `DECOMPOSE_PAIR_BMP.len() + n`\n")
-        f.write("// to `COMPOSE_INDEX`.\n")
+        f.write("// The rest, where something does not fit a `u16`.\n")
         f.write("pub(crate) static DECOMPOSE_PAIR_SUPP: &[(u32, u32, u32)] = &[\n")
         for cp, a, b in pair_supp:
             f.write("    (0x{:05X}, 0x{:05X}, 0x{:05X}),\n".format(cp, a, b))
@@ -483,35 +535,55 @@ def main():
             f.write("    " + " ".join("0x{:04X},".format(a) for _, a in cjk[i:i + 8]) + "\n")
         f.write("];\n\n")
 
-        f.write("// Every other singleton decomposition. Keys are all BMP; a few values are not.\n")
-        f.write("pub(crate) static DECOMPOSE_SINGLE: &[(u32, u32)] = &[\n")
+        f.write("// Every other singleton decomposition whose value is in the BMP, as its key is.\n")
+        f.write("pub(crate) static DECOMPOSE_SINGLE: &[(u16, u16)] = &[\n")
         for cp, a in rest:
-            f.write("    (0x{:04X}, 0x{:04X}),\n".format(cp, a))
+            if a <= 0xFFFF:
+                f.write("    (0x{:04X}, 0x{:04X}),\n".format(cp, a))
+        f.write("];\n\n")
+        f.write("// The few whose value is past the BMP.\n")
+        f.write("pub(crate) static DECOMPOSE_SINGLE_ASTRAL: &[(u16, u32)] = &[\n")
+        for cp, a in rest:
+            if a > 0xFFFF:
+                f.write("    (0x{:04X}, 0x{:05X}),\n".format(cp, a))
         f.write("];\n\n")
 
-        where = {(cp, a, b): i for i, (cp, (a, b)) in enumerate(decomp_pairs)}
-        index = []
-        for a, b, cp in comp:
-            assert (cp, a, b) in where, \
-                "compose (%04X,%04X)->%04X is not in DECOMPOSE_PAIR" % (a, b, cp)
-            index.append(where[(cp, a, b)])
-        assert max(index) <= 0xFFFF, "DECOMPOSE_PAIR outgrew a u16 index"
-
-        f.write("// Indices into `DECOMPOSE_PAIR`, ordered by that entry's `(a, b)` so a search by\n")
-        f.write("// composition can bisect. Composition *is* decomposition read backwards; storing\n")
-        f.write("// the pairs a second time cost 12 bytes an entry to say nothing new.\n")
-        f.write("pub(crate) static COMPOSE_INDEX: &[u16; {}] = &[\n".format(len(index)))
-        for i in range(0, len(index), 16):
-            f.write("    " + " ".join("{},".format(v) for v in index[i:i + 16]) + "\n")
+        compose_bmp = [(a, b, cp) for a, b, cp in comp if max(a, b) <= 0xFFFF]
+        compose_supp = [(a, b, cp) for a, b, cp in comp if max(a, b) > 0xFFFF]
+        assert all(cp <= 0xFFFF for _, _, cp in compose_bmp), "BMP parts compose past it; COMPOSE_BMP needs u32"
+        f.write("// Canonical compositions as `(a, b, composed)`, sorted by their parts, so a search reads one\n")
+        f.write("// table rather than an index into the decompositions.\n")
+        f.write("pub(crate) static COMPOSE_BMP: &[(u16, u16, u16)] = &[\n")
+        for a, b, cp in compose_bmp:
+            f.write("    (0x{:04X}, 0x{:04X}, 0x{:04X}),\n".format(a, b, cp))
+        f.write("];\n\n")
+        f.write("// Those with a part past the BMP.\n")
+        f.write("pub(crate) static COMPOSE_SUPP: &[(u32, u32, u32)] = &[\n")
+        for a, b, cp in compose_supp:
+            f.write("    (0x{:05X}, 0x{:05X}, 0x{:05X}),\n".format(a, b, cp))
         f.write("];\n\n")
 
-        assert all(a <= 0xFFFF and b <= 0xFFFF for a, b in mirroring), \
-            "a mirrored pair left the BMP; MIRRORING can no longer be u16"
-        f.write("// `(codepoint, its mirror)`, sorted. Both fit a `u16`: mirroring is a BMP-only\n")
-        f.write("// property, which halves the table against a `u32` pair.\n")
-        f.write("pub(crate) static MIRRORING: &[(u16, u16)] = &[\n")
+        hebrew = sorted((a, b, cp) for cp, (a, b) in decomp_pairs if 0xFB1D <= cp <= 0xFB4F)
+        assert len({(a, b) for a, b, _ in hebrew}) == len(hebrew), "two Hebrew presentation forms share their parts"
+        f.write("// The Hebrew presentation forms canonical composition excludes, as `(a, b, form)`, sorted by\n")
+        f.write("// their parts.\n")
+        f.write("pub(crate) static HEBREW_PRESENTATION_FORMS: &[(u16, u16, u16)] = &[\n")
+        for a, b, cp in hebrew:
+            f.write("    (0x{:04X}, 0x{:04X}, 0x{:04X}),\n".format(a, b, cp))
+        f.write("];\n\n")
+
+        f.write("// `(codepoint, its mirror)`, sorted.\n")
+        f.write("pub(crate) static MIRRORING: &[(u32, u32)] = &[\n")
         for a, b in mirroring:
             f.write("    (0x{:04X}, 0x{:04X}),\n".format(a, b))
+        f.write("];\n\n")
+
+        f.write("// `(character, its vertical presentation form)`, sorted: each form's `<vertical>` decomposition, "
+                "fullwidth where\n")
+        f.write("// it is ASCII; U+FE4F WAVY LOW LINE stands for the wavy low line's form.\n")
+        f.write("pub(crate) const VERTICAL_FORMS: [(char, char); {}] = [\n".format(len(vertical_forms)))
+        for c, form in vertical_forms:
+            f.write("    ('\\u{{{:04X}}}', '\\u{{{:04X}}}'),\n".format(c, form))
         f.write("];\n")
 
     print("wrote {}".format(os.path.relpath(OUT)))
@@ -519,8 +591,7 @@ def main():
     print("  general category {} ranges".format(len(gc_ranges)))
     print("  combining class  {} ranges".format(len(ccc_ranges)))
     print("  script           {} ranges over {} scripts".format(len(script_ranges), len(script_names)))
-    print("  ignorable        {} ranges".format(len(ignorable_ranges)))
-    print("  pictographic     {} ranges".format(len(pictographic_ranges)))
+    print("  flags            {} ranges".format(len(flag_ranges)))
     print("  joining type     {} ranges".format(len(jt_ranges)))
     print("  grapheme break   {} ranges".format(len(gcb_ranges)))
     print("  word break       {} ranges".format(len(wb_ranges)))
@@ -533,6 +604,7 @@ def main():
     print("  decompose        {} pairs, {} singletons".format(len(decomp_pairs), len(decomp_singles)))
     print("  compose          {} pairs".format(len(comp)))
     print("  mirroring        {} pairs".format(len(mirroring)))
+    print("  vertical forms   {} pairs".format(len(vertical_forms)))
 
 if __name__ == "__main__":
     main()

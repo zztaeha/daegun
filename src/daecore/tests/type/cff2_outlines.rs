@@ -1,11 +1,12 @@
-use daegun::daecore::daetype::outline::OutlinePen;
-use daegun::Font;
+use crate::outline::OutlinePen;
+use crate::{Font, GlyphId};
+use alloc::vec::Vec;
 
 const SOURCE_SERIF: &str = "source-serif/SourceSerif4Variable-Roman.otf";
 const WGHT_500: &[(&str, f64)] = &[("wght", 500.0)];
 
 fn with_font<R>(rel: &str, body: impl FnOnce(&Font) -> R) -> R {
-    let path = format!("{}/{}", crate::FONTS, rel);
+    let path = format!("{}/{}", super::FONTS, rel);
     let bytes = std::fs::read(&path).expect("font opens");
     let font = Font::from_bytes(&bytes).expect("font parses");
     body(&font)
@@ -54,14 +55,14 @@ impl OutlinePen for FirstPoint {
 }
 
 // These charstrings walk back to where the contour began, and `close` draws that segment anyway.
-// Emitting both renders correctly but serializes a path no other engine produces.
+// Emitting both renders correctly but serializes a segment that adds nothing.
 #[test]
 fn contours_do_not_restate_the_closing_segment() {
     with_font(SOURCE_SERIF, |font| {
-        let mut offenders = Vec::new();
-        for gid in 0..font.num_glyphs() {
+        let (location, mut offenders) = (super::located(font, WGHT_500), Vec::new());
+        for gid in 0..font.glyph_count() {
             let mut pen = LineClosings::default();
-            if font.outline_glyph_instanced(gid, WGHT_500, &mut pen).is_none() {
+            if font.outline(GlyphId(gid), &location, &mut pen).is_err() {
                 continue;
             }
             if pen.hits > 0 {
@@ -82,10 +83,9 @@ fn contours_do_not_restate_the_closing_segment() {
 #[test]
 fn blend_keeps_sub_unit_precision() {
     with_font(SOURCE_SERIF, |font| {
-        let gid = font.glyph_id('A' as u32).expect("font has A");
+        let gid = font.glyph_id('A').expect("font has A");
         let mut pen = FirstPoint(None);
-        font.outline_glyph_instanced(gid, WGHT_500, &mut pen)
-            .expect("A outlines");
+        font.outline(gid, &super::located(font, WGHT_500), &mut pen).expect("A outlines");
         let (x, y) = pen.0.expect("A has a contour");
         assert!((x - 5.824_89).abs() < 0.001, "expected x 5.82489, got {x}");
         assert_eq!(y, 0.0);

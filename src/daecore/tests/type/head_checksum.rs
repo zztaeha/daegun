@@ -1,4 +1,6 @@
-use daegun::Font;
+use crate::Font;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 // The whole-file rule alone passes even with every directory entry wrong, since the file sum
 // subtracts the stale adjustment back out: both rules are checked, or the two errors cancel.
@@ -63,7 +65,7 @@ fn head_checksums_hold_for_every_test_font() {
     let mut bad_entry = Vec::new();
     let mut bad_file = Vec::new();
 
-    let mut stack = vec![std::path::PathBuf::from(crate::FONTS)];
+    let mut stack = vec![std::path::PathBuf::from(super::FONTS)];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).expect("font dir reads").flatten() {
             let path = entry.path();
@@ -73,8 +75,8 @@ fn head_checksums_hold_for_every_test_font() {
 
             let Ok(bytes) = std::fs::read(&path) else { continue };
             let Ok(font) = Font::from_bytes(&bytes) else { continue };
-            let Ok(sub) = font.subset_text("Hamburgefonstiv 123", &[]) else { continue };
-            let Some(r) = check(&sub.ttf) else { continue };
+            let Ok(sub) = font.subset_text("Hamburgefonstiv 123", &crate::Location::default()) else { continue };
+            let Some(r) = check(&sub.font) else { continue };
 
             checked += 1;
             let name = path.file_name().unwrap().to_string_lossy().to_string();

@@ -1,20 +1,33 @@
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use crate::daecore::daeshaper::generated::unicode_tables as t;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-#[allow(clippy::upper_case_acronyms, reason = "these are UAX #9's names for its own classes")]
-pub(crate) enum Class {
-    L = 0, R, AL, EN, ES, ET, AN, CS, NSM, BN,
-    B, S, WS, ON, LRE, LRO, RLE, RLO, PDF, LRI, RLI, FSI, PDI,
+pub(crate) use t::BidiClass as Class;
+
+/// The direction a paragraph takes before its text has a say, as Unicode's bidi algorithm starts it.
+#[expect(clippy::exhaustive_enums, reason = "UAX #9 gives a paragraph these three")]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
+pub enum BaseDirection {
+    /// The direction of the paragraph's first strong character, left to right if it has none.
+    #[default]
+    Auto,
+    /// Left to right, whatever the text.
+    LeftToRight,
+    /// Right to left, whatever the text.
+    RightToLeft,
 }
 
-const CLASSES: [Class; 23] = [
-    Class::L, Class::R, Class::AL, Class::EN, Class::ES, Class::ET, Class::AN, Class::CS,
-    Class::NSM, Class::BN, Class::B, Class::S, Class::WS, Class::ON, Class::LRE, Class::LRO,
-    Class::RLE, Class::RLO, Class::PDF, Class::LRI, Class::RLI, Class::FSI, Class::PDI,
-];
+impl BaseDirection {
+    // As `resolve` takes it: None to find it in the text, or whether it is right to left.
+    pub(crate) fn rtl(self) -> Option<bool> {
+        match self {
+            BaseDirection::Auto => None,
+            BaseDirection::LeftToRight => Some(false),
+            BaseDirection::RightToLeft => Some(true),
+        }
+    }
+}
 
 impl Class {
     fn is_isolate_initiator(self) -> bool {
@@ -31,80 +44,185 @@ impl Class {
             || self.is_isolate_initiator()
             || self == Class::PDI
     }
-}
-
-pub(crate) fn class_of(c: char) -> Class {
-    let raw = super::props(c).bidi_class;
-    CLASSES[raw as usize % CLASSES.len()]
-}
-
-fn bracket(c: char) -> Option<(char, bool)> {
-    let cp = c as u32;
-    let i = t::BIDI_BRACKETS.binary_search_by_key(&cp, |&(k, _, _)| k).ok()?;
-    let (_, paired, is_open) = t::BIDI_BRACKETS[i];
-    Some((char::from_u32(paired)?, is_open == 1))
-}
-
-fn canonical_bracket(c: char) -> char {
-    match c {
-        '\u{3008}' => '\u{2329}',
-        '\u{3009}' => '\u{232A}',
-        other => other,
+    // L1 returns these to the paragraph level before a separator and at a line's end.
+    fn is_reset_by_l1(self) -> bool {
+        matches!(self, Class::WS | Class::LRI | Class::RLI | Class::FSI | Class::PDI) || self.is_removed_by_x9()
+    }
+    // The direction N0 to N2 read from a resolved class, numbers counting as R.
+    fn strong(self) -> Option<Class> {
+        match self {
+            Class::L => Some(Class::L),
+            Class::R | Class::EN | Class::AN => Some(Class::R),
+            _ => None,
+        }
     }
 }
 
+pub(crate) fn class_of(c: char) -> Class {
+    super::props(c).bidi_class
+}
+
+pub(crate) fn bracket(c: char) -> Option<(char, bool)> {
+    if super::props(c).flags & t::flag::BRACKET == 0 {
+        return None;
+    }
+    let i = t::BIDI_BRACKETS.binary_search_by_key(&(c as u32), |&(k, _)| k).ok()?;
+    Some((super::mirrored(c)?, t::BIDI_BRACKETS[i].1))
+}
+
+// BD16 pairs brackets up to canonical equivalence: U+2329 and U+232A are singletons for U+3008 and U+3009.
+fn canonical_bracket(c: char) -> char {
+    match super::decompose(c) {
+        Some((single, None)) => single,
+        _ => c,
+    }
+}
+
+// UAX #9's max_depth (BD2): an embedding or isolate past it overflows, as X1 to X8 count it.
 const MAX_DEPTH: u8 = 125;
 
+// The text's levels and visual order, with each paragraph's start, end and level, in bytes: a level per byte, each
+// character's start in visual order. `base_level` is the first paragraph's, and each reorders as a line of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paragraph {
     pub base_level: u8,
     pub levels: Vec<u8>,
     pub visual_order: Vec<usize>,
+    pub paragraphs: Vec<(usize, usize, u8)>,
 }
 
+impl Paragraph {
+    // The level of the paragraph holding byte `at`, or the first paragraph's past the end.
+    pub fn paragraph_level(&self, at: usize) -> u8 {
+        let k = self.paragraphs.partition_point(|&(_, end, _)| end <= at);
+        self.paragraphs.get(k).map_or(self.base_level, |&(_, _, level)| level)
+    }
+}
+
+// Resolved a character at a time, as UAX #9 reads them, then given in bytes. Levels spread from the end, as no
+// character starts before its own index, then each paragraph's characters reorder by their first bytes.
 pub fn resolve(text: &str, base: Option<bool>) -> Paragraph {
-    let chars: Vec<char> = text.chars().collect();
+    let mut chars = Vec::with_capacity(text.len());
+    chars.extend(text.chars());
     let classes: Vec<Class> = chars.iter().map(|&c| class_of(c)).collect();
-    resolve_classes(&chars, &classes, base)
+    let n = chars.len();
+    let mut levels = Vec::with_capacity(text.len());
+    levels.resize(n, 0);
+    let mut paragraphs = Vec::new();
+    let mut start = 0;
+    while start < n {
+        let end = paragraph_end(&chars, &classes, start);
+        let level = resolve_paragraph(&chars[start..end], &classes[start..end], base, &mut levels[start..end]);
+        paragraphs.push((start, end, level));
+        start = end;
+    }
+    if n != text.len() {
+        let mut end = text.len();
+        levels.resize(end, 0);
+        for k in (0..n).rev() {
+            let (level, start) = (levels[k], end - chars[k].len_utf8());
+            // Indexed: as a slice the loop becomes a memset call, dearer than writing 1 to 4 bytes.
+            #[allow(clippy::needless_range_loop)]
+            for b in start..end {
+                levels[b] = level;
+            }
+            end = start;
+        }
+    }
+    let mut visual_order = Vec::with_capacity(n);
+    let mut at = 0;
+    for (start, end, _) in &mut paragraphs {
+        let (from, first) = (visual_order.len(), at);
+        for c in &chars[*start..*end] {
+            visual_order.push(at);
+            at += c.len_utf8();
+        }
+        reorder(&mut visual_order[from..], |b| levels[b]);
+        (*start, *end) = (first, at);
+    }
+    let base_level = paragraphs.first().map_or(u8::from(base == Some(true)), |&(_, _, level)| level);
+    Paragraph { base_level, levels, visual_order, paragraphs }
 }
 
-pub(crate) fn resolve_classes(chars: &[char], classes: &[Class], base: Option<bool>) -> Paragraph {
-    let n = classes.len();
+// P1: a paragraph runs through the separator that ends it, CR and LF counting as one.
+fn paragraph_end(chars: &[char], classes: &[Class], start: usize) -> usize {
+    let Some(at) = classes[start..].iter().position(|&c| c == Class::B).map(|b| start + b) else {
+        return classes.len();
+    };
+    if chars[at] == '\r' && chars.get(at + 1) == Some(&'\n') { at + 2 } else { at + 1 }
+}
+
+// Resolves one paragraph's levels, through L1, and gives its level. One not set right to left, with no R, AL, AN or
+// explicit formatting, is 0 throughout: W7 makes its European numbers L, and N1, N2 and L1 raise nothing.
+fn resolve_paragraph(chars: &[char], classes: &[Class], base: Option<bool>, levels: &mut [u8]) -> u8 {
+    let plain = |&c: &Class| (c as u8) < Class::LRE as u8 && !matches!(c, Class::R | Class::AL | Class::AN);
+    if base != Some(true) && classes.iter().all(plain) {
+        levels.fill(0);
+        return 0;
+    }
+    resolve_fully(chars, classes, base, levels)
+}
+
+fn resolve_fully(chars: &[char], classes: &[Class], base: Option<bool>, levels: &mut [u8]) -> u8 {
+    let isolates = Isolates::find(classes);
     let base_level = match base {
-        Some(true) => 1,
-        Some(false) => 0,
-        None => paragraph_level(classes, 0, n),
+        Some(rtl) => u8::from(rtl),
+        None => u8::from(isolates.paragraph_rtl),
     };
 
-    let mut levels = alloc::vec![base_level; n];
+    levels.fill(base_level);
     // X9 removes explicit formatting characters and BN from the runs, but their *levels* still get
     // reported, so they are tracked rather than deleted.
     let mut result = classes.to_vec();
-    explicit_levels(classes, base_level, &mut levels, &mut result);
+    explicit_levels(classes, &isolates, base_level, levels, &mut result);
 
-    for seq in isolating_run_sequences(classes, &levels, base_level) {
+    for seq in isolating_run_sequences(classes, &isolates, levels, base_level) {
         resolve_sequence(chars, &seq, &mut result);
     }
 
-    implicit_levels(&result, &mut levels);
-    let visual_order = reorder(classes, &mut levels, base_level);
-
-    Paragraph { base_level, levels, visual_order }
+    implicit_levels(&result, levels);
+    separator_levels(classes, levels, base_level);
+    base_level
 }
 
-fn paragraph_level(classes: &[Class], from: usize, to: usize) -> u8 {
-    let mut depth = 0usize;
-    for &c in &classes[from..to] {
-        if c.is_isolate_initiator() { depth += 1; continue; }
-        if c == Class::PDI { depth = depth.saturating_sub(1); continue; }
-        if depth > 0 { continue; }
-        match c {
-            Class::L => return 0,
-            Class::R | Class::AL => return 1,
-            _ => {}
+// BD9's isolate pairs, both ways, and P2's first strong class of each isolate and of the paragraph, from one pass
+// with a stack. A character inside a nested isolate counts only for the innermost.
+struct Isolates {
+    partner: Vec<Option<usize>>,
+    rtl: Vec<bool>,
+    paragraph_rtl: bool,
+}
+
+impl Isolates {
+    fn find(classes: &[Class]) -> Isolates {
+        let mut partner = alloc::vec![None; classes.len()];
+        let mut first: Vec<Option<bool>> = alloc::vec![None; classes.len()];
+        let mut paragraph = None;
+        let mut open: Vec<usize> = Vec::new();
+        for (i, &c) in classes.iter().enumerate() {
+            match c {
+                Class::LRI | Class::RLI | Class::FSI => open.push(i),
+                Class::PDI => {
+                    if let Some(o) = open.pop() {
+                        partner[o] = Some(i);
+                        partner[i] = Some(o);
+                    }
+                }
+                Class::L | Class::R | Class::AL => {
+                    let slot = match open.last() {
+                        Some(&o) => &mut first[o],
+                        None => &mut paragraph,
+                    };
+                    if slot.is_none() {
+                        *slot = Some(c != Class::L);
+                    }
+                }
+                _ => {}
+            }
         }
+        let rtl = first.into_iter().map(|f| f == Some(true)).collect();
+        Isolates { partner, rtl, paragraph_rtl: paragraph == Some(true) }
     }
-    0
 }
 
 #[derive(Clone, Copy)]
@@ -115,23 +233,28 @@ struct Status {
 }
 
 // X1–X8: explicit embeddings, overrides and isolates.
-fn explicit_levels(classes: &[Class], base_level: u8, levels: &mut [u8], result: &mut [Class]) {
-    let mut stack = alloc::vec![Status { level: base_level, override_status: None, isolate: false }];
+fn explicit_levels(classes: &[Class], isolates: &Isolates, base_level: u8, levels: &mut [u8], result: &mut [Class]) {
+    let base = Status { level: base_level, override_status: None, isolate: false };
+    let mut stack = alloc::vec![base];
     let mut overflow_isolate = 0usize;
     let mut overflow_embedding = 0usize;
     let mut valid_isolate = 0usize;
+    // A character takes the level of the entry on top, and its override.
+    let take = |i: usize, top: Status, levels: &mut [u8], result: &mut [Class]| {
+        levels[i] = top.level;
+        if let Some(o) = top.override_status {
+            result[i] = o;
+        }
+    };
 
-    for i in 0..classes.len() {
-        let class = classes[i];
+    for (i, &class) in classes.iter().enumerate() {
+        let top = stack.last().copied().unwrap_or(base);
         match class {
             Class::RLE | Class::LRE | Class::RLO | Class::LRO => {
                 // X2–X5: the embedding's own level is the last one reported for it.
-                levels[i] = stack.last().map_or(base_level, |s| s.level);
-                if let Some(s) = stack.last()
-                    && let Some(o) = s.override_status { result[i] = o; }
+                take(i, top, levels, result);
                 let rtl = matches!(class, Class::RLE | Class::RLO);
-                let last = stack.last().map_or(base_level, |s| s.level);
-                let next = if rtl { (last + 1) | 1 } else { (last + 2) & !1 };
+                let next = if rtl { (top.level + 1) | 1 } else { (top.level + 2) & !1 };
                 if next <= MAX_DEPTH && overflow_isolate == 0 && overflow_embedding == 0 {
                     stack.push(Status {
                         level: next,
@@ -151,13 +274,10 @@ fn explicit_levels(classes: &[Class], base_level: u8, levels: &mut [u8], result:
                 let rtl = match class {
                     Class::RLI => true,
                     Class::LRI => false,
-                    _ => paragraph_level(classes, i + 1, matching_pdi(classes, i)) == 1,
+                    _ => isolates.rtl[i],
                 };
-                let last = stack.last().copied()
-                    .unwrap_or(Status { level: base_level, override_status: None, isolate: false });
-                levels[i] = last.level;
-                if let Some(o) = last.override_status { result[i] = o; }
-                let next = if rtl { (last.level + 1) | 1 } else { (last.level + 2) & !1 };
+                take(i, top, levels, result);
+                let next = if rtl { (top.level + 1) | 1 } else { (top.level + 2) & !1 };
                 if next <= MAX_DEPTH && overflow_isolate == 0 && overflow_embedding == 0 {
                     valid_isolate += 1;
                     stack.push(Status { level: next, override_status: None, isolate: true });
@@ -178,50 +298,24 @@ fn explicit_levels(classes: &[Class], base_level: u8, levels: &mut [u8], result:
                     stack.pop();
                     valid_isolate -= 1;
                 }
-                let last = stack.last().copied()
-                    .unwrap_or(Status { level: base_level, override_status: None, isolate: false });
-                levels[i] = last.level;
-                if let Some(o) = last.override_status { result[i] = o; }
+                take(i, stack.last().copied().unwrap_or(base), levels, result);
             }
             Class::PDF => {
                 // X7.
-                levels[i] = stack.last().map_or(base_level, |s| s.level);
+                levels[i] = top.level;
                 if overflow_isolate > 0 {
                 } else if overflow_embedding > 0 {
                     overflow_embedding -= 1;
-                } else if stack.last().is_some_and(|s| !s.isolate) && stack.len() >= 2 {
+                } else if !top.isolate && stack.len() >= 2 {
                     stack.pop();
                 }
             }
-            Class::B => {
-                // X8: a paragraph separator resets everything and takes the base level.
-                stack.truncate(1);
-                overflow_isolate = 0;
-                overflow_embedding = 0;
-                valid_isolate = 0;
-                levels[i] = base_level;
-            }
-            _ => {
-                // X6.
-                let last = stack.last().copied()
-                    .unwrap_or(Status { level: base_level, override_status: None, isolate: false });
-                levels[i] = last.level;
-                if let Some(o) = last.override_status { result[i] = o; }
-            }
+            // X8: the separator ending the paragraph takes its level.
+            Class::B => levels[i] = base_level,
+            // X6.
+            _ => take(i, top, levels, result),
         }
     }
-}
-
-fn matching_pdi(classes: &[Class], from: usize) -> usize {
-    let mut depth = 1usize;
-    for (i, &c) in classes.iter().enumerate().skip(from + 1) {
-        if c.is_isolate_initiator() { depth += 1; }
-        else if c == Class::PDI {
-            depth -= 1;
-            if depth == 0 { return i; }
-        }
-    }
-    classes.len()
 }
 
 struct Sequence {
@@ -231,11 +325,15 @@ struct Sequence {
     eos: Class,
 }
 
-// Every level run must land in some isolating run sequence, or W1-W7 and N0-N2 never run on it and
-// its characters keep their raw classes. Checked rather than argued: zero orphans over BidiTest,
-// BidiCharacterTest and an exhaustive sweep – 4,195,278 cases – and asserted below so a future
-// change to level assignment cannot quietly reintroduce one.
-fn isolating_run_sequences(classes: &[Class], levels: &[u8], base_level: u8) -> Vec<Sequence> {
+impl Sequence {
+    fn embedding_direction(&self) -> Class {
+        if self.level.is_multiple_of(2) { Class::L } else { Class::R }
+    }
+}
+
+// Every level run must land in an isolating run sequence, or W1–W7 and N0–N2 never resolve it; BidiTest,
+// BidiCharacterTest and a sweep of 4,195,278 cases leave none out, and the assert below keeps it so.
+fn isolating_run_sequences(classes: &[Class], isolates: &Isolates, levels: &[u8], base_level: u8) -> Vec<Sequence> {
     let n = classes.len();
     let kept: Vec<usize> = (0..n).filter(|&i| !classes[i].is_removed_by_x9()).collect();
 
@@ -257,7 +355,7 @@ fn isolating_run_sequences(classes: &[Class], levels: &[u8], base_level: u8) -> 
         let first = kept[runs[start].0];
         // BD13: a sequence begins at a run whose first character is not a PDI matching an earlier
         // initiator.
-        if classes[first] == Class::PDI && matched_initiator(classes, first).is_some() { continue; }
+        if classes[first] == Class::PDI && isolates.partner[first].is_some() { continue; }
 
         let mut indices = Vec::new();
         let mut cur = start;
@@ -267,8 +365,7 @@ fn isolating_run_sequences(classes: &[Class], levels: &[u8], base_level: u8) -> 
             indices.extend_from_slice(&kept[a..b]);
             let last = kept.get(b.wrapping_sub(1)).copied().unwrap_or(0);
             if !classes[last].is_isolate_initiator() { break; }
-            let pdi = matching_pdi(classes, last);
-            if pdi >= n { break; }
+            let Some(pdi) = isolates.partner[last] else { break };
             match run_starting_at(pdi) {
                 Some(next) if !used[next] => cur = next,
                 _ => break,
@@ -279,7 +376,7 @@ fn isolating_run_sequences(classes: &[Class], levels: &[u8], base_level: u8) -> 
         // X10: sos/eos come from the higher of this sequence's level and its neighbor's.
         let before = prev_kept_level(&kept, levels, indices[0], base_level);
         let last = *indices.last().unwrap_or(&0);
-        let after = if classes[last].is_isolate_initiator() && matching_pdi(classes, last) >= n {
+        let after = if classes[last].is_isolate_initiator() && isolates.partner[last].is_none() {
             base_level
         } else {
             next_kept_level(&kept, levels, last, base_level)
@@ -294,18 +391,6 @@ fn isolating_run_sequences(classes: &[Class], levels: &[u8], base_level: u8) -> 
         "a level run was assigned to no isolating run sequence; see BD13 and X6a above",
     );
     out
-}
-
-fn matched_initiator(classes: &[Class], pdi: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for i in (0..pdi).rev() {
-        if classes[i] == Class::PDI { depth += 1; }
-        else if classes[i].is_isolate_initiator() {
-            if depth == 0 { return Some(i); }
-            depth -= 1;
-        }
-    }
-    None
 }
 
 fn prev_kept_level(kept: &[usize], levels: &[u8], at: usize, base: u8) -> u8 {
@@ -394,19 +479,14 @@ fn resolve_sequence(chars: &[char], seq: &Sequence, result: &mut [Class]) {
 
     // N1, N2: a run of neutrals between matching strong types takes that type, otherwise the
     // embedding direction.
-    let embedding = if !seq.level.is_multiple_of(2) { Class::R } else { Class::L };
-    let strong_of = |c: Class| match c {
-        Class::L => Some(Class::L),
-        Class::R | Class::EN | Class::AN => Some(Class::R),
-        _ => None,
-    };
+    let embedding = seq.embedding_direction();
     let mut i = 0;
     while i < n {
         if !cls[i].is_neutral_or_isolate() { i += 1; continue; }
         let start = i;
         while i < n && cls[i].is_neutral_or_isolate() { i += 1; }
-        let before = if start > 0 { strong_of(cls[start - 1]) } else { strong_of(seq.sos) };
-        let after = if i < n { strong_of(cls[i]) } else { strong_of(seq.eos) };
+        let before = if start > 0 { cls[start - 1].strong() } else { seq.sos.strong() };
+        let after = if i < n { cls[i].strong() } else { seq.eos.strong() };
         let fill = match (before, after) {
             (Some(a), Some(b)) if a == b => a,
             _ => embedding,
@@ -421,7 +501,7 @@ fn resolve_sequence(chars: &[char], seq: &Sequence, result: &mut [Class]) {
 
 fn resolve_brackets(chars: &[char], idx: &[usize], cls: &mut [Class], seq: &Sequence) {
     if chars.is_empty() { return; }
-    let embedding = if !seq.level.is_multiple_of(2) { Class::R } else { Class::L };
+    let embedding = seq.embedding_direction();
     let opposite = if embedding == Class::R { Class::L } else { Class::R };
 
     let mut stack: Vec<(char, usize)> = Vec::new();
@@ -443,18 +523,12 @@ fn resolve_brackets(chars: &[char], idx: &[usize], cls: &mut [Class], seq: &Sequ
     }
     pairs.sort_unstable();
 
-    let strong_of = |c: Class| match c {
-        Class::L => Some(Class::L),
-        Class::R | Class::EN | Class::AN => Some(Class::R),
-        _ => None,
-    };
-
     for &(open, close) in &pairs {
         // N0 b: the embedding direction inside the pair wins.
         let mut found_embedding = false;
         let mut found_opposite = false;
         for c in cls.iter().take(close).skip(open + 1) {
-            match strong_of(*c) {
+            match c.strong() {
                 Some(s) if s == embedding => { found_embedding = true; break; }
                 Some(_) => found_opposite = true,
                 None => {}
@@ -466,7 +540,7 @@ fn resolve_brackets(chars: &[char], idx: &[usize], cls: &mut [Class], seq: &Sequ
             // N0 c: opposite direction inside, so the context before the pair decides.
             let mut prior = seq.sos;
             for c in cls.iter().take(open).rev() {
-                if let Some(s) = strong_of(*c) { prior = s; break; }
+                if let Some(s) = c.strong() { prior = s; break; }
             }
             if prior == opposite { Some(opposite) } else { Some(embedding) }
         } else {
@@ -510,127 +584,123 @@ fn implicit_levels(result: &[Class], levels: &mut [u8]) {
     }
 }
 
-// L1–L2: reset separators and trailing whitespace, then reverse by level.
-fn reorder(classes: &[Class], levels: &mut [u8], base_level: u8) -> Vec<usize> {
-    let n = classes.len();
-
-    for i in 0..n {
+// X9's removed characters take the level before them, and L1 returns separators, and the whitespace and isolate
+// formatting before them or at the paragraph's end, to the paragraph level, by their original classes.
+fn separator_levels(classes: &[Class], levels: &mut [u8], base_level: u8) {
+    for i in 0..classes.len() {
         if classes[i].is_removed_by_x9() {
             levels[i] = if i == 0 { base_level } else { levels[i - 1] };
         }
     }
-
-    // L1: a segment or paragraph separator goes back to the paragraph level, and so does any
-    // whitespace *immediately preceding* one, and any trailing whitespace at the end of the line.
-    // Not everything after a separator – that is a different and much more destructive rule.
-    // Uses the *original* classes, not the resolved ones: the one place the algorithm looks back
-    // past its own work.
-    let resettable = |c: Class| {
-        matches!(c, Class::WS | Class::LRI | Class::RLI | Class::FSI | Class::PDI)
-            || c.is_removed_by_x9()
-    };
-    let reset_run_before = |levels: &mut [u8], from: usize| {
-        let mut j = from;
-        while j > 0 && resettable(classes[j - 1]) {
-            j -= 1;
+    let reset_before = |levels: &mut [u8], from: usize| {
+        for j in (0..from).rev().take_while(|&j| classes[j].is_reset_by_l1()) {
             levels[j] = base_level;
         }
     };
-    for i in 0..n {
+    for i in 0..classes.len() {
         if matches!(classes[i], Class::B | Class::S) {
             levels[i] = base_level;
-            reset_run_before(levels, i);
+            reset_before(levels, i);
         }
     }
-    reset_run_before(levels, n);
-
-    reorder_levels(levels)
+    reset_before(levels, classes.len());
 }
 
-// L2 alone: from the highest level down to the lowest odd level, reverse each maximal run at or
-// above that level. Returns positions in display order.
-pub(crate) fn reorder_levels(levels: &[u8]) -> Vec<usize> {
-    let n = levels.len();
-    let mut order: Vec<usize> = (0..n).collect();
-    let Some(&max) = levels.iter().max() else { return order };
-    let min_odd = levels.iter().copied().filter(|l| !l.is_multiple_of(2)).min().unwrap_or(max + 1);
-    let mut level = max;
-    while level >= min_odd && level > 0 {
+// L2: `order`'s entries in display order, every run at or above each level from the highest down to the lowest odd
+// one reversed; `level` gives an entry's. The entries can be indices or offsets, as long as `level` reads them.
+pub(crate) fn reorder(order: &mut [usize], level: impl Fn(usize) -> u8) {
+    let (mut max, mut min_odd) = (0, u8::MAX);
+    for &e in order.iter() {
+        let l = level(e);
+        max = max.max(l);
+        if l % 2 == 1 {
+            min_odd = min_odd.min(l);
+        }
+    }
+    let mut at = max;
+    while at >= min_odd && at > 0 {
         let mut i = 0;
-        while i < n {
-            if levels[order[i]] < level { i += 1; continue; }
+        while i < order.len() {
+            if level(order[i]) < at {
+                i += 1;
+                continue;
+            }
             let start = i;
-            while i < n && levels[order[i]] >= level { i += 1; }
+            while i < order.len() && level(order[i]) >= at {
+                i += 1;
+            }
             order[start..i].reverse();
         }
-        level -= 1;
+        at -= 1;
     }
-    order
 }
 
-// L2's reversal, both applied to the line rather than to the paragraph.
-pub struct VisualRuns {
-    indices: Vec<usize>,
-    bounds: Vec<(usize, u8)>,
-}
+// Runs in display order, each one level and so one span of the text, in bytes: a reversal at level k takes whole
+// runs at k or above, so the characters of a run are contiguous whichever way they read.
+#[derive(Default)]
+pub struct VisualRuns(Vec<(Range<usize>, u8)>);
 
 impl VisualRuns {
-    fn push(&mut self, index: usize, level: u8) {
-        match self.bounds.last_mut() {
-            Some((end, l)) if *l == level => *end += 1,
-            _ => self.bounds.push((self.indices.len() + 1, level)),
+    // A run ends where the level changes, or where `cut` starts a paragraph.
+    fn push(&mut self, chars: Range<usize>, level: u8, cut: bool) {
+        match self.0.last_mut() {
+            Some((span, l)) if *l == level && !cut => {
+                span.start = span.start.min(chars.start);
+                span.end = span.end.max(chars.end);
+            }
+            _ => self.0.push((chars, level)),
         }
-        self.indices.push(index);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&[usize], u8)> + '_ {
-        let mut from = 0usize;
-        self.bounds.iter().map(move |&(end, level)| {
-            let run = &self.indices[from..end];
-            from = end;
-            (run, level)
-        })
+    pub fn iter(&self) -> impl Iterator<Item = (Range<usize>, u8)> + '_ {
+        self.0.iter().cloned()
     }
-
 }
 
-pub fn line_visual_runs(
-    base_level: u8,
-    para_levels: &[u8],
-    chars: &[char],
-    start: usize,
-    end: usize,
-) -> VisualRuns {
-    let mut out = VisualRuns { indices: Vec::new(), bounds: Vec::new() };
-    if start >= end || end > para_levels.len() || end > chars.len() {
+// One line's runs: bytes `start` to `end` of `text`, whose levels `levels` gives a byte at a time; `base_level` is
+// the level of the paragraph holding it. Reordered a character at a time, by each one's first byte.
+pub fn line_visual_runs(base_level: u8, levels: &[u8], text: &str, start: usize, end: usize) -> VisualRuns {
+    let mut out = VisualRuns::default();
+    let Some(line) = text.get(start..end).filter(|_| start < end && end <= levels.len()) else { return out };
+    // At the paragraph's level throughout, the line is one run, which L1 and reordering leave as it is.
+    if levels[start..end].iter().all(|&l| l == base_level) {
+        out.push(start..end, base_level, false);
         return out;
     }
-    let mut levels: Vec<u8> = para_levels[start..end].to_vec();
+    reordered(base_level, levels, line, start, out)
+}
+
+// Any line: L1's resets, then L2's reversals.
+fn reordered(base_level: u8, levels: &[u8], line: &str, start: usize, mut out: VisualRuns) -> VisualRuns {
+    let mut line_levels = levels[start..start + line.len()].to_vec();
     // L1, final clause: trailing whitespace at the end of the line goes back to the paragraph level,
     // so a space closing an RTL line still sits where the reader expects it.
-    let mut j = levels.len();
-    while j > 0 && {
-        let c = class_of(chars[start + j - 1]);
-        matches!(c, Class::WS | Class::FSI | Class::LRI | Class::RLI | Class::PDI)
-            || c.is_removed_by_x9()
-    } {
-        j -= 1;
-        levels[j] = base_level;
+    for (at, c) in line.char_indices().rev().take_while(|&(_, c)| class_of(c).is_reset_by_l1()) {
+        line_levels[at..at + c.len_utf8()].fill(base_level);
     }
-
-    let order = reorder_levels(&levels);
-    out.indices.reserve(order.len());
-    for i in order {
-        out.push(start + i, levels[i]);
+    let mut order: Vec<usize> = line.char_indices().map(|(at, _)| at).collect();
+    reorder(&mut order, |at| line_levels[at]);
+    for at in order {
+        let width = line[at..].chars().next().map_or(1, char::len_utf8);
+        out.push(start + at..start + at + width, line_levels[at], false);
     }
     out
 }
 
-pub fn visual_runs(p: &Paragraph) -> VisualRuns {
-    let mut out =
-        VisualRuns { indices: Vec::with_capacity(p.visual_order.len()), bounds: Vec::new() };
-    for &i in &p.visual_order {
-        out.push(i, p.levels.get(i).copied().unwrap_or(p.base_level));
+// Each paragraph's runs, every paragraph reordered as a line of its own.
+pub fn visual_runs(p: &Paragraph, text: &str) -> VisualRuns {
+    let mut out = VisualRuns::default();
+    for &(start, end, level) in &p.paragraphs {
+        let first = p.visual_order.partition_point(|&at| at < start);
+        let last = first + text.get(start..end).map_or(0, |t| t.chars().count());
+        for (k, &at) in p.visual_order.get(first..last).unwrap_or_default().iter().enumerate() {
+            let width = text[at..].chars().next().map_or(1, char::len_utf8);
+            out.push(at..at + width, p.levels.get(at).copied().unwrap_or(level), k == 0);
+        }
     }
     out
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/daeshaper/unicode/bidi.rs"]
+mod tests;

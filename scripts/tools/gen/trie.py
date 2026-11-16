@@ -1,3 +1,5 @@
+from rows import wrapped
+
 SEARCH_BITS = range(3, 10)
 MAX_CP = 0x110000
 
@@ -65,41 +67,38 @@ def build(columns, defaults):
 def width_for(values):
     return "u8" if max(values, default=0) < 256 else "u16"
 
-def emit_flat(f, name, values, per_line=16):
-    ty = width_for(values)
-    f.write("pub(crate) static {}: &[{}; {}] = &[\n".format(name, ty, len(values)))
+def emit_stage(f, name, values, comment, per_line=16):
+    f.write("    // {}\n    {}: &[\n".format(comment, name))
     for i in range(0, len(values), per_line):
-        f.write("    " + " ".join("{},".format(v) for v in values[i:i + per_line]) + "\n")
-    f.write("];\n\n")
+        f.write("        " + " ".join("{},".format(v) for v in values[i:i + per_line]) + "\n")
+    f.write("    ],\n")
 
-def emit(f, prefix, fields, columns, defaults, doc):
+# Writes `record`, a struct of `fields`, and `name`, a trie of one for every code point. Each value is written as it
+# is, so a column may hold Rust expressions.
+def emit(f, name, record, fields, columns, defaults, doc):
     records, top, mid, leaf, leaf_bits, mid_bits = build(columns, defaults)
 
     f.write(doc)
-    f.write("#[derive(Clone, Copy)]\npub(crate) struct {}Record {{\n".format(prefix.title().replace("_", "")))
-    for name, ty in fields:
-        f.write("    pub(crate) {}: {},\n".format(name, ty))
+    f.write("#[derive(Clone, Copy)]\npub(crate) struct {} {{\n".format(record))
+    for field, ty in fields:
+        f.write("    pub(crate) {}: {},\n".format(field, ty))
     f.write("}\n\n")
 
-    struct = prefix.title().replace("_", "") + "Record"
-    f.write("// The distinct combinations these scripts actually use. Indexed by `{}_LEAF`.\n".format(prefix))
-    f.write("pub(crate) static {}: &[{}; {}] = &[\n".format(prefix, struct, len(records)))
+    f.write("pub(crate) static {}: Trie<{}, {}, {}, {}> = Trie {{\n".format(
+        name, record, width_for(top), width_for(mid), width_for(leaf)))
+    f.write("    leaf_bits: {},\n    mid_bits: {},\n    records: &[\n".format(leaf_bits, mid_bits))
     for rec in records:
-        f.write("    {} {{ {} }},\n".format(
-            struct, ", ".join("{}: {}".format(n, v) for (n, _), v in zip(fields, rec))))
-    f.write("];\n\n")
-
-    f.write("// Block shape. The descent reads these, so a regeneration landing on a different\n"
-            "// shape moves the lookup with it.\n")
-    f.write("pub(crate) const {}_LEAF_BITS: u32 = {};\n".format(prefix, leaf_bits))
-    f.write("pub(crate) const {}_MID_BITS: u32 = {};\n\n".format(prefix, mid_bits))
-
-    f.write("// Stage 1: `cp >> {}` to a `{}_MID` block.\n".format(leaf_bits + mid_bits, prefix))
-    emit_flat(f, prefix + "_TOP", top)
-    f.write("// Stage 2: a mid block plus `(cp >> {}) & {}` to a `{}_LEAF` block.\n"
-            .format(leaf_bits, (1 << mid_bits) - 1, prefix))
-    emit_flat(f, prefix + "_MID", mid)
-    f.write("// Stage 3: a leaf block plus `cp & {}` to a `{}` record.\n".format((1 << leaf_bits) - 1, prefix))
-    emit_flat(f, prefix + "_LEAF", leaf)
+        parts = ["{}: {},".format(n, v) for (n, _), v in zip(fields, rec)]
+        one = "        {} {{ {} }},".format(record, " ".join(parts)[:-1])
+        if len(one) <= 120:
+            f.write(one + "\n")
+        else:
+            f.write("        {} {{\n{}\n        }},\n".format(record, "\n".join(wrapped(" " * 12, parts))))
+    f.write("    ],\n")
+    emit_stage(f, "top", top, "`cp >> {}` to a mid block.".format(leaf_bits + mid_bits))
+    emit_stage(f, "mid", mid, "A mid block plus `(cp >> {}) & {}` to a leaf block.".format(
+        leaf_bits, (1 << mid_bits) - 1))
+    emit_stage(f, "leaf", leaf, "A leaf block plus `cp & {}` to a record.".format((1 << leaf_bits) - 1))
+    f.write("};\n\n")
 
     return len(records), len(mid) >> mid_bits, len(leaf) >> leaf_bits

@@ -1,93 +1,89 @@
-use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
-use super::super::decoder::{read_u16_be, records_fit};
-use super::{coverage_index, read_math_value};
-use crate::daecore::daetype::TableBytes;
+use super::super::decoder::{offset16_in, read_u16_be, resolve_offset16};
+use super::{construction, math_value, Covered, Deltas};
+use crate::daecore::daetype::Tables;
+use crate::daecore::GlyphId;
 
-pub struct MathGlyphVariant { pub glyph_id: u16, pub advance: u16 }
+/// One ready-made size of a glyph that stretches. Laid out as C reads it.
+#[non_exhaustive]
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct MathGlyphVariant {
+    /// The glyph of that size.
+    pub glyph: GlyphId,
+    /// Its advance along the way it stretches, in font units.
+    pub advance: f64,
+}
 
+/// One part of a glyph assembled to any size, in font units along the way it stretches. Laid out as C reads it.
+#[non_exhaustive]
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct GlyphPart {
-    pub glyph_id: u16,
-    pub start_connector_length: u16,
-    pub end_connector_length: u16,
-    pub full_advance: u16,
-    pub is_extender: bool,
+    /// The part's glyph.
+    pub glyph: GlyphId,
+    /// How much of its start may overlap the part before.
+    pub start_connector_length: f64,
+    /// How much of its end may overlap the part after.
+    pub end_connector_length: f64,
+    /// Its whole advance.
+    pub full_advance: f64,
+    /// Whether it repeats, zero or more times, to fill the length.
+    pub extender: bool,
 }
 
-pub struct GlyphAssembly { pub italics_correction: i16, pub parts: Vec<GlyphPart> }
+/// How to build a glyph to any size from parts, start to end.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Debug)]
+pub struct GlyphAssembly {
+    /// The italic correction of the built glyph, in font units.
+    pub italics_correction: f64,
+    /// The parts, from the bottom or the left.
+    pub parts: Vec<GlyphPart>,
+}
 
+/// How a glyph stretches one way: its ready-made sizes, smallest first, and how to build it larger.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Debug)]
 pub struct MathGlyphConstruction {
+    /// How to build it from parts; None where the font gives only sizes.
     pub assembly: Option<GlyphAssembly>,
-    pub variants:  Vec<MathGlyphVariant>,
+    /// Its sizes, smallest first.
+    pub variants: Vec<MathGlyphVariant>,
 }
 
-fn variants_offset(table_map: &BTreeMap<String, TableBytes>) -> Option<(&[u8], usize)> {
+pub fn math_min_connector_overlap(table_map: &Tables) -> Option<u16> {
     let math = table_map.get("MATH")?;
-    let off = read_u16_be(math, 8).filter(|&o| o != 0)? as usize;
-    Some((math, off))
-}
-
-pub fn math_min_connector_overlap(table_map: &BTreeMap<String, TableBytes>) -> Option<u16> {
-    let (math, variants_off) = variants_offset(table_map)?;
-    read_u16_be(math, variants_off)
+    read_u16_be(math, offset16_in(math, 0, 8)?)
 }
 
 pub fn math_glyph_construction(
-    table_map: &BTreeMap<String, TableBytes>, gid: u16, vertical: bool,
+    table_map: &Tables, gid: u32, vertical: bool, deltas: Deltas<'_>,
 ) -> Option<MathGlyphConstruction> {
-    let (math, variants_off) = variants_offset(table_map)?;
+    let math = table_map.get("MATH")?;
+    let variants = offset16_in(math, 0, 8)?;
+    let direction = Covered::variants(math, variants, vertical)?;
+    let found =
+        construction(math, resolve_offset16(math, direction.records + 2 * direction.index(math, gid)?, variants)?)?;
 
-    let cov_field_off  = if vertical { variants_off + 2 } else { variants_off + 4 };
-    let count_field_off = if vertical { variants_off + 6 } else { variants_off + 8 };
-    let array_off = variants_off + 10 + if vertical { 0 } else {
-        read_u16_be(math, variants_off + 6)? as usize * 2
-    };
-
-    let cov_off = variants_off + read_u16_be(math, cov_field_off)? as usize;
-    let count = read_u16_be(math, count_field_off)? as usize;
-    let idx = coverage_index(math, cov_off, gid)?;
-    if idx >= count { return None; }
-
-    let construction_rel = read_u16_be(math, array_off + idx * 2)? as usize;
-    let construction_off = variants_off + construction_rel;
-
-    let assembly_rel = read_u16_be(math, construction_off)? as usize;
-    let assembly = if assembly_rel == 0 {
-        None
-    } else {
-        Some(parse_glyph_assembly(math, construction_off + assembly_rel)?)
-    };
-
-    let variant_count = read_u16_be(math, construction_off + 2)? as usize;
-    if !records_fit(construction_off + 4, variant_count, 4, math.len()) { return None; }
-    let mut variants = Vec::with_capacity(variant_count);
-    for i in 0..variant_count {
-        let rec = construction_off + 4 + i * 4;
-        let glyph_id = read_u16_be(math, rec)?;
-        let advance  = read_u16_be(math, rec + 2)?;
-        variants.push(MathGlyphVariant { glyph_id, advance });
+    let assembly = found.assembly.and_then(|a| {
+        let mut parts = Vec::with_capacity(a.part_count);
+        for rec in (0..a.part_count).map(|k| a.parts + 10 * k) {
+            let field = |i: usize| read_u16_be(math, rec + 2 * i);
+            parts.push(GlyphPart {
+                glyph: GlyphId(field(0)?.into()),
+                start_connector_length: field(1)?.into(),
+                end_connector_length: field(2)?.into(),
+                full_advance: field(3)?.into(),
+                extender: field(4)? & 0x0001 != 0,
+            });
+        }
+        Some(GlyphAssembly { italics_correction: math_value(math, a.at, a.at, deltas)?, parts })
+    });
+    let mut variants = Vec::with_capacity(found.variant_count);
+    for rec in (0..found.variant_count).map(|k| found.variants + 4 * k) {
+        let glyph = GlyphId(read_u16_be(math, rec)?.into());
+        variants.push(MathGlyphVariant { glyph, advance: read_u16_be(math, rec + 2)?.into() });
     }
-
     Some(MathGlyphConstruction { assembly, variants })
-}
-
-fn parse_glyph_assembly(math: &[u8], off: usize) -> Option<GlyphAssembly> {
-    let italics_correction = read_math_value(math, off)?;
-    let part_count = read_u16_be(math, off + 4)? as usize;
-    if !records_fit(off + 6, part_count, 10, math.len()) { return None; }
-    let mut parts = Vec::with_capacity(part_count);
-    for i in 0..part_count {
-        let rec = off + 6 + i * 10;
-        let glyph_id = read_u16_be(math, rec)?;
-        let start_connector_length = read_u16_be(math, rec + 2)?;
-        let end_connector_length   = read_u16_be(math, rec + 4)?;
-        let full_advance           = read_u16_be(math, rec + 6)?;
-        let part_flags             = read_u16_be(math, rec + 8)?;
-        parts.push(GlyphPart {
-            glyph_id, start_connector_length, end_connector_length, full_advance,
-            is_extender: part_flags & 0x0001 != 0,
-        });
-    }
-    Some(GlyphAssembly { italics_correction, parts })
 }

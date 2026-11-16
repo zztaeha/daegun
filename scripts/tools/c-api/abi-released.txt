@@ -1,0 +1,665 @@
+version 2.0.0
+DAEGUN_AAT_CLASS_DELETED_GLYPH	2
+DAEGUN_AAT_CLASS_END_OF_TEXT	0
+DAEGUN_AAT_STATE_START_OF_TEXT	0
+DAEGUN_ABSENT	-4
+DAEGUN_ADJUST_EXTEND	1
+DAEGUN_ADJUST_SHRINK	0
+DAEGUN_ALIGN_CENTER	2
+DAEGUN_ALIGN_END	1
+DAEGUN_ALIGN_JUSTIFY	3
+DAEGUN_ALIGN_START	0
+DAEGUN_BASE_AUTO	-1
+DAEGUN_BASE_LTR	0
+DAEGUN_BASE_RTL	1
+DAEGUN_BITMAP_COVERAGE	1
+DAEGUN_BITMAP_PNG	0
+DAEGUN_BREAK_GREEDY	0
+DAEGUN_BREAK_OPTIMAL	1
+DAEGUN_CACHE_INSTANCE	1
+DAEGUN_CACHE_OUTLINE	2
+DAEGUN_CACHE_RASTER	3
+DAEGUN_CACHE_SHAPE	0
+DAEGUN_CAP_BUTT	0
+DAEGUN_CAP_ROUND	1
+DAEGUN_CAP_SQUARE	2
+DAEGUN_CLUSTER_CHARACTERS	2
+DAEGUN_CLUSTER_GRAPHEMES	3
+DAEGUN_CLUSTER_MONOTONE_CHARACTERS	1
+DAEGUN_CLUSTER_MONOTONE_GRAPHEMES	0
+DAEGUN_COMPOSITE_CLEAR	0
+DAEGUN_COMPOSITE_COLOR_BURN	18
+DAEGUN_COMPOSITE_COLOR_DODGE	17
+DAEGUN_COMPOSITE_DARKEN	15
+DAEGUN_COMPOSITE_DEST	2
+DAEGUN_COMPOSITE_DEST_ATOP	10
+DAEGUN_COMPOSITE_DEST_IN	6
+DAEGUN_COMPOSITE_DEST_OUT	8
+DAEGUN_COMPOSITE_DEST_OVER	4
+DAEGUN_COMPOSITE_DIFFERENCE	21
+DAEGUN_COMPOSITE_EXCLUSION	22
+DAEGUN_COMPOSITE_HARD_LIGHT	19
+DAEGUN_COMPOSITE_HSL_COLOR	26
+DAEGUN_COMPOSITE_HSL_HUE	24
+DAEGUN_COMPOSITE_HSL_LUMINOSITY	27
+DAEGUN_COMPOSITE_HSL_SATURATION	25
+DAEGUN_COMPOSITE_LIGHTEN	16
+DAEGUN_COMPOSITE_MULTIPLY	23
+DAEGUN_COMPOSITE_OVERLAY	14
+DAEGUN_COMPOSITE_PLUS	12
+DAEGUN_COMPOSITE_SCREEN	13
+DAEGUN_COMPOSITE_SOFT_LIGHT	20
+DAEGUN_COMPOSITE_SRC	1
+DAEGUN_COMPOSITE_SRC_ATOP	9
+DAEGUN_COMPOSITE_SRC_IN	5
+DAEGUN_COMPOSITE_SRC_OUT	7
+DAEGUN_COMPOSITE_SRC_OVER	3
+DAEGUN_COMPOSITE_XOR	11
+DAEGUN_CONST	__attribute__((const))
+DAEGUN_DEFAULT_POINT_SIZE	12
+DAEGUN_DIRECTION_BTT	4
+DAEGUN_DIRECTION_DEFAULT	0
+DAEGUN_DIRECTION_LTR	1
+DAEGUN_DIRECTION_RTL	2
+DAEGUN_DIRECTION_TTB	3
+DAEGUN_EXTEND_PAD	0
+DAEGUN_EXTEND_REFLECT	2
+DAEGUN_EXTEND_REPEAT	1
+DAEGUN_FIELD_MSDF	1
+DAEGUN_FIELD_SDF	0
+DAEGUN_FILL_EVENODD	1
+DAEGUN_FILL_NONZERO	0
+DAEGUN_GAMMA_LINEAR	0
+DAEGUN_GAMMA_SRGB	1
+DAEGUN_GC_CLOSE_PUNCTUATION	18
+DAEGUN_GC_CONNECT_PUNCTUATION	16
+DAEGUN_GC_CONTROL	1
+DAEGUN_GC_CURRENCY_SYMBOL	23
+DAEGUN_GC_DASH_PUNCTUATION	17
+DAEGUN_GC_DECIMAL_NUMBER	13
+DAEGUN_GC_ENCLOSING_MARK	11
+DAEGUN_GC_FINAL_PUNCTUATION	19
+DAEGUN_GC_FORMAT	2
+DAEGUN_GC_INITIAL_PUNCTUATION	20
+DAEGUN_GC_LETTER_NUMBER	14
+DAEGUN_GC_LINE_SEPARATOR	27
+DAEGUN_GC_LOWERCASE_LETTER	5
+DAEGUN_GC_MATH_SYMBOL	25
+DAEGUN_GC_MODIFIER_LETTER	6
+DAEGUN_GC_MODIFIER_SYMBOL	24
+DAEGUN_GC_NONSPACING_MARK	12
+DAEGUN_GC_OPEN_PUNCTUATION	22
+DAEGUN_GC_OTHER_LETTER	7
+DAEGUN_GC_OTHER_NUMBER	15
+DAEGUN_GC_OTHER_PUNCTUATION	21
+DAEGUN_GC_OTHER_SYMBOL	26
+DAEGUN_GC_PARAGRAPH_SEPARATOR	28
+DAEGUN_GC_PRIVATE_USE	3
+DAEGUN_GC_SPACE_SEPARATOR	29
+DAEGUN_GC_SPACING_MARK	10
+DAEGUN_GC_SURROGATE	4
+DAEGUN_GC_TITLECASE_LETTER	8
+DAEGUN_GC_UNASSIGNED	0
+DAEGUN_GC_UPPERCASE_LETTER	9
+DAEGUN_GLYPH_CLASS_BASE	0
+DAEGUN_GLYPH_CLASS_COMPONENT	3
+DAEGUN_GLYPH_CLASS_LIGATURE	1
+DAEGUN_GLYPH_CLASS_MARK	2
+DAEGUN_GRADIENT_LINEAR	0
+DAEGUN_GRADIENT_RADIAL	1
+DAEGUN_GRADIENT_SWEEP	2
+DAEGUN_HINT_AUTO	3
+DAEGUN_HINT_AUTO_FORCE	4
+DAEGUN_HINT_FONT	1
+DAEGUN_HINT_NONE	0
+DAEGUN_HORIZONTAL	0
+DAEGUN_IGNORABLES_HIDE	0
+DAEGUN_IGNORABLES_PRESERVE	2
+DAEGUN_IGNORABLES_REMOVE	1
+DAEGUN_INTERPOLATE_LINEAR_LIGHT	0
+DAEGUN_INTERPOLATE_SRGB	1
+DAEGUN_INVALID_ARGUMENT	-3
+DAEGUN_JOIN_BEVEL	2
+DAEGUN_JOIN_MITER	0
+DAEGUN_JOIN_ROUND	1
+DAEGUN_JSTF_EXTENSION_DISABLE_GPOS	7
+DAEGUN_JSTF_EXTENSION_DISABLE_GSUB	5
+DAEGUN_JSTF_EXTENSION_ENABLE_GPOS	6
+DAEGUN_JSTF_EXTENSION_ENABLE_GSUB	4
+DAEGUN_JSTF_SHRINKAGE_DISABLE_GPOS	3
+DAEGUN_JSTF_SHRINKAGE_DISABLE_GSUB	1
+DAEGUN_JSTF_SHRINKAGE_ENABLE_GPOS	2
+DAEGUN_JSTF_SHRINKAGE_ENABLE_GSUB	0
+DAEGUN_LIMIT_EXCEEDED	-8
+DAEGUN_MALFORMED	-2
+DAEGUN_MATH_KERN_BOTTOM_LEFT	3
+DAEGUN_MATH_KERN_BOTTOM_RIGHT	2
+DAEGUN_MATH_KERN_TOP_LEFT	1
+DAEGUN_MATH_KERN_TOP_RIGHT	0
+DAEGUN_MAX_DRAW_BYTES	268435456
+DAEGUN_MAX_FLATTEN_POINTS	1048576
+DAEGUN_MAX_GLYPH_NAME	63
+DAEGUN_MAX_OVERSAMPLE	4
+DAEGUN_MAX_SIDE	16384
+DAEGUN_MAX_TAPS	8
+DAEGUN_MAX_WEIGHTS	64
+DAEGUN_MISSING	-7
+DAEGUN_NO_OUTLINE	-9
+DAEGUN_NULL	-1
+DAEGUN_OK	0
+DAEGUN_OP_FILL	0
+DAEGUN_OP_POP_CLIP	2
+DAEGUN_OP_POP_LAYER	4
+DAEGUN_OP_PUSH_CLIP	1
+DAEGUN_OP_PUSH_LAYER	3
+DAEGUN_OVERFLOW	-10
+DAEGUN_PAINT_COLR_GLYPH	2
+DAEGUN_PAINT_COMPOSITE	13
+DAEGUN_PAINT_GLYPH	1
+DAEGUN_PAINT_LAYERS	0
+DAEGUN_PAINT_LINEAR_GRADIENT	4
+DAEGUN_PAINT_RADIAL_GRADIENT	5
+DAEGUN_PAINT_ROTATE	11
+DAEGUN_PAINT_SCALE	9
+DAEGUN_PAINT_SCALE_UNIFORM	10
+DAEGUN_PAINT_SKEW	12
+DAEGUN_PAINT_SOLID	3
+DAEGUN_PAINT_SWEEP_GRADIENT	6
+DAEGUN_PAINT_TRANSFORM	7
+DAEGUN_PAINT_TRANSLATE	8
+DAEGUN_PDF_FIXED_PITCH	0x01u
+DAEGUN_PDF_ITALIC	0x40u
+DAEGUN_PDF_NONSYMBOLIC	0x20u
+DAEGUN_PDF_SCRIPT	0x08u
+DAEGUN_PDF_SERIF	0x02u
+DAEGUN_PDF_SYMBOLIC	0x04u
+DAEGUN_POINT_CUBIC	2
+DAEGUN_POINT_ON_CURVE	0
+DAEGUN_POINT_QUADRATIC	1
+DAEGUN_SCRIPT_DIRECTION_LEFT_TO_RIGHT	0
+DAEGUN_SCRIPT_DIRECTION_RIGHT_TO_LEFT	1
+DAEGUN_SHAPER_ARABIC	2
+DAEGUN_SHAPER_DEFAULT	0
+DAEGUN_SHAPER_DUMBER	1
+DAEGUN_SHAPER_HANGUL	3
+DAEGUN_SHAPER_HEBREW	4
+DAEGUN_SHAPER_INDIC	5
+DAEGUN_SHAPER_KHMER	6
+DAEGUN_SHAPER_MYANMAR	7
+DAEGUN_SHAPER_MYANMAR_ZAWGYI	8
+DAEGUN_SHAPER_THAI	9
+DAEGUN_SHAPER_UNIVERSAL	10
+DAEGUN_STAT_COMBO	3
+DAEGUN_STAT_LINKED	2
+DAEGUN_STAT_RANGE	1
+DAEGUN_STAT_SINGLE	0
+DAEGUN_STRIPES_BGR	1
+DAEGUN_STRIPES_RGB	0
+DAEGUN_STYLE_ITALIC	1
+DAEGUN_STYLE_NORMAL	0
+DAEGUN_STYLE_OBLIQUE	2
+DAEGUN_TEXT_ORIENTATION_MIXED	0
+DAEGUN_TEXT_ORIENTATION_SIDEWAYS	2
+DAEGUN_TEXT_ORIENTATION_UPRIGHT	1
+DAEGUN_UNSUPPORTED	-6
+DAEGUN_VERB_CLOSE	4
+DAEGUN_VERB_CUBIC	3
+DAEGUN_VERB_LINE	1
+DAEGUN_VERB_MOVE	0
+DAEGUN_VERB_QUAD	2
+DAEGUN_VERTICAL	1
+DAEGUN_VO_ROTATED	0
+DAEGUN_VO_TRANSFORMED_ROTATED	1
+DAEGUN_VO_TRANSFORMED_UPRIGHT	2
+DAEGUN_VO_UPRIGHT	3
+DAEGUN_WRITING_HORIZONTAL	0
+DAEGUN_WRITING_VERTICAL_LR	2
+DAEGUN_WRITING_VERTICAL_RL	1
+daegun_aat_entry	typedef struct { uint16_t new_state; uint16_t flags; uint16_t word1; uint16_t word2; } daegun_aat_entry
+daegun_aat_lookup	typedef struct daegun_aat_lookup daegun_aat_lookup
+daegun_aat_lookup_entries	daegun_status daegun_aat_lookup_entries(const daegun_aat_lookup *lookup, daegun_glyph_value *out, size_t out_len, size_t *out_count)
+daegun_aat_lookup_free	void daegun_aat_lookup_free(daegun_aat_lookup *lookup)
+daegun_aat_lookup_parse	daegun_status daegun_aat_lookup_parse(const uint8_t *data, size_t len, uint32_t num_glyphs, daegun_aat_lookup **out)
+daegun_aat_lookup_value	daegun_status daegun_aat_lookup_value(const daegun_aat_lookup *lookup, uint32_t glyph, uint16_t *out)
+daegun_aat_state_table	typedef struct daegun_aat_state_table daegun_aat_state_table
+daegun_aat_state_table_class	daegun_status daegun_aat_state_table_class(const daegun_aat_state_table *table, uint32_t glyph, uint16_t *out)
+daegun_aat_state_table_entry	daegun_status daegun_aat_state_table_entry(const daegun_aat_state_table *table, uint16_t state, uint16_t class_id, daegun_aat_entry *out)
+daegun_aat_state_table_free	void daegun_aat_state_table_free(daegun_aat_state_table *table)
+daegun_aat_state_table_parse	daegun_status daegun_aat_state_table_parse(const uint8_t *data, size_t len, size_t extra_words, uint32_t num_glyphs, daegun_aat_state_table **out)
+daegun_abi_version	DAEGUN_CONST uint32_t daegun_abi_version(void)
+daegun_ankr	typedef struct daegun_ankr daegun_ankr
+daegun_ankr_anchor_point	daegun_status daegun_ankr_anchor_point(const daegun_ankr *ankr, uint32_t glyph, uint16_t index, int16_t *out_x, int16_t *out_y)
+daegun_ankr_control_point	daegun_status daegun_ankr_control_point(const uint8_t *data, size_t len, size_t at, int16_t *out_x, int16_t *out_y)
+daegun_ankr_free	void daegun_ankr_free(daegun_ankr *ankr)
+daegun_ankr_parse	daegun_status daegun_ankr_parse(const uint8_t *data, size_t len, uint32_t num_glyphs, daegun_ankr **out)
+daegun_ankr_point_count	daegun_status daegun_ankr_point_count(const daegun_ankr *ankr, uint32_t glyph, uint32_t *out)
+daegun_ankr_version	daegun_status daegun_ankr_version(const uint8_t *data, size_t len, uint16_t *out)
+daegun_axis	typedef struct { daegun_tag tag; uint16_t name_id; bool hidden; double min; double default_value; double max; } daegun_axis
+daegun_axis_value	typedef struct { uint16_t axis_index; double value; } daegun_axis_value
+daegun_base_script	typedef struct daegun_base_script daegun_base_script
+daegun_base_script_baselines	const daegun_baseline *daegun_base_script_baselines(const daegun_base_script *script, size_t *out_count)
+daegun_base_script_default_baseline	daegun_status daegun_base_script_default_baseline(const daegun_base_script *script, daegun_tag *out)
+daegun_base_script_free	void daegun_base_script_free(daegun_base_script *script)
+daegun_baseline	typedef struct { daegun_tag tag; double position; } daegun_baseline
+daegun_bidi_paragraph	typedef struct daegun_bidi_paragraph daegun_bidi_paragraph
+daegun_bidi_paragraph_base_level	daegun_status daegun_bidi_paragraph_base_level(const daegun_bidi_paragraph *paragraph, uint8_t *out)
+daegun_bidi_paragraph_free	void daegun_bidi_paragraph_free(daegun_bidi_paragraph *paragraph)
+daegun_bidi_paragraph_levels	const uint8_t *daegun_bidi_paragraph_levels(const daegun_bidi_paragraph *paragraph, size_t *out_count)
+daegun_bidi_paragraph_new	daegun_status daegun_bidi_paragraph_new(const char *text, size_t text_len, int32_t base, daegun_bidi_paragraph **out)
+daegun_bidi_paragraph_paragraphs	const daegun_paragraph_run *daegun_bidi_paragraph_paragraphs(const daegun_bidi_paragraph *paragraph, size_t *out_count)
+daegun_bidi_paragraph_visual_order	const size_t *daegun_bidi_paragraph_visual_order(const daegun_bidi_paragraph *paragraph, size_t *out_count)
+daegun_bidi_paragraph_visual_runs	daegun_status daegun_bidi_paragraph_visual_runs(const daegun_bidi_paragraph *paragraph, const char *text, size_t text_len, size_t start, size_t end, daegun_visual_run *out, size_t out_len, size_t *out_count)
+daegun_bidi_runs	typedef struct daegun_bidi_runs daegun_bidi_runs
+daegun_bidi_runs_at	daegun_status daegun_bidi_runs_at(const daegun_bidi_runs *runs, size_t index, const daegun_shaped_run **out_run, uint8_t *out_level, size_t *out_start, size_t *out_end)
+daegun_bidi_runs_count	daegun_status daegun_bidi_runs_count(const daegun_bidi_runs *runs, size_t *out)
+daegun_bidi_runs_free	void daegun_bidi_runs_free(daegun_bidi_runs *runs)
+daegun_bitmap	typedef struct daegun_bitmap daegun_bitmap
+daegun_bitmap_free	void daegun_bitmap_free(daegun_bitmap *bitmap)
+daegun_bitmap_info	typedef struct { int32_t format; uint16_t ppem; int16_t left; int16_t top; uint16_t width; uint16_t height; bool mirrored; const uint8_t *data; size_t data_len; } daegun_bitmap_info
+daegun_bitmap_info_of	daegun_status daegun_bitmap_info_of(const daegun_bitmap *bitmap, daegun_bitmap_info *out)
+daegun_blend	daegun_status daegun_blend(int32_t mode, const float backdrop[3], const float source[3], float out[3])
+daegun_blob	typedef struct daegun_blob daegun_blob
+daegun_blob_data	const uint8_t *daegun_blob_data(const daegun_blob *blob, size_t *out_count)
+daegun_blob_free	void daegun_blob_free(daegun_blob *blob)
+daegun_bounds	typedef struct { double x_min; double y_min; double x_max; double y_max; } daegun_bounds
+daegun_bytes	typedef struct { const uint8_t *data; size_t len; } daegun_bytes
+daegun_bytes_window	DAEGUN_CONST const uint8_t *daegun_bytes_window(const uint8_t *data, size_t len, size_t off, size_t n)
+daegun_cache_pool	typedef struct daegun_cache_pool daegun_cache_pool
+daegun_cache_pool_free	void daegun_cache_pool_free(daegun_cache_pool *pool)
+daegun_cache_pool_new	DAEGUN_MALLOC(malloc(daegun_cache_pool_free, 1), returns_nonnull) daegun_cache_pool *daegun_cache_pool_new(size_t bytes)
+daegun_cache_pool_set_budget	daegun_status daegun_cache_pool_set_budget(const daegun_cache_pool *pool, size_t bytes)
+daegun_cache_pool_stats	daegun_status daegun_cache_pool_stats(const daegun_cache_pool *pool, daegun_cache_stats *out)
+daegun_cache_stats	typedef struct { size_t entries; size_t bytes; } daegun_cache_stats
+daegun_cff_hints	typedef struct daegun_cff_hints daegun_cff_hints
+daegun_cff_hints_free	void daegun_cff_hints_free(daegun_cff_hints *hints)
+daegun_cff_hints_mask_at	daegun_status daegun_cff_hints_mask_at(const daegun_cff_hints *hints, size_t index, daegun_cff_mask *out)
+daegun_cff_hints_mask_count	daegun_status daegun_cff_hints_mask_count(const daegun_cff_hints *hints, size_t *out)
+daegun_cff_hints_stems	const daegun_cff_stem *daegun_cff_hints_stems(const daegun_cff_hints *hints, size_t *out_count)
+daegun_cff_mask	typedef struct { size_t point; const uint8_t *bits; size_t bits_len; } daegun_cff_mask
+daegun_cff_stem	typedef struct { float min; float max; bool vertical; } daegun_cff_stem
+daegun_clip_shape	typedef struct { double transform[6]; size_t path; int32_t rule; } daegun_clip_shape
+daegun_cluster_level_is_graphemes	daegun_status daegun_cluster_level_is_graphemes(int32_t level, bool *out)
+daegun_cluster_level_is_monotone	daegun_status daegun_cluster_level_is_monotone(int32_t level, bool *out)
+daegun_color_stop	typedef struct { double offset; daegun_rgba color; bool foreground; } daegun_color_stop
+daegun_colr_layer	typedef struct { uint32_t glyph; daegun_rgba color; bool foreground; } daegun_colr_layer
+daegun_composite	daegun_status daegun_composite(int32_t mode, const float source[3], float source_alpha, const float backdrop[3], float backdrop_alpha, float out[3], float *out_alpha)
+daegun_contours	typedef struct daegun_contours daegun_contours
+daegun_contours_count	daegun_status daegun_contours_count(const daegun_contours *contours, size_t *out)
+daegun_contours_free	void daegun_contours_free(daegun_contours *contours)
+daegun_contours_new	daegun_status daegun_contours_new(const daegun_point *points, const size_t *lengths, size_t count, daegun_contours **out)
+daegun_contours_points	const daegun_point *daegun_contours_points(const daegun_contours *contours, size_t index, size_t *out_count)
+daegun_contours_resolve_overlaps	daegun_status daegun_contours_resolve_overlaps(const daegun_contours *contours, daegun_contours **out)
+daegun_coord	typedef struct { daegun_tag tag; double value; } daegun_coord
+daegun_coverage_glyphs	daegun_status daegun_coverage_glyphs(const uint8_t *data, size_t len, size_t off, uint32_t *out, size_t out_len, size_t *out_count)
+daegun_coverage_index	daegun_status daegun_coverage_index(const uint8_t *data, size_t len, uint32_t glyph, uint32_t *out)
+daegun_delta_set_index_map	typedef struct daegun_delta_set_index_map daegun_delta_set_index_map
+daegun_delta_set_index_map_count	daegun_status daegun_delta_set_index_map_count(const daegun_delta_set_index_map *map, size_t *out)
+daegun_delta_set_index_map_free	void daegun_delta_set_index_map_free(daegun_delta_set_index_map *map)
+daegun_delta_set_index_map_lookup	daegun_status daegun_delta_set_index_map_lookup(const daegun_delta_set_index_map *map, size_t index, size_t *out_outer, size_t *out_inner)
+daegun_delta_set_index_map_parse	daegun_status daegun_delta_set_index_map_parse(const uint8_t *data, size_t len, size_t base, daegun_delta_set_index_map **out)
+daegun_extents	typedef struct { double min; double max; bool has_min; bool has_max; } daegun_extents
+daegun_face_count	daegun_status daegun_face_count(const uint8_t *data, size_t len, size_t *out)
+daegun_feature	typedef struct { daegun_tag tag; uint32_t value; uint32_t start; uint32_t end; } daegun_feature
+daegun_feature_from_string	daegun_status daegun_feature_from_string(const char *text, size_t text_len, daegun_feature *out)
+daegun_feature_variations	typedef struct daegun_feature_variations daegun_feature_variations
+daegun_feature_variations_at	daegun_status daegun_feature_variations_at(const uint8_t *layout, size_t len, size_t at, daegun_feature_variations **out)
+daegun_feature_variations_find	daegun_status daegun_feature_variations_find(const daegun_feature_variations *variations, const int32_t *coords, size_t coords_len, const daegun_ivs *store, uint32_t *out)
+daegun_feature_variations_free	void daegun_feature_variations_free(daegun_feature_variations *variations)
+daegun_feature_variations_parse	daegun_status daegun_feature_variations_parse(const uint8_t *layout, size_t len, daegun_feature_variations **out)
+daegun_feature_variations_substitute	daegun_status daegun_feature_variations_substitute(const daegun_feature_variations *variations, uint32_t variation, uint16_t feature, size_t *out)
+daegun_font	typedef struct daegun_font daegun_font
+daegun_font_advance	daegun_status daegun_font_advance(const daegun_font *font, uint32_t gid, const daegun_location *location, int32_t orientation, double *out)
+daegun_font_advances	daegun_status daegun_font_advances(const daegun_font *font, const uint32_t *gids, size_t gids_len, const daegun_location *location, int32_t orientation, double *out)
+daegun_font_ascender	daegun_status daegun_font_ascender(const daegun_font *font, const daegun_location *location, double *out)
+daegun_font_axes	daegun_status daegun_font_axes(const daegun_font *font, daegun_axis *out, size_t out_len, size_t *out_count)
+daegun_font_base_extents	daegun_status daegun_font_base_extents(const daegun_font *font, daegun_tag script, const daegun_location *location, int32_t orientation, daegun_tag language_system, daegun_tag feature, daegun_extents *out)
+daegun_font_base_script	daegun_status daegun_font_base_script(const daegun_font *font, daegun_tag script, const daegun_location *location, int32_t orientation, daegun_base_script **out)
+daegun_font_bitmap	daegun_status daegun_font_bitmap(const daegun_font *font, uint32_t gid, uint16_t ppem, daegun_bitmap **out)
+daegun_font_bounds	daegun_status daegun_font_bounds(const daegun_font *font, daegun_bounds *out)
+daegun_font_buffer_free	void daegun_font_buffer_free(uint8_t *data, size_t len)
+daegun_font_buffer_new	DAEGUN_MALLOC(malloc(daegun_font_buffer_free, 1), malloc(daegun_font_open_owned, 1)) DAEGUN_ALLOC_SIZE(1, len) uint8_t *daegun_font_buffer_new(size_t len)
+daegun_font_cache_stats	daegun_status daegun_font_cache_stats(const daegun_font *font, int32_t cache, daegun_cache_stats *out)
+daegun_font_cap_height	daegun_status daegun_font_cap_height(const daegun_font *font, const daegun_location *location, double *out)
+daegun_font_caret_positions	daegun_status daegun_font_caret_positions(const daegun_font *font, const char *text, size_t text_len, const daegun_location *location, int32_t orientation, double *out, size_t out_len, size_t *out_count)
+daegun_font_cff_hints	daegun_status daegun_font_cff_hints(const daegun_font *font, uint32_t gid, const daegun_location *location, daegun_cff_hints **out)
+daegun_font_clear_cache	daegun_status daegun_font_clear_cache(const daegun_font *font, int32_t cache)
+daegun_font_color_scene	daegun_status daegun_font_color_scene(const daegun_font *font, uint32_t gid, const daegun_location *location, const daegun_scene_options *opts, daegun_scene **out)
+daegun_font_colr_clip_box	daegun_status daegun_font_colr_clip_box(const daegun_font *font, uint32_t gid, const daegun_location *location, daegun_bounds *out)
+daegun_font_colr_layers	daegun_status daegun_font_colr_layers(const daegun_font *font, uint32_t gid, uint16_t palette, daegun_colr_layer *out, size_t out_len, size_t *out_count)
+daegun_font_coverage	daegun_status daegun_font_coverage(const daegun_font *font, uint32_t *out_codepoints, uint32_t *out_gids, size_t out_len, size_t *out_count)
+daegun_font_default_vertical_origin	daegun_status daegun_font_default_vertical_origin(const daegun_font *font, double *out)
+daegun_font_descender	daegun_status daegun_font_descender(const daegun_font *font, const daegun_location *location, double *out)
+daegun_font_family_name	daegun_status daegun_font_family_name(const daegun_font *font, const daegun_location *location, daegun_text **out)
+daegun_font_feature_tags	daegun_status daegun_font_feature_tags(const daegun_font *font, daegun_tag script, daegun_tag language_system, daegun_tag *out, size_t out_len, size_t *out_count)
+daegun_font_free	void daegun_font_free(daegun_font *font)
+daegun_font_glyph_bounds	daegun_status daegun_font_glyph_bounds(const daegun_font *font, uint32_t gid, const daegun_location *location, daegun_bounds *out)
+daegun_font_glyph_class	daegun_status daegun_font_glyph_class(const daegun_font *font, uint32_t gid, int32_t *out)
+daegun_font_glyph_closure	daegun_status daegun_font_glyph_closure(const daegun_font *font, const uint32_t *gids, size_t gids_len, const daegun_location *location, uint32_t *out, size_t out_len, size_t *out_count)
+daegun_font_glyph_count	daegun_status daegun_font_glyph_count(const daegun_font *font, uint32_t *out)
+daegun_font_glyph_id	daegun_status daegun_font_glyph_id(const daegun_font *font, uint32_t codepoint, uint32_t *out)
+daegun_font_glyph_ids	daegun_status daegun_font_glyph_ids(const daegun_font *font, const char *text, size_t text_len, uint32_t *out_gids, uint8_t *out_present, size_t out_len, size_t *out_count)
+daegun_font_glyph_name	daegun_status daegun_font_glyph_name(const daegun_font *font, uint32_t gid, char *out, size_t out_len, size_t *out_count)
+daegun_font_glyph_names	daegun_status daegun_font_glyph_names(const daegun_font *font, daegun_str_list **out)
+daegun_font_has_glyph	daegun_status daegun_font_has_glyph(const daegun_font *font, uint32_t codepoint, bool *out)
+daegun_font_has_glyph_free_base	daegun_status daegun_font_has_glyph_free_base(const daegun_font *font, bool *out)
+daegun_font_has_overlap_flag	daegun_status daegun_font_has_overlap_flag(const daegun_font *font, uint32_t gid, bool *out)
+daegun_font_has_table	daegun_status daegun_font_has_table(const daegun_font *font, daegun_tag tag, bool *out)
+daegun_font_hinted_outline	daegun_status daegun_font_hinted_outline(const daegun_font *font, uint32_t gid, const daegun_location *location, float px, int32_t mode, daegun_hinted_outline **out)
+daegun_font_index_allowance	daegun_status daegun_font_index_allowance(const daegun_font *font, size_t *out)
+daegun_font_instance	daegun_status daegun_font_instance(const daegun_font *font, const daegun_location *location, daegun_blob **out)
+daegun_font_instance_tables	daegun_status daegun_font_instance_tables(const daegun_font *font, const daegun_location *location, daegun_table_map **out)
+daegun_font_is_variable	daegun_status daegun_font_is_variable(const daegun_font *font, bool *out)
+daegun_font_italic_angle	daegun_status daegun_font_italic_angle(const daegun_font *font, const daegun_location *location, double *out)
+daegun_font_justification_glyphs	daegun_status daegun_font_justification_glyphs(const daegun_font *font, daegun_tag script, uint32_t *out, size_t out_len, size_t *out_count)
+daegun_font_justification_priorities	daegun_status daegun_font_justification_priorities(const daegun_font *font, daegun_tag script, daegun_tag language_system, daegun_jstf_priorities **out)
+daegun_font_justify	daegun_status daegun_font_justify(const daegun_font *font, const char *text, size_t text_len, const daegun_location *location, int32_t orientation, const daegun_justify_options *opts, daegun_shaped_run **out_run, daegun_justification *out_info)
+daegun_font_language_system_tags	daegun_status daegun_font_language_system_tags(const daegun_font *font, daegun_tag script, daegun_tag *out, size_t out_len, size_t *out_count)
+daegun_font_layout	daegun_status daegun_font_layout(const daegun_font *font, const char *text, size_t text_len, const daegun_location *location, const daegun_layout_options *opts, daegun_layout **out)
+daegun_font_ligature_carets	daegun_status daegun_font_ligature_carets(const daegun_font *font, uint32_t gid, const daegun_location *location, int32_t orientation, double *out_values, uint8_t *out_present, size_t out_len, size_t *out_count)
+daegun_font_line_metrics	daegun_status daegun_font_line_metrics(const daegun_font *font, const daegun_location *location, int32_t orientation, daegun_line_metrics *out)
+daegun_font_localized_names	daegun_status daegun_font_localized_names(const daegun_font *font, uint16_t name_id, const daegun_location *location, daegun_localized_names **out)
+daegun_font_location	daegun_status daegun_font_location(const daegun_font *font, const daegun_coord *coords, size_t coords_len, daegun_location **out)
+daegun_font_mark_attachment_class	daegun_status daegun_font_mark_attachment_class(const daegun_font *font, uint32_t gid, uint32_t *out)
+daegun_font_math_constants	daegun_status daegun_font_math_constants(const daegun_font *font, const daegun_location *location, daegun_math_constants *out)
+daegun_font_math_glyph_variants	daegun_status daegun_font_math_glyph_variants(const daegun_font *font, uint32_t gid, const daegun_location *location, int32_t orientation, daegun_math_construction **out)
+daegun_font_math_is_extended_shape	daegun_status daegun_font_math_is_extended_shape(const daegun_font *font, uint32_t gid, bool *out)
+daegun_font_math_italics_correction	daegun_status daegun_font_math_italics_correction(const daegun_font *font, uint32_t gid, const daegun_location *location, double *out)
+daegun_font_math_kern	daegun_status daegun_font_math_kern(const daegun_font *font, uint32_t gid, const daegun_location *location, int32_t corner, double height, double *out)
+daegun_font_math_min_connector_overlap	daegun_status daegun_font_math_min_connector_overlap(const daegun_font *font, double *out)
+daegun_font_math_top_accent_attachment	daegun_status daegun_font_math_top_accent_attachment(const daegun_font *font, uint32_t gid, const daegun_location *location, double *out)
+daegun_font_name	daegun_status daegun_font_name(const daegun_font *font, uint16_t name_id, const daegun_location *location, daegun_text **out)
+daegun_font_named_instances	daegun_status daegun_font_named_instances(const daegun_font *font, daegun_named_instances **out)
+daegun_font_names	daegun_status daegun_font_names(const daegun_font *font, const daegun_location *location, daegun_names **out)
+daegun_font_open	daegun_status daegun_font_open(const uint8_t *data, size_t len, daegun_font **out)
+daegun_font_open_collection	daegun_status daegun_font_open_collection(const uint8_t *data, size_t len, size_t index, daegun_font **out)
+daegun_font_open_owned	daegun_status daegun_font_open_owned(uint8_t *data, size_t len, size_t index, daegun_font **out)
+daegun_font_open_static	daegun_status daegun_font_open_static(const uint8_t *data, size_t len, size_t index, daegun_font **out)
+daegun_font_os2	daegun_status daegun_font_os2(const daegun_font *font, const daegun_location *location, daegun_os2 *out)
+daegun_font_outline	daegun_status daegun_font_outline(const daegun_font *font, uint32_t gid, const daegun_location *location, const daegun_pen *pen)
+daegun_font_paint_graph	daegun_status daegun_font_paint_graph(const daegun_font *font, uint32_t gid, const daegun_location *location, uint16_t palette, daegun_paint_graph **out)
+daegun_font_palette_colors	daegun_status daegun_font_palette_colors(const daegun_font *font, uint16_t palette, daegun_rgba *out, size_t out_len, size_t *out_count)
+daegun_font_palette_entry_labels	daegun_status daegun_font_palette_entry_labels(const daegun_font *font, uint16_t *out_name_ids, uint8_t *out_named, size_t out_len, size_t *out_count)
+daegun_font_palettes	daegun_status daegun_font_palettes(const daegun_font *font, daegun_palette *out, size_t out_len, size_t *out_count)
+daegun_font_pdf_flags	daegun_status daegun_font_pdf_flags(const daegun_font *font, const daegun_location *location, uint32_t *out)
+daegun_font_prepared_outline	daegun_status daegun_font_prepared_outline(const daegun_font *font, uint32_t gid, const daegun_location *location, float px, const daegun_outline_options *opts, const daegun_pen *pen, daegun_prepared_glyph *out)
+daegun_font_prewarm	daegun_status daegun_font_prewarm(const daegun_font *font, const uint32_t *gids, size_t gids_len, const daegun_location *location, size_t *out_added)
+daegun_font_quads	daegun_status daegun_font_quads(const daegun_font *font, uint32_t gid, const daegun_location *location, daegun_quads **out)
+daegun_font_script_tags	daegun_status daegun_font_script_tags(const daegun_font *font, daegun_tag *out, size_t out_len, size_t *out_count)
+daegun_font_set_cache_budget	daegun_status daegun_font_set_cache_budget(const daegun_font *font, int32_t cache, size_t bytes)
+daegun_font_set_cache_pool	daegun_status daegun_font_set_cache_pool(const daegun_font *font, int32_t cache, const daegun_cache_pool *pool)
+daegun_font_set_index_allowance	daegun_status daegun_font_set_index_allowance(const daegun_font *font, size_t bytes)
+daegun_font_shape	daegun_status daegun_font_shape(const daegun_font *font, const char *text, size_t text_len, const daegun_location *location, const daegun_shape_options *opts, daegun_shaped_run **out)
+daegun_font_shape_bidi	daegun_status daegun_font_shape_bidi(const daegun_font *font, const char *text, size_t text_len, const daegun_location *location, int32_t base, const daegun_shape_options *opts, daegun_bidi_runs **out)
+daegun_font_shape_into	daegun_status daegun_font_shape_into(const daegun_font *font, const char *text, size_t text_len, const daegun_location *location, const daegun_shape_options *opts, daegun_shaped_run **run)
+daegun_font_shape_justified	daegun_status daegun_font_shape_justified(const daegun_font *font, const char *text, size_t text_len, const daegun_location *location, int32_t orientation, const daegun_jstf_priorities *priorities, size_t level, int32_t adjustment, daegun_shaped_run **out)
+daegun_font_stat	daegun_status daegun_font_stat(const daegun_font *font, const daegun_location *location, daegun_stat **out)
+daegun_font_style	daegun_status daegun_font_style(const daegun_font *font, const daegun_location *location, int32_t *out)
+daegun_font_subset	daegun_status daegun_font_subset(const daegun_font *font, const uint32_t *gids, size_t gids_len, const daegun_location *location, daegun_subset **out)
+daegun_font_subset_text	daegun_status daegun_font_subset_text(const daegun_font *font, const char *text, size_t text_len, const daegun_location *location, daegun_subset **out)
+daegun_font_table	daegun_status daegun_font_table(const daegun_font *font, daegun_tag tag, daegun_bytes *out)
+daegun_font_table_tags	daegun_status daegun_font_table_tags(const daegun_font *font, daegun_tag *out, size_t out_len, size_t *out_count)
+daegun_font_tracking	daegun_status daegun_font_tracking(const daegun_font *font, double point_size, int32_t orientation, double *out)
+daegun_font_typographic_metrics	daegun_status daegun_font_typographic_metrics(const daegun_font *font, const daegun_location *location, daegun_typographic_metrics *out)
+daegun_font_units_per_em	daegun_status daegun_font_units_per_em(const daegun_font *font, uint16_t *out)
+daegun_font_variation_glyph_id	daegun_status daegun_font_variation_glyph_id(const daegun_font *font, uint32_t codepoint, uint32_t selector, uint32_t *out)
+daegun_font_vertical_origin	daegun_status daegun_font_vertical_origin(const daegun_font *font, uint32_t gid, const daegun_location *location, double *out)
+daegun_font_visit_paint_graph	daegun_status daegun_font_visit_paint_graph(const daegun_font *font, uint32_t gid, const daegun_location *location, uint16_t palette, const daegun_paint_visitor *visitor)
+daegun_general_category	daegun_status daegun_general_category(uint32_t codepoint, int32_t *out)
+daegun_glyph_assembly	typedef struct { double italics_correction; const daegun_glyph_part *parts; size_t parts_len; } daegun_glyph_assembly
+daegun_glyph_part	typedef struct { uint32_t glyph; double start_connector_length; double end_connector_length; double full_advance; bool extender; } daegun_glyph_part
+daegun_glyph_value	typedef struct { uint32_t glyph; uint16_t value; } daegun_glyph_value
+daegun_gradient	typedef struct { double transform[6]; float values[6]; int32_t kind; int32_t extend; size_t stops_start; size_t stops_count; } daegun_gradient
+daegun_grapheme_boundaries	daegun_status daegun_grapheme_boundaries(const char *text, size_t text_len, size_t *out, size_t out_len, size_t *out_count)
+daegun_has_dictionaries	DAEGUN_CONST bool daegun_has_dictionaries(void)
+daegun_hint_mode_may_autohint	daegun_status daegun_hint_mode_may_autohint(int32_t mode, bool *out)
+daegun_hinted_outline	typedef struct daegun_hinted_outline daegun_hinted_outline
+daegun_hinted_outline_contours	const size_t *daegun_hinted_outline_contours(const daegun_hinted_outline *outline, size_t *out_count)
+daegun_hinted_outline_draw	daegun_status daegun_hinted_outline_draw(const daegun_hinted_outline *outline, const daegun_pen *pen)
+daegun_hinted_outline_free	void daegun_hinted_outline_free(daegun_hinted_outline *outline)
+daegun_hinted_outline_kinds	const uint8_t *daegun_hinted_outline_kinds(const daegun_hinted_outline *outline, size_t *out_count)
+daegun_hinted_outline_points	const daegun_point *daegun_hinted_outline_points(const daegun_hinted_outline *outline, size_t *out_count)
+daegun_image	typedef struct { int32_t left; int32_t top; uint32_t width; uint32_t height; size_t stride; const uint8_t *pixels; size_t pixels_len; uint8_t channels; } daegun_image
+daegun_ivs	typedef struct daegun_ivs daegun_ivs
+daegun_ivs_axis_count	daegun_status daegun_ivs_axis_count(const daegun_ivs *ivs, size_t *out)
+daegun_ivs_delta	daegun_status daegun_ivs_delta(const daegun_ivs *ivs, size_t outer, size_t inner, const double *scalars, size_t scalars_len, double *out)
+daegun_ivs_free	void daegun_ivs_free(daegun_ivs *ivs)
+daegun_ivs_ivd_count	daegun_status daegun_ivs_ivd_count(const daegun_ivs *ivs, size_t *out)
+daegun_ivs_ivd_region_indices	const size_t *daegun_ivs_ivd_region_indices(const daegun_ivs *ivs, size_t ivd, size_t *out_count)
+daegun_ivs_ivd_row	const int32_t *daegun_ivs_ivd_row(const daegun_ivs *ivs, size_t ivd, size_t row, size_t *out_count)
+daegun_ivs_ivd_rows	daegun_status daegun_ivs_ivd_rows(const daegun_ivs *ivs, size_t ivd, size_t *out)
+daegun_ivs_parse	daegun_status daegun_ivs_parse(const uint8_t *data, size_t len, size_t base, daegun_ivs **out)
+daegun_ivs_region	const daegun_region_axis *daegun_ivs_region(const daegun_ivs *ivs, size_t region, size_t *out_count)
+daegun_ivs_region_count	daegun_status daegun_ivs_region_count(const daegun_ivs *ivs, size_t *out)
+daegun_ivs_region_scalars	daegun_status daegun_ivs_region_scalars(const daegun_ivs *ivs, const double *location, size_t location_len, double *out, size_t out_len, size_t *out_count)
+daegun_jstf_priorities	typedef struct daegun_jstf_priorities daegun_jstf_priorities
+daegun_jstf_priorities_count	daegun_status daegun_jstf_priorities_count(const daegun_jstf_priorities *priorities, size_t *out)
+daegun_jstf_priorities_free	void daegun_jstf_priorities_free(daegun_jstf_priorities *priorities)
+daegun_jstf_priorities_lookups	daegun_status daegun_jstf_priorities_lookups(const daegun_jstf_priorities *priorities, size_t level, int32_t which, const uint16_t **out, size_t *out_count)
+daegun_justification	typedef struct { double width; size_t level; int32_t adjustment; bool has_level; bool best_effort; } daegun_justification
+daegun_justify_options	typedef struct { size_t size; daegun_tag script; daegun_tag language_system; double target_width; double tolerance; } daegun_justify_options
+daegun_justify_options_default	daegun_status daegun_justify_options_default(daegun_justify_options *out, size_t size)
+daegun_last_error	daegun_str daegun_last_error(void)
+daegun_layout	typedef struct daegun_layout daegun_layout
+daegun_layout_free	void daegun_layout_free(daegun_layout *layout)
+daegun_layout_info	typedef struct { size_t line_count; double inline_size; double block_size; size_t truncated; bool has_truncated; } daegun_layout_info
+daegun_layout_info_of	daegun_status daegun_layout_info_of(const daegun_layout *layout, daegun_layout_info *out)
+daegun_layout_line	typedef struct { size_t run_count; size_t start; size_t end; double baseline; double inline_size; double ascent; double descent; bool hard_break; } daegun_layout_line
+daegun_layout_line_at	daegun_status daegun_layout_line_at(const daegun_layout *layout, size_t line, daegun_layout_line *out)
+daegun_layout_options	typedef struct { size_t size; double max_inline_size; double line_height; double tab_size; const char *language; daegun_word_segmenter segmenter; void *segmenter_user; size_t max_lines; bool has_line_height; bool has_max_lines; int32_t align; int32_t writing_mode; int32_t text_orientation; int32_t base_direction; int32_t strategy; const daegun_feature *features; size_t features_len; } daegun_layout_options
+daegun_layout_options_default	daegun_status daegun_layout_options_default(daegun_layout_options *out, size_t size)
+daegun_layout_run	typedef struct { const daegun_shaped_run *run; daegun_offset offset; size_t start; size_t end; uint8_t level; bool upright; } daegun_layout_run
+daegun_layout_run_at	daegun_status daegun_layout_run_at(const daegun_layout *layout, size_t line, size_t run, daegun_layout_run *out)
+daegun_line_break	typedef struct { size_t at; bool mandatory; } daegun_line_break
+daegun_line_break_opportunities	daegun_status daegun_line_break_opportunities(const char *text, size_t text_len, daegun_word_segmenter segmenter, void *user, daegun_line_break *out, size_t out_len, size_t *out_count)
+daegun_line_metrics	typedef struct { double ascent; double descent; double line_gap; } daegun_line_metrics
+daegun_line_metrics_line_height	daegun_status daegun_line_metrics_line_height(const daegun_line_metrics *metrics, double *out)
+daegun_localized_names	typedef struct daegun_localized_names daegun_localized_names
+daegun_localized_names_at	daegun_status daegun_localized_names_at(const daegun_localized_names *names, size_t index, daegun_str *out_language, daegun_str *out)
+daegun_localized_names_count	daegun_status daegun_localized_names_count(const daegun_localized_names *names, size_t *out)
+daegun_localized_names_free	void daegun_localized_names_free(daegun_localized_names *names)
+daegun_location	typedef struct daegun_location daegun_location
+daegun_location_coords	const daegun_coord *daegun_location_coords(const daegun_location *location, size_t *out_count)
+daegun_location_free	void daegun_location_free(daegun_location *location)
+daegun_location_normalized	const double *daegun_location_normalized(const daegun_location *location, size_t *out_count)
+daegun_math_constants	typedef struct { double script_percent_scale_down; double script_script_percent_scale_down; double delimited_sub_formula_min_height; double display_operator_min_height; double math_leading; double axis_height; double accent_base_height; double flattened_accent_base_height; double subscript_shift_down; double subscript_top_max; double subscript_baseline_drop_min; double superscript_shift_up; double superscript_shift_up_cramped; double superscript_bottom_min; double superscript_baseline_drop_max; double sub_superscript_gap_min; double superscript_bottom_max_with_subscript; double space_after_script; double upper_limit_gap_min; double upper_limit_baseline_rise_min; double lower_limit_gap_min; double lower_limit_baseline_drop_min; double stack_top_shift_up; double stack_top_display_style_shift_up; double stack_bottom_shift_down; double stack_bottom_display_style_shift_down; double stack_gap_min; double stack_display_style_gap_min; double stretch_stack_top_shift_up; double stretch_stack_bottom_shift_down; double stretch_stack_gap_above_min; double stretch_stack_gap_below_min; double fraction_numerator_shift_up; double fraction_numerator_display_style_shift_up; double fraction_denominator_shift_down; double fraction_denominator_display_style_shift_down; double fraction_numerator_gap_min; double fraction_num_display_style_gap_min; double fraction_rule_thickness; double fraction_denominator_gap_min; double fraction_denom_display_style_gap_min; double skewed_fraction_horizontal_gap; double skewed_fraction_vertical_gap; double overbar_vertical_gap; double overbar_rule_thickness; double overbar_extra_ascender; double underbar_vertical_gap; double underbar_rule_thickness; double underbar_extra_descender; double radical_vertical_gap; double radical_display_style_vertical_gap; double radical_rule_thickness; double radical_extra_ascender; double radical_kern_before_degree; double radical_kern_after_degree; double radical_degree_bottom_raise_percent; } daegun_math_constants
+daegun_math_construction	typedef struct daegun_math_construction daegun_math_construction
+daegun_math_construction_assembly	daegun_status daegun_math_construction_assembly(const daegun_math_construction *construction, daegun_glyph_assembly *out)
+daegun_math_construction_free	void daegun_math_construction_free(daegun_math_construction *construction)
+daegun_math_construction_variants	const daegun_math_variant *daegun_math_construction_variants(const daegun_math_construction *construction, size_t *out_count)
+daegun_math_variant	typedef struct { uint32_t glyph; double advance; } daegun_math_variant
+daegun_max_area_for	DAEGUN_CONST float daegun_max_area_for(float px, float units_per_em)
+daegun_named_instances	typedef struct daegun_named_instances daegun_named_instances
+daegun_named_instances_coords	const daegun_coord *daegun_named_instances_coords(const daegun_named_instances *list, size_t index, size_t *out_count)
+daegun_named_instances_count	daegun_status daegun_named_instances_count(const daegun_named_instances *list, size_t *out)
+daegun_named_instances_free	void daegun_named_instances_free(daegun_named_instances *list)
+daegun_named_instances_name	daegun_status daegun_named_instances_name(const daegun_named_instances *list, size_t index, daegun_str *out)
+daegun_named_instances_postscript_name	daegun_status daegun_named_instances_postscript_name(const daegun_named_instances *list, size_t index, daegun_str *out)
+daegun_names	typedef struct daegun_names daegun_names
+daegun_names_at	daegun_status daegun_names_at(const daegun_names *names, size_t index, uint16_t *out_id, daegun_str *out)
+daegun_names_count	daegun_status daegun_names_count(const daegun_names *names, size_t *out)
+daegun_names_free	void daegun_names_free(daegun_names *names)
+daegun_offset	typedef struct { double x; double y; } daegun_offset
+daegun_os2	typedef struct { uint16_t version; uint16_t weight_class; uint16_t width_class; uint16_t fs_type; uint16_t family_class; uint16_t selection; bool has_weight_class; bool has_width_class; bool has_fs_type; bool has_family_class; bool has_selection; bool has_win_metrics; bool has_typo_metrics; double win_ascent; double win_descent; double typo_ascender; double typo_descender; double typo_line_gap; } daegun_os2
+daegun_os2_is_bold	daegun_status daegun_os2_is_bold(const daegun_os2 *os2, bool *out)
+daegun_os2_is_italic	daegun_status daegun_os2_is_italic(const daegun_os2 *os2, bool *out)
+daegun_os2_is_oblique	daegun_status daegun_os2_is_oblique(const daegun_os2 *os2, bool *out)
+daegun_os2_is_regular	daegun_status daegun_os2_is_regular(const daegun_os2 *os2, bool *out)
+daegun_os2_uses_typo_metrics	daegun_status daegun_os2_uses_typo_metrics(const daegun_os2 *os2, bool *out)
+daegun_ot_round	DAEGUN_CONST int32_t daegun_ot_round(double value)
+daegun_outline_glyf_bytes	daegun_status daegun_outline_glyf_bytes(const uint8_t *glyf, size_t glyf_len, bool extended, const size_t *loca, size_t loca_len, uint32_t gid, const daegun_pen *pen)
+daegun_outline_options	typedef struct { size_t size; int32_t hinting; float transform[6]; daegun_stroke_style stroke; float embolden; float oblique; bool has_transform; bool has_stroke; bool has_embolden; bool has_oblique; } daegun_outline_options
+daegun_outline_options_default	daegun_status daegun_outline_options_default(daegun_outline_options *out, size_t size)
+daegun_paint_graph	typedef struct daegun_paint_graph daegun_paint_graph
+daegun_paint_graph_free	void daegun_paint_graph_free(daegun_paint_graph *graph)
+daegun_paint_graph_nodes	const daegun_paint_node *daegun_paint_graph_nodes(const daegun_paint_graph *graph, size_t *out_count)
+daegun_paint_graph_stops	const daegun_color_stop *daegun_paint_graph_stops(const daegun_paint_graph *graph, size_t *out_count)
+daegun_paint_node	typedef struct { double values[6]; double center[2]; size_t end; size_t stops_start; size_t stops_count; uint32_t glyph; int32_t kind; int32_t extend; int32_t mode; daegun_rgba color; bool foreground; bool has_center; } daegun_paint_node
+daegun_paint_visitor	typedef struct { void (*enter)(void *user, const daegun_paint_node *node, const daegun_color_stop *stops, size_t stops_count); void (*leave)(void *user); void *user; } daegun_paint_visitor
+daegun_palette	typedef struct { uint16_t index; uint16_t name_id; bool light_safe; bool dark_safe; bool has_name_id; } daegun_palette
+daegun_paragraph_run	typedef struct { size_t start; size_t end; uint8_t level; } daegun_paragraph_run
+daegun_parse_loca	daegun_status daegun_parse_loca(const uint8_t *loca, size_t loca_len, int16_t format, size_t num_glyphs, size_t *out, size_t out_len, size_t *out_count)
+daegun_path	typedef struct daegun_path daegun_path
+daegun_path_as_pen	daegun_status daegun_path_as_pen(daegun_path *path, daegun_pen *out)
+daegun_path_bounds	daegun_status daegun_path_bounds(const daegun_path *path, daegun_bounds *out)
+daegun_path_clear	daegun_status daegun_path_clear(daegun_path *path)
+daegun_path_close	daegun_status daegun_path_close(daegun_path *path)
+daegun_path_cost	daegun_status daegun_path_cost(const daegun_path *path, size_t *out)
+daegun_path_curve_to	daegun_status daegun_path_curve_to(daegun_path *path, float c1x, float c1y, float c2x, float c2y, float x, float y)
+daegun_path_flatten	daegun_status daegun_path_flatten(const daegun_path *path, float max_area, daegun_contours **out)
+daegun_path_free	void daegun_path_free(daegun_path *path)
+daegun_path_is_empty	daegun_status daegun_path_is_empty(const daegun_path *path, bool *out)
+daegun_path_line_to	daegun_status daegun_path_line_to(daegun_path *path, float x, float y)
+daegun_path_move_to	daegun_status daegun_path_move_to(daegun_path *path, float x, float y)
+daegun_path_new	DAEGUN_MALLOC(malloc(daegun_path_free, 1), returns_nonnull) daegun_path *daegun_path_new(void)
+daegun_path_points	const daegun_point *daegun_path_points(const daegun_path *path, size_t *out_count)
+daegun_path_quad_to	daegun_status daegun_path_quad_to(daegun_path *path, float cx, float cy, float x, float y)
+daegun_path_quads	daegun_status daegun_path_quads(const daegun_path *path, float tolerance, daegun_quads **out)
+daegun_path_replay	daegun_status daegun_path_replay(const daegun_path *path, const double *transform, const daegun_pen *pen)
+daegun_path_stroke	daegun_status daegun_path_stroke(const daegun_path *path, const daegun_stroke_style *style, float tolerance, const daegun_pen *pen)
+daegun_path_stroke_simplified	daegun_status daegun_path_stroke_simplified(const daegun_path *path, const daegun_stroke_style *style, float tolerance, const daegun_pen *pen)
+daegun_path_verbs	const uint8_t *daegun_path_verbs(const daegun_path *path, size_t *out_count)
+daegun_path_view	typedef struct { const uint8_t *verbs; size_t verbs_len; const daegun_point *points; size_t points_len; } daegun_path_view
+daegun_pen	typedef struct { void (*move_to)(void *user, float x, float y); void (*line_to)(void *user, float x, float y); void (*quad_to)(void *user, float cx, float cy, float x, float y); void (*curve_to)(void *user, float c1x, float c1y, float c2x, float c2y, float x, float y); void (*close)(void *user); void *user; } daegun_pen
+daegun_point	typedef struct { float x; float y; } daegun_point
+daegun_prepared_glyph	typedef struct { float advance_width; float advance_height; bool hinted; } daegun_prepared_glyph
+daegun_quad	typedef struct { daegun_point start; daegun_point control; daegun_point end; } daegun_quad
+daegun_quads	typedef struct daegun_quads daegun_quads
+daegun_quads_data	const daegun_quad *daegun_quads_data(const daegun_quads *quads, size_t *out_count)
+daegun_quads_free	void daegun_quads_free(daegun_quads *quads)
+daegun_quads_normalize_winding	daegun_status daegun_quads_normalize_winding(daegun_quads *quads)
+daegun_ramp	typedef struct daegun_ramp daegun_ramp
+daegun_ramp_at	daegun_status daegun_ramp_at(const daegun_ramp *ramp, double x, double y, daegun_rgba *out)
+daegun_ramp_free	void daegun_ramp_free(daegun_ramp *ramp)
+daegun_raster_options	typedef struct { size_t size; const daegun_outline_options *outline; const daegun_subpixel_layout *layout; float offset[2]; int32_t gamma; daegun_rgba text; float contrast; bool darken; } daegun_raster_options
+daegun_raster_options_default	daegun_status daegun_raster_options_default(daegun_raster_options *out, size_t size)
+daegun_rasterizer	typedef struct daegun_rasterizer daegun_rasterizer
+daegun_rasterizer_color_glyph	daegun_status daegun_rasterizer_color_glyph(daegun_rasterizer *rasterizer, const daegun_font *font, uint32_t gid, const daegun_location *location, float px, const daegun_raster_options *opts, const daegun_scene_options *scene, daegun_image *out)
+daegun_rasterizer_color_glyph_into	daegun_status daegun_rasterizer_color_glyph_into(daegun_rasterizer *rasterizer, const daegun_font *font, uint32_t gid, const daegun_location *location, float px, const daegun_raster_options *opts, const daegun_scene_options *scene, const daegun_target *target)
+daegun_rasterizer_distance_field	daegun_status daegun_rasterizer_distance_field(daegun_rasterizer *rasterizer, const daegun_font *font, uint32_t gid, const daegun_location *location, float px, int32_t field, float spread, daegun_image *out)
+daegun_rasterizer_free	void daegun_rasterizer_free(daegun_rasterizer *rasterizer)
+daegun_rasterizer_glyph	daegun_status daegun_rasterizer_glyph(daegun_rasterizer *rasterizer, const daegun_font *font, uint32_t gid, const daegun_location *location, float px, const daegun_raster_options *opts, daegun_image *out)
+daegun_rasterizer_glyph_into	daegun_status daegun_rasterizer_glyph_into(daegun_rasterizer *rasterizer, const daegun_font *font, uint32_t gid, const daegun_location *location, float px, const daegun_raster_options *opts, const daegun_target *target)
+daegun_rasterizer_new	DAEGUN_MALLOC(malloc(daegun_rasterizer_free, 1), returns_nonnull) daegun_rasterizer *daegun_rasterizer_new(void)
+daegun_rasterizer_path	daegun_status daegun_rasterizer_path(daegun_rasterizer *rasterizer, const daegun_path *path, int32_t rule, const double *transform, daegun_image *out)
+daegun_rasterizer_path_into	daegun_status daegun_rasterizer_path_into(daegun_rasterizer *rasterizer, const daegun_path *path, int32_t rule, const double *transform, const daegun_target *target)
+daegun_rasterizer_set_cache_budget	daegun_status daegun_rasterizer_set_cache_budget(daegun_rasterizer *rasterizer, size_t bytes)
+daegun_read_i16_be	daegun_status daegun_read_i16_be(const uint8_t *data, size_t len, size_t off, int16_t *out)
+daegun_read_offset24	daegun_status daegun_read_offset24(const uint8_t *data, size_t len, size_t off, size_t *out)
+daegun_read_u16_be	daegun_status daegun_read_u16_be(const uint8_t *data, size_t len, size_t off, uint16_t *out)
+daegun_read_u24_be	daegun_status daegun_read_u24_be(const uint8_t *data, size_t len, size_t off, uint32_t *out)
+daegun_read_u32_be	daegun_status daegun_read_u32_be(const uint8_t *data, size_t len, size_t off, uint32_t *out)
+daegun_records_fit	DAEGUN_CONST bool daegun_records_fit(size_t start, size_t count, size_t stride, size_t len)
+daegun_rect	typedef struct { size_t x; size_t y; size_t w; size_t h; } daegun_rect
+daegun_region_axis	typedef struct { double start; double peak; double end; } daegun_region_axis
+daegun_rgba	typedef struct { uint8_t r; uint8_t g; uint8_t b; uint8_t a; } daegun_rgba
+daegun_scene	typedef struct daegun_scene daegun_scene
+daegun_scene_free	void daegun_scene_free(daegun_scene *scene)
+daegun_scene_gradients	const daegun_gradient *daegun_scene_gradients(const daegun_scene *scene, size_t *out_count)
+daegun_scene_op	typedef struct { double transform[6]; int32_t kind; int32_t rule; int32_t blend; float opacity; size_t path; size_t gradient; size_t shapes_start; size_t shapes_end; daegun_rgba color; bool has_gradient; } daegun_scene_op
+daegun_scene_ops	const daegun_scene_op *daegun_scene_ops(const daegun_scene *scene, size_t *out_count)
+daegun_scene_options	typedef struct { size_t size; daegun_rgba foreground; uint16_t palette; } daegun_scene_options
+daegun_scene_options_default	daegun_status daegun_scene_options_default(daegun_scene_options *out, size_t size)
+daegun_scene_path_at	daegun_status daegun_scene_path_at(const daegun_scene *scene, size_t path, daegun_path_view *out)
+daegun_scene_path_copy	daegun_status daegun_scene_path_copy(const daegun_scene *scene, size_t path, daegun_path **out)
+daegun_scene_path_count	daegun_status daegun_scene_path_count(const daegun_scene *scene, size_t *out)
+daegun_scene_ramp	daegun_status daegun_scene_ramp(const daegun_scene *scene, size_t gradient, const double to_device[6], int32_t interpolation, daegun_ramp **out)
+daegun_scene_shapes	const daegun_clip_shape *daegun_scene_shapes(const daegun_scene *scene, size_t *out_count)
+daegun_scene_stops	const daegun_stop *daegun_scene_stops(const daegun_scene *scene, size_t *out_count)
+daegun_script	daegun_status daegun_script(uint32_t codepoint, daegun_tag *out)
+daegun_script_direction	daegun_status daegun_script_direction(daegun_tag script, int32_t *out)
+daegun_script_is_context_dependent	daegun_status daegun_script_is_context_dependent(daegun_tag script, bool *out)
+daegun_script_name	daegun_status daegun_script_name(daegun_tag script, daegun_str *out)
+daegun_script_opentype_tags	daegun_status daegun_script_opentype_tags(daegun_tag script, daegun_tag *out, size_t out_len, size_t *out_count)
+daegun_script_run	typedef struct { size_t start; size_t end; daegun_tag script; } daegun_script_run
+daegun_script_runs	daegun_status daegun_script_runs(const char *text, size_t text_len, daegun_script_run *out, size_t out_len, size_t *out_count)
+daegun_search_records	daegun_status daegun_search_records(size_t count, uint32_t target, bool (*key_at)(void *user, size_t index, uint32_t *out_key), void *user, size_t *out_index, bool *out_found)
+daegun_shape_options	typedef struct { size_t size; int32_t direction; daegun_tag script; const char *language; const daegun_feature *features; size_t features_len; const char *before; size_t before_len; const char *after; size_t after_len; int32_t cluster_level; int32_t ignorables; uint32_t invisible_glyph; uint32_t not_found_glyph; uint32_t not_found_variation_selector_glyph; daegun_tag seed_script; bool beginning_of_text; bool has_point_size; bool report_unsafe_to_concat; bool report_tatweel_positions; bool suppress_dotted_circle; bool has_invisible_glyph; bool has_not_found_variation_selector_glyph; double point_size; } daegun_shape_options
+daegun_shape_options_default	daegun_status daegun_shape_options_default(daegun_shape_options *out, size_t size)
+daegun_shaped_run	typedef struct daegun_shaped_run daegun_shaped_run
+daegun_shaped_run_advances	const double *daegun_shaped_run_advances(const daegun_shaped_run *run, size_t *out_count)
+daegun_shaped_run_clusters	const uint32_t *daegun_shaped_run_clusters(const daegun_shaped_run *run, size_t *out_count)
+daegun_shaped_run_complete	daegun_status daegun_shaped_run_complete(const daegun_shaped_run *run, bool *out)
+daegun_shaped_run_copy	daegun_status daegun_shaped_run_copy(const daegun_shaped_run *run, daegun_shaped_run **out)
+daegun_shaped_run_free	void daegun_shaped_run_free(daegun_shaped_run *run)
+daegun_shaped_run_glyphs	const uint32_t *daegun_shaped_run_glyphs(const daegun_shaped_run *run, size_t *out_count)
+daegun_shaped_run_has_broken_syllable	daegun_status daegun_shaped_run_has_broken_syllable(const daegun_shaped_run *run, bool *out)
+daegun_shaped_run_offsets	const daegun_offset *daegun_shaped_run_offsets(const daegun_shaped_run *run, size_t *out_count)
+daegun_shaped_run_safe_to_insert_tatweel	const uint8_t *daegun_shaped_run_safe_to_insert_tatweel(const daegun_shaped_run *run, size_t *out_count)
+daegun_shaped_run_shaper	daegun_status daegun_shaped_run_shaper(const daegun_shaped_run *run, int32_t *out)
+daegun_shaped_run_unsafe_to_break	const uint8_t *daegun_shaped_run_unsafe_to_break(const daegun_shaped_run *run, size_t *out_count)
+daegun_shaped_run_unsafe_to_concat	const uint8_t *daegun_shaped_run_unsafe_to_concat(const daegun_shaped_run *run, size_t *out_count)
+daegun_shaped_run_width	daegun_status daegun_shaped_run_width(const daegun_shaped_run *run, double *out)
+daegun_shaper_name	daegun_status daegun_shaper_name(int32_t shaper, daegun_str *out)
+daegun_shelf_packer	typedef struct daegun_shelf_packer daegun_shelf_packer
+daegun_shelf_packer_free	void daegun_shelf_packer_free(daegun_shelf_packer *packer)
+daegun_shelf_packer_insert	daegun_status daegun_shelf_packer_insert(daegun_shelf_packer *packer, size_t w, size_t h, daegun_rect *out)
+daegun_shelf_packer_new	DAEGUN_MALLOC(malloc(daegun_shelf_packer_free, 1), returns_nonnull) daegun_shelf_packer *daegun_shelf_packer_new(size_t width, size_t height)
+daegun_shelf_packer_reset	daegun_status daegun_shelf_packer_reset(daegun_shelf_packer *packer)
+daegun_stat	typedef struct daegun_stat daegun_stat
+daegun_stat_axes	const daegun_stat_axis *daegun_stat_axes(const daegun_stat *stat, size_t *out_count)
+daegun_stat_axis	typedef struct { daegun_tag tag; uint16_t ordering; bool has_name; } daegun_stat_axis
+daegun_stat_axis_name	daegun_status daegun_stat_axis_name(const daegun_stat *stat, size_t index, daegun_str *out)
+daegun_stat_combo_values	const daegun_axis_value *daegun_stat_combo_values(const daegun_stat *stat, size_t *out_count)
+daegun_stat_elided_fallback_name	daegun_status daegun_stat_elided_fallback_name(const daegun_stat *stat, daegun_str *out)
+daegun_stat_free	void daegun_stat_free(daegun_stat *stat)
+daegun_stat_value	typedef struct { int32_t kind; uint16_t axis_index; bool elidable; bool has_name; bool older_sibling; double value; double min; double max; double linked_value; uint32_t combo_start; uint32_t combo_count; } daegun_stat_value
+daegun_stat_value_at	daegun_status daegun_stat_value_at(const daegun_stat *stat, size_t index, daegun_stat_value *out)
+daegun_stat_value_count	daegun_status daegun_stat_value_count(const daegun_stat *stat, size_t *out)
+daegun_stat_value_name	daegun_status daegun_stat_value_name(const daegun_stat *stat, size_t index, daegun_str *out)
+daegun_status	typedef int32_t daegun_status
+daegun_status_name	DAEGUN_CONST daegun_str daegun_status_name(daegun_status status)
+daegun_stop	typedef struct { float offset; daegun_rgba color; } daegun_stop
+daegun_str	typedef struct { const char *data; size_t len; } daegun_str
+daegun_str_list	typedef struct daegun_str_list daegun_str_list
+daegun_str_list_at	daegun_status daegun_str_list_at(const daegun_str_list *list, size_t index, daegun_str *out)
+daegun_str_list_count	daegun_status daegun_str_list_count(const daegun_str_list *list, size_t *out)
+daegun_str_list_free	void daegun_str_list_free(daegun_str_list *list)
+daegun_stroke_style	typedef struct { float width; int32_t cap; int32_t join; float miter_limit; } daegun_stroke_style
+daegun_subpixel_layout	typedef struct daegun_subpixel_layout daegun_subpixel_layout
+daegun_subpixel_layout_channels	daegun_status daegun_subpixel_layout_channels(const daegun_subpixel_layout *layout, uint8_t *out)
+daegun_subpixel_layout_free	void daegun_subpixel_layout_free(daegun_subpixel_layout *layout)
+daegun_subpixel_layout_from_weights	daegun_status daegun_subpixel_layout_from_weights(uint8_t oversample_x, uint8_t oversample_y, uint8_t taps_x, uint8_t taps_y, int8_t origin_x, int8_t origin_y, const float *weights, size_t weights_len, daegun_subpixel_layout **out)
+daegun_subpixel_layout_grayscale	daegun_status daegun_subpixel_layout_grayscale(daegun_subpixel_layout **out)
+daegun_subpixel_layout_horizontal	daegun_status daegun_subpixel_layout_horizontal(int32_t order, daegun_subpixel_layout **out)
+daegun_subpixel_layout_is_grayscale	daegun_status daegun_subpixel_layout_is_grayscale(const daegun_subpixel_layout *layout, bool *out)
+daegun_subpixel_layout_key	daegun_status daegun_subpixel_layout_key(const daegun_subpixel_layout *layout, uint64_t *out)
+daegun_subpixel_layout_origin	daegun_status daegun_subpixel_layout_origin(const daegun_subpixel_layout *layout, int8_t *out_x, int8_t *out_y)
+daegun_subpixel_layout_oversample	daegun_status daegun_subpixel_layout_oversample(const daegun_subpixel_layout *layout, uint8_t *out_x, uint8_t *out_y)
+daegun_subpixel_layout_pad	daegun_status daegun_subpixel_layout_pad(const daegun_subpixel_layout *layout, size_t *out_x, size_t *out_y)
+daegun_subpixel_layout_taps	daegun_status daegun_subpixel_layout_taps(const daegun_subpixel_layout *layout, uint8_t *out_x, uint8_t *out_y)
+daegun_subpixel_layout_unfiltered	daegun_status daegun_subpixel_layout_unfiltered(int32_t order, int32_t orientation, daegun_subpixel_layout **out)
+daegun_subpixel_layout_vertical	daegun_status daegun_subpixel_layout_vertical(int32_t order, daegun_subpixel_layout **out)
+daegun_subpixel_layout_weights	const float *daegun_subpixel_layout_weights(const daegun_subpixel_layout *layout, size_t channel, size_t *out_count)
+daegun_subset	typedef struct daegun_subset daegun_subset
+daegun_subset_bytes	const uint8_t *daegun_subset_bytes(const daegun_subset *subset, size_t *out_count)
+daegun_subset_free	void daegun_subset_free(daegun_subset *subset)
+daegun_subset_renumbered	daegun_status daegun_subset_renumbered(const daegun_subset *subset, uint32_t old, uint32_t *out)
+daegun_table_map	typedef struct daegun_table_map daegun_table_map
+daegun_table_map_build	daegun_status daegun_table_map_build(const daegun_table_map *map, daegun_blob **out)
+daegun_table_map_bytes_at	daegun_status daegun_table_map_bytes_at(const daegun_table_map *map, size_t index, daegun_bytes *out)
+daegun_table_map_count	daegun_status daegun_table_map_count(const daegun_table_map *map, size_t *out)
+daegun_table_map_free	void daegun_table_map_free(daegun_table_map *map)
+daegun_table_map_get	daegun_status daegun_table_map_get(const daegun_table_map *map, daegun_tag tag, daegun_bytes *out)
+daegun_table_map_new	DAEGUN_MALLOC(malloc(daegun_table_map_free, 1), returns_nonnull) daegun_table_map *daegun_table_map_new(void)
+daegun_table_map_remove	daegun_status daegun_table_map_remove(daegun_table_map *map, daegun_tag tag)
+daegun_table_map_set	daegun_status daegun_table_map_set(daegun_table_map *map, daegun_tag tag, const uint8_t *data, size_t len)
+daegun_table_map_tag_at	daegun_status daegun_table_map_tag_at(const daegun_table_map *map, size_t index, daegun_tag *out)
+daegun_tag	typedef uint32_t daegun_tag
+daegun_tag_from_string	daegun_status daegun_tag_from_string(const char *text, size_t text_len, daegun_tag *out)
+daegun_target	typedef struct { int32_t left; int32_t top; uint32_t width; uint32_t height; size_t stride; uint8_t *pixels; size_t pixels_len; } daegun_target
+daegun_text	typedef struct daegun_text daegun_text
+daegun_text_free	void daegun_text_free(daegun_text *text)
+daegun_text_str	daegun_status daegun_text_str(const daegun_text *text, daegun_str *out)
+daegun_thread_release	void daegun_thread_release(void)
+daegun_typographic_metrics	typedef struct { bool has_x_height; bool has_underline; bool has_strikeout; bool has_subscript; bool has_superscript; double x_height; double underline_position; double underline_thickness; double strikeout_position; double strikeout_thickness; double subscript_x_size; double subscript_y_size; double subscript_x_offset; double subscript_y_offset; double superscript_x_size; double superscript_y_size; double superscript_x_offset; double superscript_y_offset; } daegun_typographic_metrics
+daegun_version	DAEGUN_CONST daegun_str daegun_version(void)
+daegun_vertical_form	daegun_status daegun_vertical_form(uint32_t codepoint, uint32_t *out)
+daegun_vertical_orientation	daegun_status daegun_vertical_orientation(uint32_t codepoint, int32_t *out)
+daegun_visual_run	typedef struct { size_t start; size_t end; uint8_t level; } daegun_visual_run
+daegun_word_boundaries	daegun_status daegun_word_boundaries(const char *text, size_t text_len, size_t *out, size_t out_len, size_t *out_count)
+daegun_word_segmenter	typedef size_t (*daegun_word_segmenter)(void *user, const char *text, size_t len, size_t *out, size_t cap)
+daegun_write_i16_be	daegun_status daegun_write_i16_be(uint8_t *data, size_t len, size_t off, int16_t value)
+daegun_write_offset24	daegun_status daegun_write_offset24(uint8_t *data, size_t len, size_t off, size_t value)
+daegun_write_u16_be	daegun_status daegun_write_u16_be(uint8_t *data, size_t len, size_t off, uint16_t value)
+daegun_write_u32_be	daegun_status daegun_write_u32_be(uint8_t *data, size_t len, size_t off, uint32_t value)
+daegun_writing_mode_is_vertical	daegun_status daegun_writing_mode_is_vertical(int32_t mode, bool *out)

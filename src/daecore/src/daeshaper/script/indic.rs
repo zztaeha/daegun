@@ -1,1128 +1,806 @@
-use crate::daecore::daeshaper::buffer::{scratch_flags, Buffer, GlyphInfo};
+// The nine scripts of Microsoft's Indic script development specs, Devanagari to Malayalam, through the specs' shaping
+// engine: syllables, consonant forms read from the font, reordering, basic forms, final reordering, presentation forms.
+use alloc::boxed::Box;
+use core::sync::atomic::{AtomicU8, Ordering};
+
+use super::indic_category::{self, category as cat, position as at};
+use super::syllabic::{self, Circle, Step, Syllable};
+use super::syllable;
+use super::{MarkAdvances, Model, ModelData, Normalization, Shaper};
+use crate::daecore::daekit::cache::shaping::Drawn;
 use crate::daecore::daeshaper::face::Face;
-use super::indic_category::{category, position};
-use crate::daecore::daeshaper::ot::map::{feature_flags as ff, MapBuilder, TableIndex};
-use crate::daecore::daeshaper::normalize;
-use crate::daecore::daeshaper::plan::ShapePlan;
-use super::{PauseFn, Shaper, ZeroWidthMarks};
-use super::syllabic;
-use super::syllable::{self};
 use crate::daecore::daeshaper::generated::syllable_tables::{indic_accept, IndicSyllable, INDIC_TRANSITIONS};
 use crate::daecore::daeshaper::ot::tag::Tag;
-use crate::daecore::daeshaper::unicode::{self, Script};
+use crate::daecore::daeshaper::plan::{FeatureUse as U, Features, Plan, Planner, Probe, Table};
+use crate::daecore::daeshaper::run::{class, Glyph, Mask, Run};
+use crate::daecore::daeshaper::unicode::{self, GeneralCategory, Script};
 
-pub(crate) const SHAPER: Shaper = Shaper {
-    name: "indic",
-    collect_features: Some(collect_features),
-    pauses: PAUSES,
-    override_features: Some(override_features),
-    preprocess_text: Some(preprocess_text),
-    postprocess_glyphs: None,
-    normalization_preference: normalize::Mode::ComposedDiacriticsNoShortCircuit,
-    decompose: Some(decompose),
-    compose: Some(compose),
-    setup_masks: Some(setup_masks),
-    gpos_tag: None,
-    reorder_marks: None,
-    zero_width_marks: ZeroWidthMarks::Never,
-    fallback_position: false,
-};
+pub(crate) struct Indic;
 
-const PAUSES: &[PauseFn] = &[setup_syllables, initial_reordering, final_reordering, clear_syllables];
+pub(crate) const MODEL: Indic = Indic;
 
-const PAUSE_SETUP_SYLLABLES: usize = 0;
-const PAUSE_INITIAL_REORDERING: usize = 1;
-const PAUSE_FINAL_REORDERING: usize = 2;
-const PAUSE_CLEAR_SYLLABLES: usize = 3;
+const PER_SYLLABLE: U = U::GLOBAL.and(U::PER_SYLLABLE);
+// Every feature from the basic forms on sees joiners and stays within a syllable; those a syllable's position turns
+// on are off until then.
+const ON: U = U::GLOBAL.and(U::SEES_JOINERS).and(U::PER_SYLLABLE);
+const MASKED: U = U::SEES_JOINERS.and(U::PER_SYLLABLE);
 
-const FEATURES: [(&[u8; 4], u32); 17] = [
-    (b"nukt", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"akhn", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"rphf", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"rkrf", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"pref", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"blwf", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"abvf", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"half", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"pstf", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"vatu", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"cjct", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"init", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"pres", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"abvs", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"blws", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"psts", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"haln", ff::GLOBAL_MANUAL_JOINERS | ff::PER_SYLLABLE),
+const PLAN: &[Step] = &[
+    Step::End(Some(find_syllables)),
+    Step::Together(&[(b"locl", PER_SYLLABLE), (b"ccmp", PER_SYLLABLE)]),
+    Step::End(Some(reorder_initially)),
+    Step::OneByOne(&[
+        (b"nukt", ON),
+        (b"akhn", ON),
+        (b"rphf", MASKED),
+        (b"rkrf", ON),
+        (b"pref", MASKED),
+        (b"blwf", MASKED),
+        (b"abvf", MASKED),
+        (b"half", MASKED),
+        (b"pstf", MASKED),
+        (b"vatu", ON),
+        (b"cjct", ON),
+    ]),
+    Step::End(Some(reorder_finally)),
+    Step::Together(&[
+        (b"init", MASKED),
+        (b"pres", ON),
+        (b"abvs", ON),
+        (b"blws", ON),
+        (b"psts", ON),
+        (b"haln", ON),
+    ]),
 ];
 
-const RPHF: usize = 2;
-const PREF: usize = 4;
-const BLWF: usize = 5;
-const ABVF: usize = 6;
-const HALF: usize = 7;
-const PSTF: usize = 8;
-const INIT: usize = 11;
-const BASIC: usize = 11;
+const CIRCLE: Circle = Circle {
+    broken: IndicSyllable::BrokenCluster as u8,
+    class: cat::DOTTED_CIRCLE,
+    position: Some(at::LAST),
+    after: Some(cat::REPHA),
+};
 
+// What stands as a consonant: consonants, independent vowels and placeholders.
+const CONSONANTS: [u8; 7] = [cat::C, cat::STACKER, cat::RA, cat::MEDIAL, cat::V, cat::PLACEHOLDER, cat::DOTTED_CIRCLE];
+const JOINERS: [u8; 2] = [cat::ZWJ, cat::ZWNJ];
+// Read by class alone: a matra counts as one even ligated.
+const MATRAS: [u8; 2] = [cat::M, cat::M_POST];
+const MATRAS_OR_VIRAMA: [u8; 3] = [cat::M, cat::M_POST, cat::H];
+
+// How a syllable opening with RA and a virama shows the RA as a reph.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum RephPosition {
+enum Reph {
+    // RA, virama: the reph forms where rphf substitutes the pair.
+    Implicit,
+    // RA, virama, ZWJ (Telugu).
+    Explicit,
+    // A character of its own, Malayalam's dot reph.
+    Logical,
+}
+
+// Where the final reordering puts the reph, by each spec's reph position: after the main consonant, before or after
+// the below-base forms, before or after the post-base forms.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RephGoes {
     AfterMain,
-    BeforeSub,
-    AfterSub,
+    BeforeBelow,
+    AfterBelow,
     BeforePost,
     AfterPost,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RephMode {
-    Implicit,
-    Explicit,
-    LogRepha,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BlwfMode {
-    PreAndPost,
-    PostOnly,
-}
-
+// A script's rules, from its spec.
 #[derive(Clone, Copy)]
-struct Config {
-    has_old_spec: bool,
+struct Rules {
     virama: u32,
-    reph_pos: RephPosition,
-    reph_mode: RephMode,
-    blwf_mode: BlwfMode,
-    reorders_zwj_halant: bool,
-    disallow_double_halants: bool,
-    old_spec_eyelash_ra: bool,
-    skip_unformed_below_forms: bool,
-    has_half_forms: bool,
+    reph: Reph,
+    reph_goes: RephGoes,
+    // The spec has a first version, for fonts with no GSUB script tag of the second.
+    first_spec: bool,
+    // Below-base forms come before the base too, not only after it.
+    below_before_base: bool,
+    half_forms: bool,
+    // Kannada: RA, virama, ZWJ opening a syllable reads as RA, ZWJ, virama.
+    ra_zwj_virama: bool,
+    // Kannada: a virama after the base doesn't move past another virama.
+    one_virama: bool,
+    // Devanagari's first version: RA and virama before the base take the below-base form, its eyelash RA aside.
+    eyelash_ra: bool,
+    // Malayalam: a below-base consonant past the base with no form of its own stands as a base.
+    unformed_below_is_base: bool,
 }
 
-const DEFAULT_CONFIG: Config = Config {
-    has_old_spec: false,
+const SECOND_SPEC: Rules = Rules {
     virama: 0,
-    reph_pos: RephPosition::BeforePost,
-    reph_mode: RephMode::Implicit,
-    blwf_mode: BlwfMode::PreAndPost,
-    reorders_zwj_halant: false,
-    disallow_double_halants: false,
-    old_spec_eyelash_ra: false,
-    skip_unformed_below_forms: false,
-    has_half_forms: true,
+    reph: Reph::Implicit,
+    reph_goes: RephGoes::BeforePost,
+    first_spec: false,
+    below_before_base: true,
+    half_forms: true,
+    ra_zwj_virama: false,
+    one_virama: false,
+    eyelash_ra: false,
+    unformed_below_is_base: false,
 };
 
-fn config_for(script: Option<Script>) -> Config {
-    let c = |virama, reph_pos, reph_mode, blwf_mode| Config {
-        has_old_spec: true,
+// Each script's virama, reph and below-base rules, as its spec gives them.
+fn rules_of(script: Option<Script>) -> Rules {
+    let spec = |virama, reph, reph_goes, below_before_base| Rules {
         virama,
-        reph_pos,
-        reph_mode,
-        blwf_mode,
-        ..DEFAULT_CONFIG
+        reph,
+        reph_goes,
+        below_before_base,
+        first_spec: true,
+        ..SECOND_SPEC
     };
-    use BlwfMode::{PostOnly, PreAndPost};
-    use RephMode::{Explicit, Implicit, LogRepha};
-    use RephPosition::{AfterMain, AfterPost, AfterSub, BeforePost, BeforeSub};
-
-    match script.map(|s| s.name()) {
-        Some("Devanagari") => Config {
-            old_spec_eyelash_ra: true,
-            ..c(0x094D, BeforePost, Implicit, PreAndPost)
+    use Reph::{Explicit, Implicit, Logical};
+    use RephGoes::{AfterBelow, AfterMain, AfterPost, BeforeBelow, BeforePost};
+    match script {
+        Some(Script::DEVANAGARI) => Rules { eyelash_ra: true, ..spec(0x094D, Implicit, BeforePost, true) },
+        Some(Script::BENGALI) => spec(0x09CD, Implicit, AfterBelow, true),
+        Some(Script::GURMUKHI) => spec(0x0A4D, Implicit, BeforeBelow, true),
+        Some(Script::GUJARATI) => spec(0x0ACD, Implicit, BeforePost, true),
+        Some(Script::ORIYA) => spec(0x0B4D, Implicit, AfterMain, true),
+        Some(Script::TAMIL) => Rules { half_forms: false, ..spec(0x0BCD, Implicit, AfterPost, true) },
+        Some(Script::TELUGU) => spec(0x0C4D, Explicit, AfterPost, false),
+        Some(Script::KANNADA) => {
+            Rules { ra_zwj_virama: true, one_virama: true, ..spec(0x0CCD, Implicit, AfterPost, false) }
+        }
+        Some(Script::MALAYALAM) => Rules {
+            half_forms: false,
+            unformed_below_is_base: true,
+            ..spec(0x0D4D, Logical, AfterMain, true)
         },
-        Some("Bengali") => c(0x09CD, AfterSub, Implicit, PreAndPost),
-        Some("Gurmukhi") => c(0x0A4D, BeforeSub, Implicit, PreAndPost),
-        Some("Gujarati") => c(0x0ACD, BeforePost, Implicit, PreAndPost),
-        Some("Oriya") => c(0x0B4D, AfterMain, Implicit, PreAndPost),
-        Some("Tamil") => Config {
-            has_half_forms: false,
-            ..c(0x0BCD, AfterPost, Implicit, PreAndPost)
-        },
-        Some("Telugu") => c(0x0C4D, AfterPost, Explicit, PostOnly),
-        Some("Kannada") => Config {
-            reorders_zwj_halant: true,
-            disallow_double_halants: true,
-            ..c(0x0CCD, AfterPost, Implicit, PostOnly)
-        },
-        Some("Malayalam") => Config {
-            has_half_forms: false,
-            skip_unformed_below_forms: true,
-            ..c(0x0D4D, AfterMain, LogRepha, PreAndPost)
-        },
-        Some("Sinhala") => Config {
-            has_old_spec: false,
-            virama: 0x0DCA,
-            reph_pos: AfterPost,
-            reph_mode: Explicit,
-            blwf_mode: PreAndPost,
-            ..DEFAULT_CONFIG
-        },
-        _ => DEFAULT_CONFIG,
+        _ => SECOND_SPEC,
     }
 }
 
-struct Plan<'a> {
-    plan: &'a ShapePlan,
-    face: &'a Face<'a>,
-    config: Config,
-    is_old_spec: bool,
-    masks: [u32; FEATURES.len()],
-    gsub: Option<crate::daecore::daeshaper::ot::LayoutTable<'a>>,
+struct Masks {
+    rphf: Mask,
+    pref: Mask,
+    blwf: Mask,
+    abvf: Mask,
+    half: Mask,
+    pstf: Mask,
+    init: Mask,
 }
 
-impl<'a> Plan<'a> {
-    fn new(plan: &'a ShapePlan, face: &'a Face<'a>, script: Option<Script>) -> Self {
-        let config = config_for(script);
-        let chosen = plan.map.chosen_script[TableIndex::Gsub.idx()];
-        // `is_none_or`, not `is_some_and`: a font whose GSUB matched no script tag – or that has no
-        // GSUB – is old-spec, because the reference tests a sentinel tag rather than absence and no
-        // sentinel ends in '2'. Backwards, a GSUB-less Indic font skips the post-base merge.
-        let is_old_spec = config.has_old_spec && chosen.is_none_or(|t| t.to_bytes()[3] != b'2');
-
-        let mut masks = [0; FEATURES.len()];
-        for (i, (tag, flags)) in FEATURES.iter().enumerate() {
-            if flags & ff::GLOBAL == 0 {
-                masks[i] = plan.map.one_mask(Tag::from_bytes(tag));
-            }
-        }
-
-        let gsub = face.table("GSUB").and_then(crate::daecore::daeshaper::ot::LayoutTable::parse);
-
-        Plan { plan, face, config, is_old_spec, masks, gsub }
-    }
-
-    fn would_substitute(&self, tag: &[u8; 4], glyphs: &[u16]) -> bool {
-        let Some(gsub) = self.gsub.as_ref() else { return false };
-        let Some(feature) = self.plan.map.feature(Tag::from_bytes(tag)) else { return false };
-        let stage = feature.stage[TableIndex::Gsub.idx()];
-        let ctx = crate::daecore::daeshaper::ot::gsub::WouldApplyContext { glyphs, zero_context: true };
-
-        let digests = &self.plan.lookup_digests[TableIndex::Gsub.idx()];
-        let first = glyphs.first().copied().unwrap_or(0);
-        self.plan
-            .map
-            .stage_lookups(TableIndex::Gsub, stage)
-            .iter()
-            .filter(|l| {
-                digests.get(l.index as usize).is_none_or(|d| d.may_have(first))
-            })
-            .any(|l| crate::daecore::daeshaper::ot::gsub::would_apply(&ctx, gsub, l.index))
-    }
+// The GSUB stages whose lookups say what forms a consonant takes.
+struct Stages {
+    rphf: Option<u16>,
+    pref: Option<u16>,
+    blwf: Option<u16>,
+    pstf: Option<u16>,
+    vatu: Option<u16>,
 }
 
-impl GlyphInfo {
-    fn indic_position(&self) -> u8 {
-        self.shaper_auxiliary
-    }
-
-    fn set_indic_position(&mut self, position: u8) {
-        self.shaper_auxiliary = position;
-    }
-
-    fn is_category(&self, categories: &[u8]) -> bool {
-        !self.ligated() && categories.contains(&self.shaper_category)
-    }
-
-    fn is_joiner(&self) -> bool {
-        self.is_category(&[category::ZWJ, category::ZWNJ])
-    }
-
-    fn is_halant(&self) -> bool {
-        self.is_category(&[category::H])
-    }
-
-    fn is_matra(&self) -> bool {
-        self.is_category(&[category::M, category::MPST])
-    }
-
-    fn is_consonant(&self) -> bool {
-        self.is_category(&[
-            category::C,
-            category::CS,
-            category::RA,
-            category::CM,
-            category::V,
-            category::PLACEHOLDER,
-            category::DOTTEDCIRCLE,
-        ])
-    }
-
-    fn is_base_candidate(&self) -> bool {
-        self.is_category(&[
-            category::C,
-            category::CS,
-            category::RA,
-            category::V,
-            category::PLACEHOLDER,
-            category::DOTTEDCIRCLE,
-        ])
-    }
+// Each glyph's consonant position as the font's forms place it, kept once asked: 0 for not yet, else the position
+// plus one. Threads racing on a slot store the one answer the font gives, so relaxed order is enough.
+struct Positions {
+    slots: Box<[AtomicU8]>,
+    // The font's allowance the slots are drawn from, given back with the plan.
+    _drawn: Option<Drawn>,
 }
 
-fn collect_features(b: &mut MapBuilder, _: Option<Tag>) {
-    b.add_gsub_pause(Some(PAUSE_SETUP_SYLLABLES));
-
-    b.enable_feature(Tag::from_bytes(b"locl"), ff::PER_SYLLABLE, 1);
-    b.enable_feature(Tag::from_bytes(b"ccmp"), ff::PER_SYLLABLE, 1);
-
-    b.add_gsub_pause(Some(PAUSE_INITIAL_REORDERING));
-
-    for (tag, flags) in FEATURES.iter().take(BASIC) {
-        b.add_feature(Tag::from_bytes(tag), *flags, 1);
-        b.add_gsub_pause(None);
-    }
-
-    b.add_gsub_pause(Some(PAUSE_FINAL_REORDERING));
-
-    for (tag, flags) in FEATURES.iter().skip(BASIC) {
-        b.add_feature(Tag::from_bytes(tag), *flags, 1);
-    }
-}
-
-fn override_features(b: &mut MapBuilder) {
-    b.disable_feature(Tag::from_bytes(b"liga"));
-    b.add_gsub_pause(Some(PAUSE_CLEAR_SYLLABLES));
-}
-
-fn preprocess_text(_: &ShapePlan, face: &Face, buffer: &mut Buffer) {
-    syllabic::insert_vowel_constraints(face, buffer);
-}
-
-fn decompose(_: &normalize::Context, ab: char) -> Option<(char, Option<char>)> {
-    match ab {
-        '\u{0931}'
-        | '\u{09DC}'
-        | '\u{09DD}'
-        | '\u{0B94}' => None,
-        _ => unicode::decompose(ab),
-    }
-}
-
-fn compose(_: &normalize::Context, a: char, b: char) -> Option<char> {
-    if unicode::general_category(a).is_mark() {
-        return None;
-    }
-    if a == '\u{09AF}' && b == '\u{09BC}' {
-        return Some('\u{09DF}');
-    }
-    unicode::compose(a, b)
-}
-
-fn setup_masks(_: &ShapePlan, _: &Face, buffer: &mut Buffer) {
-    let len = buffer.len;
-    for info in &mut buffer.info[..len] {
-        let (cat, pos) = super::indic_category::lookup(info.id);
-        info.shaper_category = cat;
-        info.set_indic_position(pos);
-    }
-}
-
-fn setup_syllables(_: &ShapePlan, _: &Face, buffer: &mut Buffer) -> bool {
-    segment_into_syllables(buffer);
-
-    let mut start = 0;
-    while start < buffer.len {
-        let end = next_syllable(buffer, start);
-        buffer.unsafe_to_break(start, end);
-        start = end;
-    }
-
-    false
-}
-
-fn segment_into_syllables(buffer: &mut Buffer) {
-    let mut segments = syllable::Segments::new();
-
-    let len = buffer.len;
-    syllable::segment(
-        len,
-        &INDIC_TRANSITIONS,
-        |i| buffer.info[i].shaper_category,
-        indic_accept,
-        |s| segments.push(s),
-    );
-
-    let segments = segments.as_slice();
-    if segments.iter().any(|s| s.kind == u8::from(IndicSyllable::BrokenCluster)) {
-        buffer.scratch_flags |= scratch_flags::HAS_BROKEN_SYLLABLE;
-    }
-    syllable::set_syllables(buffer, segments);
-}
-
-fn next_syllable(buffer: &Buffer, start: usize) -> usize {
-    if start >= buffer.len {
-        return start;
-    }
-    let syllable = buffer.info[start].syllable;
-    let mut end = start + 1;
-    while end < buffer.len && buffer.info[end].syllable == syllable {
-        end += 1;
-    }
-    end
-}
-
-fn initial_reordering(plan: &ShapePlan, face: &Face, buffer: &mut Buffer) -> bool {
-    let p = Plan::new(plan, face, buffer.script);
-
-    update_consonant_positions(&p, buffer);
-
-    let inserted = syllabic::insert_dotted_circles(
-        face,
-        buffer,
-        IndicSyllable::BrokenCluster.into(),
-        category::DOTTEDCIRCLE,
-        Some(category::REPHA),
-        Some(position::END),
-    );
-
-    let mut start = 0;
-    while start < buffer.len {
-        let end = next_syllable(buffer, start);
-        let kind = buffer.info[start].syllable & 0x0F;
-        if kind != IndicSyllable::SymbolCluster.into()
-            && kind != IndicSyllable::NonIndicCluster.into()
-        {
-            initial_reordering_syllable(&p, start, end, buffer);
-        }
-        start = end;
-    }
-
-    inserted
-}
-
-fn update_consonant_positions(p: &Plan, buffer: &mut Buffer) {
-    if p.config.virama == 0 {
-        return;
-    }
-    let Some(virama) = p.face.glyph_index(p.config.virama) else { return };
-
-    let len = buffer.len;
-    for i in 0..len {
-        if buffer.info[i].indic_position() != position::BASE_C {
-            continue;
-        }
-        let consonant = buffer.info[i].id as u16;
-        buffer.info[i].set_indic_position(consonant_position(p, consonant, virama));
-    }
-}
-
-fn consonant_position(p: &Plan, consonant: u16, virama: u16) -> u8 {
-    // Both orders are asked about, not one. Old spec writes the consonant before the virama and new
-    // spec after, but fonts copied lookups across unchanged and Uniscribe honors them anyway.
-    let both = |tag: &[u8; 4]| {
-        p.would_substitute(tag, &[virama, consonant]) || p.would_substitute(tag, &[consonant, virama])
-    };
-
-    if both(b"blwf") || both(b"vatu") {
-        return position::BELOW_C;
-    }
-    if both(b"pstf") || both(b"pref") {
-        return position::POST_C;
-    }
-    position::BASE_C
-}
-
-fn initial_reordering_syllable(p: &Plan, start: usize, end: usize, buffer: &mut Buffer) {
-    if p.config.reorders_zwj_halant
-        && start + 3 <= end
-        && buffer.info[start].is_category(&[category::RA])
-        && buffer.info[start + 1].is_category(&[category::H])
-        && buffer.info[start + 2].is_category(&[category::ZWJ])
-    {
-        buffer.merge_clusters(start + 1, start + 3);
-        buffer.info.swap(start + 1, start + 2);
-    }
-
-    let (base, has_reph) = find_base(p, start, end, buffer);
-
-    assign_positions(p, start, base, end, buffer);
-    if has_reph {
-        buffer.info[start].set_indic_position(position::RA_TO_BECOME_REPH);
-    }
-
-    if p.is_old_spec {
-        move_post_base_halant(p, base, end, buffer);
-    }
-
-    attach_marks_to_neighbors(start, end, buffer);
-    give_post_base_consonants_their_marks(base, end, buffer);
-
-    let base = sort_syllable(p, start, base, end, buffer);
-    setup_syllable_masks(p, start, base, end, buffer);
-}
-
-fn find_base(p: &Plan, start: usize, end: usize, buffer: &mut Buffer) -> (usize, bool) {
-    let mut base = end;
-    let mut has_reph = false;
-    let mut limit = start;
-
-    if p.masks[RPHF] != 0
-        && start + 3 <= end
-        && ((p.config.reph_mode == RephMode::Implicit && !buffer.info[start + 2].is_joiner())
-            || (p.config.reph_mode == RephMode::Explicit
-                && buffer.info[start + 2].shaper_category == category::ZWJ))
-    {
-        let pair = [buffer.info[start].id as u16, buffer.info[start + 1].id as u16];
-        let triple = [pair[0], pair[1], buffer.info[start + 2].id as u16];
-
-        if p.would_substitute(b"rphf", &pair)
-            || (p.config.reph_mode == RephMode::Explicit && p.would_substitute(b"rphf", &triple))
-        {
-            limit += 2;
-            while limit < end && buffer.info[limit].is_joiner() {
-                limit += 1;
-            }
-            base = start;
-            has_reph = true;
-        }
-    } else if p.config.reph_mode == RephMode::LogRepha
-        && buffer.info[start].shaper_category == category::REPHA
-    {
-        limit += 1;
-        while limit < end && buffer.info[limit].is_joiner() {
-            limit += 1;
-        }
-        base = start;
-        has_reph = true;
-    }
-
-    let mut i = end;
-    let mut seen_below = false;
-    loop {
-        i -= 1;
-        if buffer.info[i].is_base_candidate() {
-            let pos = buffer.info[i].indic_position();
-            if pos != position::BELOW_C && (pos != position::POST_C || seen_below) {
-                base = i;
-                break;
-            }
-            if pos == position::BELOW_C {
-                seen_below = true;
-            }
-            base = i;
-        } else if start < i
-            && buffer.info[i].shaper_category == category::ZWJ
-            && buffer.info[i - 1].shaper_category == category::H
-        {
-            break;
-        }
-
-        if i <= limit {
-            break;
-        }
-    }
-
-    if has_reph && base == start && limit - base <= 2 {
-        has_reph = false;
-    }
-
-    (base, has_reph)
-}
-
-fn assign_positions(_p: &Plan, start: usize, base: usize, end: usize, buffer: &mut Buffer) {
-    for i in start..base {
-        let pos = buffer.info[i].indic_position();
-        buffer.info[i].set_indic_position(pos.min(position::PRE_C));
-    }
-    if base < end {
-        buffer.info[base].set_indic_position(position::BASE_C);
-    }
-}
-
-fn move_post_base_halant(p: &Plan, base: usize, end: usize, buffer: &mut Buffer) {
-    let disallow_double_halants = p.config.disallow_double_halants;
-
-    for i in base + 1..end {
-        if buffer.info[i].shaper_category != category::H {
-            continue;
-        }
-
-        let mut j = end - 1;
-        while j > i {
-            if buffer.info[j].is_consonant()
-                || (disallow_double_halants && buffer.info[j].shaper_category == category::H)
-            {
-                break;
-            }
-            j -= 1;
-        }
-
-        if buffer.info[j].shaper_category != category::H && j > i {
-            let halant = buffer.info[i];
-            for k in 0..j - i {
-                buffer.info[k + i] = buffer.info[k + i + 1];
-            }
-            buffer.info[j] = halant;
-        }
-
-        break;
-    }
-}
-
-fn attach_marks_to_neighbors(start: usize, end: usize, buffer: &mut Buffer) {
-    let mut last_pos = position::START;
-
-    for i in start..end {
-        let travels = buffer.info[i].is_category(&[
-            category::ZWJ,
-            category::ZWNJ,
-            category::N,
-            category::RS,
-            category::CM,
-            category::H,
-        ]);
-
-        if travels {
-            buffer.info[i].set_indic_position(last_pos);
-
-            if buffer.info[i].shaper_category == category::H
-                && buffer.info[i].indic_position() == position::PRE_M
-            {
-                for j in (start + 1..=i).rev() {
-                    if buffer.info[j - 1].indic_position() != position::PRE_M {
-                        let pos = buffer.info[j - 1].indic_position();
-                        buffer.info[i].set_indic_position(pos);
-                        break;
-                    }
-                }
-            }
-        } else if buffer.info[i].indic_position() != position::SMVD {
-            if buffer.info[i].shaper_category == category::MPST
-                && i > start
-                && buffer.info[i - 1].shaper_category == category::SM
-            {
-                let pos = buffer.info[i].indic_position();
-                buffer.info[i - 1].set_indic_position(pos);
-            }
-
-            last_pos = buffer.info[i].indic_position();
-        }
-    }
-}
-
-fn give_post_base_consonants_their_marks(base: usize, end: usize, buffer: &mut Buffer) {
-    let mut last = base;
-
-    for i in base + 1..end {
-        if buffer.info[i].is_consonant() {
-            let pos = buffer.info[i].indic_position();
-            for j in last + 1..i {
-                if buffer.info[j].indic_position() < position::SMVD {
-                    buffer.info[j].set_indic_position(pos);
-                }
-            }
-            last = i;
-        } else if buffer.info[i].is_matra() {
-            last = i;
-        }
-    }
-}
-
-fn sort_syllable(p: &Plan, start: usize, _base: usize, end: usize, buffer: &mut Buffer) -> usize {
-    // The syllable number is borrowed as scratch to record where each glyph came from, which is what
-    // lets the cluster merging below know what crossed what. Restored afterwards.
-    let syllable = buffer.info[start].syllable;
-    for i in start..end {
-        buffer.info[i].syllable = (i - start) as u8;
-    }
-
-    buffer.info[start..end].sort_by_key(|a| a.indic_position());
-
-    let mut base = end;
-    let mut first_left_matra = end;
-    let mut last_left_matra = end;
-
-    for i in start..end {
-        if buffer.info[i].indic_position() == position::BASE_C {
-            base = i;
-            break;
-        } else if buffer.info[i].indic_position() == position::PRE_M {
-            if first_left_matra == end {
-                first_left_matra = i;
-            }
-            last_left_matra = i;
-        }
-    }
-
-    if first_left_matra < last_left_matra {
-        buffer.reverse_range(first_left_matra, last_left_matra + 1);
-
-        let mut group_start = first_left_matra;
-        for j in first_left_matra..=last_left_matra {
-            if buffer.info[j].is_matra() {
-                buffer.reverse_range(group_start, j + 1);
-                group_start = j + 1;
-            }
-        }
-    }
-
-    merge_clusters_after_base(p, start, base, end, buffer);
-
-    for info in &mut buffer.info[start..end] {
-        info.syllable = syllable;
-    }
-
-    base
-}
-
-fn merge_clusters_after_base(
-    p: &Plan,
-    start: usize,
-    base: usize,
-    end: usize,
-    buffer: &mut Buffer,
-) {
-    if p.is_old_spec || end - start > 127 {
-        buffer.merge_clusters(base, end);
-        return;
-    }
-
-    for i in base..end {
-        if buffer.info[i].syllable == 255 {
-            continue;
-        }
-        let mut min = i;
-        let mut max = i;
-        let mut j = start + buffer.info[i].syllable as usize;
-        while j != i {
-            min = min.min(j);
-            max = max.max(j);
-            let next = start + buffer.info[j].syllable as usize;
-            buffer.info[j].syllable = 255;
-            j = next;
-        }
-        buffer.merge_clusters(base.max(min), max + 1);
-    }
-}
-
-fn setup_syllable_masks(p: &Plan, start: usize, base: usize, end: usize, buffer: &mut Buffer) {
-    for info in &mut buffer.info[start..end] {
-        if info.indic_position() != position::RA_TO_BECOME_REPH {
-            break;
-        }
-        info.mask |= p.masks[RPHF];
-    }
-
-    let mut pre_base = p.masks[HALF];
-    if !p.is_old_spec && p.config.blwf_mode == BlwfMode::PreAndPost {
-        pre_base |= p.masks[BLWF];
-    }
-    for info in &mut buffer.info[start..base] {
-        info.mask |= pre_base;
-    }
-
-    let post_base = p.masks[BLWF] | p.masks[ABVF] | p.masks[PSTF];
-    for i in base + 1..end {
-        buffer.info[i].mask |= post_base;
-    }
-
-    if p.is_old_spec && p.config.old_spec_eyelash_ra {
-        mark_old_spec_eyelash_ra(p, start, base, end, buffer);
-    }
-
-    mark_pre_base_reordering_ra(p, base, end, buffer);
-    apply_joiner_effects(p, start, end, buffer);
-}
-
-fn mark_old_spec_eyelash_ra(p: &Plan, start: usize, base: usize, _end: usize, buffer: &mut Buffer) {
-    for i in start..base.saturating_sub(1) {
-        if buffer.info[i].shaper_category == category::RA
-            && buffer.info[i + 1].shaper_category == category::H
-            && (i + 2 == base || buffer.info[i + 2].shaper_category != category::ZWJ)
-        {
-            buffer.info[i].mask |= p.masks[BLWF];
-            buffer.info[i + 1].mask |= p.masks[BLWF];
-        }
-    }
-}
-
-fn mark_pre_base_reordering_ra(p: &Plan, base: usize, end: usize, buffer: &mut Buffer) {
-    const PREF_LEN: usize = 2;
-    if p.masks[PREF] == 0 || base + PREF_LEN >= end {
-        return;
-    }
-
-    for i in base + 1..end - PREF_LEN + 1 {
-        let pair = [buffer.info[i].id as u16, buffer.info[i + 1].id as u16];
-        if p.would_substitute(b"pref", &pair) {
-            buffer.info[i].mask |= p.masks[PREF];
-            buffer.info[i + 1].mask |= p.masks[PREF];
-            break;
-        }
-    }
-}
-
-fn apply_joiner_effects(p: &Plan, start: usize, end: usize, buffer: &mut Buffer) {
-    for i in start + 1..end {
-        if !buffer.info[i].is_joiner() {
-            continue;
-        }
-        let non_joiner = buffer.info[i].shaper_category == category::ZWNJ;
-        let mut j = i;
-
-        loop {
-            j -= 1;
-            if non_joiner {
-                buffer.info[j].mask &= !p.masks[HALF];
-            }
-            if j <= start || buffer.info[j].is_consonant() {
-                break;
-            }
-        }
-    }
-}
-
-fn final_reordering(plan: &ShapePlan, face: &Face, buffer: &mut Buffer) -> bool {
-    if buffer.len == 0 {
-        return false;
-    }
-    let p = Plan::new(plan, face, buffer.script);
-
-    let mut start = 0;
-    while start < buffer.len {
-        let end = next_syllable(buffer, start);
-        final_reordering_syllable(&p, start, end, buffer);
-        start = end;
-    }
-
-    false
-}
-
-fn final_reordering_syllable(p: &Plan, start: usize, end: usize, buffer: &mut Buffer) {
-    recover_lost_halants(p, start, end, buffer);
-
-    let mut try_pref = p.masks[PREF] != 0;
-    let mut base = find_base_again(p, start, end, buffer, &mut try_pref);
-
-    reorder_pre_base_matra(p, start, &mut base, end, buffer);
-    reorder_reph(p, start, &mut base, end, buffer);
-    reorder_pre_base_reordering_consonant(p, start, base, end, buffer, try_pref);
-
-    if buffer.info[start].indic_position() == position::PRE_M {
-        let continues_word = start > 0 && {
-            let gc = unicode::GeneralCategory::from_stored(buffer.info[start - 1].general_category());
-            gc.is_letter()
-                || gc.is_mark()
-                || matches!(
-                    gc,
-                    unicode::GeneralCategory::Format
-                        | unicode::GeneralCategory::Unassigned
-                        | unicode::GeneralCategory::PrivateUse
-                        | unicode::GeneralCategory::Surrogate
-                )
+impl Positions {
+    // A slot for every glyph where the font has a virama to ask with and its allowance holds them.
+    fn for_font(face: &Face, asked: bool) -> Positions {
+        let count = face.glyph_count() as usize;
+        let drawn = if asked { face.draw_index_bytes(count) } else { None };
+        let slots = match drawn {
+            Some(_) => core::iter::repeat_with(AtomicU8::default).take(count).collect(),
+            None => Box::default(),
         };
-        if continues_word {
-            buffer.unsafe_to_break(start - 1, start + 1);
+        Positions { slots, _drawn: drawn }
+    }
+}
+
+struct Data {
+    rules: Rules,
+    // The font follows the spec's first version.
+    first_spec: bool,
+    // A second-version font's basic forms match with nothing around them; Malayalam's of either version read it.
+    bare: bool,
+    masks: Masks,
+    stages: Stages,
+    virama: Option<u32>,
+    positions: Positions,
+}
+
+impl Model for Indic {
+    fn kind(&self) -> Shaper {
+        Shaper::Indic
+    }
+
+    fn plan_features(&self, planner: &mut Planner<'_>, _: Option<Tag>) {
+        syllabic::declare(planner, PLAN);
+    }
+
+    // Ligatures belong to the presentation forms; the syllables are forgotten once those ran.
+    fn plan_late_features(&self, planner: &mut Planner<'_>) {
+        planner.off(Tag::new(b"liga"));
+        planner.end_stage(Some(syllable::clear));
+    }
+
+    fn plan_data(&self, features: &Features, face: &Face, script: Option<Script>, _: Option<Tag>)
+        -> Option<ModelData> {
+        let rules = rules_of(script);
+        // Only a GSUB script tag of the second version ('dev2' and its kin) asks for it.
+        let second_tag = features.script(Table::Gsub).tag.is_some_and(|t| t.to_bytes().ends_with(b"2"));
+        let first_spec = rules.first_spec && !second_tag;
+        let [rphf, pref, blwf, abvf, half, pstf, init] =
+            syllabic::bits(features, [b"rphf", b"pref", b"blwf", b"abvf", b"half", b"pstf", b"init"]);
+        let stage = |tag: &[u8; 4]| features.stage(Table::Gsub, Tag::new(tag));
+        let virama = Some(rules.virama).filter(|&v| v != 0).and_then(|v| face.glyph_of(v));
+        Some(Box::new(Data {
+            rules,
+            first_spec,
+            bare: !first_spec && script != Some(Script::MALAYALAM),
+            masks: Masks { rphf, pref, blwf, abvf, half, pstf, init },
+            stages: Stages {
+                rphf: stage(b"rphf"),
+                pref: stage(b"pref"),
+                blwf: stage(b"blwf"),
+                pstf: stage(b"pstf"),
+                vatu: stage(b"vatu"),
+            },
+            virama,
+            positions: Positions::for_font(face, virama.is_some()),
+        }))
+    }
+
+    fn mark_advances(&self) -> MarkAdvances {
+        MarkAdvances::Keep
+    }
+
+    fn takes_fallbacks(&self) -> bool {
+        false
+    }
+
+    fn normalization(&self) -> Normalization {
+        Normalization::Recomposed
+    }
+
+    // These stay whole, as fonts draw them: Devanagari RRA, Bengali RRA and RHA, Tamil AU.
+    fn decompose(&self, c: char) -> Option<(char, Option<char>)> {
+        match c {
+            '\u{0931}' | '\u{09DC}' | '\u{09DD}' | '\u{0B94}' => None,
+            _ => unicode::decompose(c),
+        }
+    }
+
+    // Nothing composes onto a mark; Bengali YA and nukta give YYA, which composition excludes.
+    fn compose(&self, a: char, b: char, _: bool) -> Option<char> {
+        match (a, b) {
+            _ if unicode::general_category(a).is_mark() => None,
+            ('\u{09AF}', '\u{09BC}') => Some('\u{09DF}'),
+            _ => unicode::compose(a, b),
+        }
+    }
+
+    fn prepare(&self, run: &mut Run, _: &Plan, _: &Face) {
+        syllabic::circle_vowel_lookalikes(run);
+    }
+
+    fn setup_masks(&self, run: &mut Run, _: &Plan, _: &Face) {
+        let len = run.len;
+        for glyph in &mut run.glyphs[..len] {
+            (glyph.script_class, glyph.script_slot) = indic_category::lookup(glyph.id);
+        }
+    }
+}
+
+fn find_syllables(run: &mut Run, _: &Plan, _: &Face) -> bool {
+    let class = |glyphs: &[Glyph], i: usize| Some(glyphs[i].script_class);
+    syllable::setup(run, &INDIC_TRANSITIONS, class, indic_accept, IndicSyllable::BrokenCluster.into());
+    false
+}
+
+// A symbol or a run of non-Indic characters isn't reordered.
+fn reorders(kind: u8) -> bool {
+    kind != IndicSyllable::SymbolCluster as u8 && kind != IndicSyllable::NonIndicCluster as u8
+}
+
+fn reorder_initially(run: &mut Run, plan: &Plan, face: &Face) -> bool {
+    let Some(font) = FontForms::of(plan, face) else { return false };
+    font.place_consonants(run);
+    let circled = syllabic::circle_broken_syllables(face, run, &CIRCLE);
+    syllabic::each_syllable(run, reorders, |s| font.initially(s));
+    circled
+}
+
+fn reorder_finally(run: &mut Run, plan: &Plan, face: &Face) -> bool {
+    if let Some(font) = FontForms::of(plan, face) {
+        syllabic::each_syllable(run, |_| true, |s| font.finally(s));
+    }
+    false
+}
+
+// The plan's data and what the font's GSUB forms of a glyph sequence, as a pause reads them.
+struct FontForms<'a> {
+    data: &'a Data,
+    probe: Probe<'a>,
+}
+
+impl<'a> FontForms<'a> {
+    fn of(plan: &'a Plan, face: &'a Face<'a>) -> Option<Self> {
+        Some(FontForms { data: plan.data::<Data>()?, probe: plan.probe(face) })
+    }
+
+    // `run` pays for each ask, and past its edits nothing forms.
+    fn forms(&self, run: &mut Run, stage: Option<u16>, glyphs: &[u32]) -> bool {
+        stage.is_some_and(|stage| self.probe.would_substitute(run, stage, glyphs, self.data.bare))
+    }
+
+    // The spec's "dynamic character properties": a consonant is below-base where blwf or vatu forms it with the
+    // virama, post-base where pstf or pref does, else a base.
+    fn ask_position(&self, run: &mut Run, consonant: u32, virama: u32) -> u8 {
+        // Either order: the first version writes the consonant first and the second the virama first, and fonts carry
+        // one's lookups under the other's tags.
+        let mut either =
+            |stage| self.forms(run, stage, &[virama, consonant]) || self.forms(run, stage, &[consonant, virama]);
+        let stages = &self.data.stages;
+        if either(stages.blwf) || either(stages.vatu) {
+            at::BELOW
+        } else if either(stages.pstf) || either(stages.pref) {
+            at::POST
         } else {
-            buffer.info[start].mask |= p.masks[INIT];
+            at::BASE
         }
     }
-}
 
-fn recover_lost_halants(p: &Plan, start: usize, end: usize, buffer: &mut Buffer) {
-    if p.config.virama == 0 {
-        return;
-    }
-    let Some(virama) = p.face.glyph_index(p.config.virama) else { return };
-
-    for info in &mut buffer.info[start..end] {
-        if info.id == virama as u32 && info.ligated() && info.multiplied() {
-            info.shaper_category = category::H;
-            info.clear_ligated_and_multiplied();
-        }
-    }
-}
-
-fn find_base_again(
-    p: &Plan,
-    start: usize,
-    end: usize,
-    buffer: &mut Buffer,
-    try_pref: &mut bool,
-) -> usize {
-    let mut base = start;
-
-    while base < end {
-        if buffer.info[base].indic_position() < position::BASE_C {
-            base += 1;
-            continue;
-        }
-
-        if *try_pref && base + 1 < end {
-            for i in base + 1..end {
-                if buffer.info[i].mask & p.masks[PREF] == 0 {
-                    continue;
+    // `ask_position`, kept from the first ask where the plan has room for it and the run could pay for all of it.
+    fn position(&self, run: &mut Run, consonant: u32, virama: u32) -> u8 {
+        let slot = self.data.positions.slots.get(consonant as usize);
+        match slot.map(|s| s.load(Ordering::Relaxed)) {
+            Some(kept) if kept != 0 => kept - 1,
+            _ => {
+                let asked = self.ask_position(run, consonant, virama);
+                if run.ops_left() >= 0 {
+                    slot.inspect(|s| s.store(asked + 1, Ordering::Relaxed));
                 }
-                if !(buffer.info[i].substituted() && buffer.info[i].ligated_and_didnt_multiply())
-                {
-                    base = i;
-                    while base < end && buffer.info[base].is_halant() {
-                        base += 1;
-                    }
-                    if base < end {
-                        buffer.info[base].set_indic_position(position::BASE_C);
-                    }
-                    *try_pref = false;
-                }
-                break;
+                asked
             }
         }
-
-        if p.config.skip_unformed_below_forms {
-            base = skip_unformed_below_forms(base, end, buffer);
-        }
-
-        if start < base && buffer.info[base].indic_position() > position::BASE_C {
-            base -= 1;
-        }
-        break;
     }
 
-    if base == end && start < base && buffer.info[base - 1].is_category(&[category::ZWJ]) {
-        base -= 1;
+    fn place_consonants(&self, run: &mut Run) {
+        let Some(virama) = self.data.virama else { return };
+        // Taken out while the asks, which read none of them, charge the run, so the loop keeps to the slice.
+        let (len, mut glyphs) = (run.len, core::mem::take(&mut run.glyphs));
+        for glyph in glyphs[..len].iter_mut().filter(|g| g.script_slot == at::BASE) {
+            glyph.script_slot = self.position(run, glyph.id, virama);
+        }
+        run.glyphs = glyphs;
     }
 
-    if base < end {
-        while start < base && buffer.info[base].is_category(&[category::N, category::H]) {
-            base -= 1;
+    // The spec's "reorder characters": find the base, give every glyph its place, sort, then mark which basic forms
+    // each part may take.
+    fn initially(&self, s: &mut Syllable) {
+        let rules = &self.data.rules;
+        if rules.ra_zwj_virama && s.len() >= 3 && s.is(0, &[cat::RA]) && s.is(1, &[cat::H]) && s.is(2, &[cat::ZWJ]) {
+            s.join(1..3);
+            s.glyphs().swap(1, 2);
         }
+        let (base, reph) = self.base_of(s);
+        for i in 0..base {
+            s.set_pos(i, s.pos(i).min(at::PRE_BASE));
+        }
+        if base < s.len() {
+            s.set_pos(base, at::BASE);
+        }
+        if reph {
+            s.set_pos(0, at::REPH);
+        }
+        if self.data.first_spec {
+            self.trail_virama(s, base);
+        }
+        place_marks(s, base);
+        let base = self.sort(s);
+        self.mask_forms(s, base);
     }
 
-    base
-}
-
-fn skip_unformed_below_forms(mut base: usize, end: usize, buffer: &mut Buffer) -> usize {
-    let mut i = base + 1;
-    while i < end {
-        while i < end && buffer.info[i].is_joiner() {
-            i += 1;
-        }
-        if i == end || !buffer.info[i].is_halant() {
-            break;
-        }
-        i += 1;
-
-        while i < end && buffer.info[i].is_joiner() {
-            i += 1;
-        }
-        if i < end
-            && buffer.info[i].is_consonant()
-            && buffer.info[i].indic_position() == position::BELOW_C
-        {
-            base = i;
-            buffer.info[base].set_indic_position(position::BASE_C);
-        }
-        i += 1;
-    }
-    base
-}
-
-fn reorder_pre_base_matra(
-    p: &Plan,
-    start: usize,
-    base: &mut usize,
-    end: usize,
-    buffer: &mut Buffer,
-) {
-    if start + 1 >= end || start >= *base {
-        return;
-    }
-
-    let mut new_pos = if *base == end { *base - 2 } else { *base - 1 };
-
-    if p.config.has_half_forms {
-        loop {
-            while new_pos > start
-                && !buffer.info[new_pos].is_category(&[category::M, category::MPST, category::H])
-            {
-                new_pos -= 1;
-            }
-
-            if buffer.info[new_pos].is_halant()
-                && buffer.info[new_pos].indic_position() != position::PRE_M
-            {
-                if new_pos + 1 < end
-                    && buffer.info[new_pos + 1].shaper_category == category::ZWJ
-                    && new_pos > start
-                {
-                    new_pos -= 1;
-                    continue;
+    // Where the reph's RA and virama end (with the joiners after them), if the syllable opens with a reph.
+    fn reph_end(&self, s: &mut Syllable) -> Option<usize> {
+        let n = s.len();
+        let past_joiners = |s: &Syllable, from: usize| (from..n).find(|&i| !s.is(i, &JOINERS)).unwrap_or(n);
+        match self.data.rules.reph {
+            Reph::Logical => (s.class(0) == cat::REPHA).then(|| past_joiners(s, 1)),
+            form => {
+                if self.data.masks.rphf == 0 || n < 3 {
+                    return None;
                 }
-            } else {
-                new_pos = start;
+                let third = match form {
+                    Reph::Explicit => s.class(2) == cat::ZWJ,
+                    _ => !s.is(2, &JOINERS),
+                };
+                if !third {
+                    return None;
+                }
+                let opening = [s[0].id, s[1].id, s[2].id];
+                let rphf = self.data.stages.rphf;
+                let formed = self.forms(s.run, rphf, &opening[..2])
+                    || (form == Reph::Explicit && self.forms(s.run, rphf, &opening));
+                formed.then(|| past_joiners(s, 2))
             }
-            break;
         }
     }
 
-    if start < new_pos && buffer.info[new_pos].indic_position() != position::PRE_M {
-        for i in (start + 1..=new_pos).rev() {
-            if buffer.info[i - 1].indic_position() != position::PRE_M {
+    // The spec's "find base consonant": back from the end past below-base forms, and post-base ones until a below-base
+    // is passed, stopped by a virama and ZWJ or the reph. A reph that ends by glyph 2 with no consonant after is none.
+    fn base_of(&self, s: &mut Syllable) -> (usize, bool) {
+        let n = s.len();
+        let reph_end = self.reph_end(s);
+        let floor = reph_end.unwrap_or(0).min(n - 1);
+        let mut base = if reph_end.is_some() { 0 } else { n };
+        let mut below_seen = false;
+        for i in (floor..n).rev() {
+            if !s.is(i, &CONSONANTS) {
+                if i > 0 && s.class(i) == cat::ZWJ && s.class(i - 1) == cat::H {
+                    break;
+                }
                 continue;
             }
-            let old_pos = i - 1;
-            if old_pos < *base && *base <= new_pos {
-                *base -= 1;
+            base = i;
+            match s.pos(i) {
+                at::BELOW => below_seen = true,
+                at::POST if !below_seen => {}
+                _ => break,
             }
-
-            let matra = buffer.info[old_pos];
-            for k in 0..new_pos - old_pos {
-                buffer.info[k + old_pos] = buffer.info[k + old_pos + 1];
-            }
-            buffer.info[new_pos] = matra;
-
-            buffer.merge_clusters(new_pos, end.min(*base + 1));
-            new_pos -= 1;
         }
-    } else {
-        for i in start..*base {
-            if buffer.info[i].indic_position() == position::PRE_M {
-                buffer.merge_clusters(i, end.min(*base + 1));
+        let bare_reph = base == 0 && reph_end.is_some_and(|end| end <= 2);
+        (base, reph_end.is_some() && !bare_reph)
+    }
+
+    // A first-version font wants the first virama after the base moved past the consonants after it (in Kannada, not
+    // past another virama).
+    fn trail_virama(&self, s: &mut Syllable, base: usize) {
+        let n = s.len();
+        let Some(virama) = (base + 1..n).find(|&i| s.class(i) == cat::H) else { return };
+        let one_virama = self.data.rules.one_virama;
+        let stop = (virama + 1..n).rev().find(|&i| s.is(i, &CONSONANTS) || (one_virama && s.class(i) == cat::H));
+        if let Some(last) = stop.filter(|&i| s.class(i) != cat::H) {
+            s.place(virama, last);
+        }
+    }
+
+    // Sorts by position, the syllable byte lent to note each glyph's start: glyphs on one cycle of the permutation
+    // crossed, so from the base on their clusters join (all of them, in the first version). Gives the base's index.
+    fn sort(&self, s: &mut Syllable) -> usize {
+        let n = s.len();
+        debug_assert!(n <= 64, "a syllable pass takes at most 64 glyphs");
+        let serial = s[0].syllable;
+        s.glyphs().iter_mut().zip(0u8..).for_each(|(g, i)| g.syllable = i);
+        s.glyphs().sort_by_key(|g| g.script_slot);
+
+        let base = (0..n).find(|&i| s.pos(i) == at::BASE).unwrap_or(n);
+        let first = (0..base).find(|&i| s.pos(i) == at::PRE_MATRA);
+        let last = (0..base).rfind(|&i| s.pos(i) == at::PRE_MATRA);
+        if let (Some(first), Some(last)) = (first, last) {
+            s.flip_pre_base(first..last + 1, &MATRAS);
+        }
+
+        if self.data.first_spec {
+            s.join(base..n);
+        } else {
+            let mut done = 0u64;
+            for i in base..n {
+                if done & 1 << i != 0 {
+                    continue;
+                }
+                let (mut low, mut high, mut j) = (i, i, usize::from(s[i].syllable));
+                while j != i {
+                    (low, high) = (low.min(j), high.max(j));
+                    done |= 1 << j;
+                    j = usize::from(s[j].syllable);
+                }
+                s.join(base.max(low)..high + 1);
+            }
+        }
+        s.glyphs().iter_mut().for_each(|g| g.syllable = serial);
+        base
+    }
+
+    // The basic forms each part may take: rphf the reph; half, and blwf in the second version, before the base; blwf,
+    // abvf, pstf after it; pref the first pair that forms it. A ZWNJ bars half forms back to the consonant before it.
+    fn mask_forms(&self, s: &mut Syllable, base: usize) {
+        let (m, rules) = (&self.data.masks, &self.data.rules);
+        let n = s.len();
+        let reph = (0..n).take_while(|&i| s.pos(i) == at::REPH).count();
+        s.glyphs()[..reph].iter_mut().for_each(|g| g.mask |= m.rphf);
+
+        let below = if !self.data.first_spec && rules.below_before_base { m.blwf } else { 0 };
+        s.glyphs()[..base].iter_mut().for_each(|g| g.mask |= m.half | below);
+        if base + 1 < n {
+            s.glyphs()[base + 1..].iter_mut().for_each(|g| g.mask |= m.blwf | m.abvf | m.pstf);
+        }
+
+        if self.data.first_spec && rules.eyelash_ra {
+            for i in 0..base.saturating_sub(1) {
+                let eyelash = i + 2 < base && s.class(i + 2) == cat::ZWJ;
+                if s.class(i) == cat::RA && s.class(i + 1) == cat::H && !eyelash {
+                    s[i].mask |= m.blwf;
+                    s[i + 1].mask |= m.blwf;
+                }
+            }
+        }
+
+        if m.pref != 0 && base + 2 < n {
+            let formed = (base + 1..n - 1).find(|&i| {
+                let pair = [s[i].id, s[i + 1].id];
+                self.forms(s.run, self.data.stages.pref, &pair)
+            });
+            if let Some(i) = formed {
+                s[i].mask |= m.pref;
+                s[i + 1].mask |= m.pref;
+            }
+        }
+
+        for i in 1..n {
+            if !s.is(i, &JOINERS) {
+                continue;
+            }
+            let zwnj = s.class(i) == cat::ZWNJ;
+            for j in (0..i).rev() {
+                if zwnj {
+                    s[j].mask &= !m.half;
+                }
+                if j == 0 || s.is(j, &CONSONANTS) {
+                    break;
+                }
+            }
+        }
+    }
+
+    // The spec's "final reordering", on what the basic forms made of the syllable.
+    fn finally(&self, s: &mut Syllable) {
+        if let Some(virama) = self.data.virama {
+            // A virama a ligature split back out reads as a virama again.
+            let split = class::LIGATED | class::MULTIPLIED;
+            for g in s.glyphs().iter_mut().filter(|g| g.id == virama && g.class & split == split) {
+                g.script_class = cat::H;
+                g.class &= !split;
+            }
+        }
+        let mut pref_left = self.data.masks.pref != 0;
+        let mut base = self.final_base(s, &mut pref_left);
+        self.move_pre_base_matras(s, &mut base);
+        self.move_reph(s, &mut base);
+        if pref_left {
+            self.move_pref(s, base);
+        }
+        if s.pos(0) == at::PRE_MATRA {
+            self.init_or_join(s);
+        }
+    }
+
+    // The base again, now that forms are made: the first glyph placed at the base or after it, moved on to a glyph
+    // pref didn't form (a pre-base RA left whole), and back off a nukta or virama.
+    fn final_base(&self, s: &mut Syllable, pref_left: &mut bool) -> usize {
+        let n = s.len();
+        let base = 'found: {
+            let Some(mut base) = (0..n).find(|&i| s.pos(i) >= at::BASE) else { break 'found n };
+            if *pref_left && base + 1 < n {
+                let pref = self.data.masks.pref;
+                if let Some(i) = (base + 1..n).find(|&i| s[i].mask & pref != 0) {
+                    let formed = s[i].glyph_is(class::SUBSTITUTED) && s[i].only_ligated();
+                    if !formed {
+                        base = (i..n).find(|&k| !s.is(k, &[cat::H])).unwrap_or(n);
+                        if base < n {
+                            s.set_pos(base, at::BASE);
+                        }
+                        *pref_left = false;
+                    }
+                }
+                if base == n {
+                    break 'found n;
+                }
+            }
+            if self.data.rules.unformed_below_is_base {
+                base = self.unformed_below_base(s, base);
+            }
+            if base > 0 && s.pos(base) > at::BASE {
+                base -= 1;
+            }
+            base
+        };
+        // With no base, a ZWJ ending the syllable stands as one; a base never ends on its nukta or virama.
+        if base == n {
+            return n - usize::from(s.is(n - 1, &[cat::ZWJ]));
+        }
+        base - (1..=base).rev().take_while(|&k| s.is(k, &[cat::N, cat::H])).count()
+    }
+
+    // Malayalam: a virama then a below-base consonant after the base, joiners between them passed over; each such
+    // consonant becomes the base in turn.
+    fn unformed_below_base(&self, s: &mut Syllable, mut base: usize) -> usize {
+        let n = s.len();
+        let past_joiners = |s: &Syllable, from: usize| (from..n).find(|&i| !s.is(i, &JOINERS)).unwrap_or(n);
+        let mut i = base + 1;
+        while i < n {
+            i = past_joiners(s, i);
+            if i == n || !s.is(i, &[cat::H]) {
                 break;
             }
+            i = past_joiners(s, i + 1);
+            if i < n && s.is(i, &CONSONANTS) && s.pos(i) == at::BELOW {
+                base = i;
+                s.set_pos(base, at::BASE);
+            }
+            i += 1;
+        }
+        base
+    }
+
+    // A pre-base matra moves to just after the last virama left standing, passing one a ZWJ follows (a half form), or
+    // before the base in a script without half forms; with neither it stays. Its cluster joins the base's.
+    fn move_pre_base_matras(&self, s: &mut Syllable, base: &mut usize) {
+        let n = s.len();
+        if n < 2 || *base == 0 {
+            return;
+        }
+        // Just before the base, or the last glyph where there's none.
+        let mut to = *base - 1 - usize::from(*base == n);
+        if self.data.rules.half_forms {
+            loop {
+                while to > 0 && !s.is(to, &MATRAS_OR_VIRAMA) {
+                    to -= 1;
+                }
+                if !(s.is(to, &[cat::H]) && s.pos(to) != at::PRE_MATRA) {
+                    to = 0;
+                    break;
+                }
+                let zwj_after = to + 1 < n && s.class(to + 1) == cat::ZWJ;
+                if to == 0 || !zwj_after {
+                    break;
+                }
+                to -= 1;
+            }
+        }
+        let through_base = |base: usize| n.min(base + 1);
+        if to == 0 || s.pos(to) == at::PRE_MATRA {
+            if let Some(first) = (0..*base).find(|&i| s.pos(i) == at::PRE_MATRA) {
+                s.join(first..through_base(*base));
+            }
+            return;
+        }
+        // Back from `to`, each matra found moves there, and the place before it is the next one's.
+        let mut i = to;
+        while i > 0 {
+            i -= 1;
+            if s.pos(i) != at::PRE_MATRA {
+                continue;
+            }
+            if i < *base && *base <= to {
+                *base -= 1;
+            }
+            s.place(i, to);
+            s.join(to..through_base(*base));
+            to -= 1;
+        }
+    }
+
+    // A reph the font formed (a ligated RA, or a dot reph left whole) moves to where its script's spec puts it.
+    fn move_reph(&self, s: &mut Syllable, base: &mut usize) {
+        if s.len() < 2 || s.pos(0) != at::REPH {
+            return;
+        }
+        if (s.class(0) == cat::REPHA) == s[0].only_ligated() {
+            return;
+        }
+        let to = self.reph_target(s, *base);
+        s.carry(0, to);
+        if 0 < *base && *base <= to {
+            *base -= 1;
+        }
+    }
+
+    // The spec's reph steps: after the first virama before the base and its joiner; else past the main consonant or the
+    // below-base forms, per script; else the end before final signs, less one per matra past the base if it's a virama.
+    fn reph_target(&self, s: &Syllable, base: usize) -> usize {
+        let n = s.len();
+        let virama = (1..base).find(|&i| s.is(i, &[cat::H]));
+        if let Some(v) = virama {
+            return v + usize::from(v + 1 < base && s.is(v + 1, &JOINERS));
+        }
+        let through = |stays: &dyn Fn(u8) -> bool| {
+            let count = (base + 1..n).take_while(|&i| stays(s.pos(i))).count();
+            Some(base + count).filter(|&k| k < n)
+        };
+        let settled = match self.data.rules.reph_goes {
+            RephGoes::AfterMain => through(&|p| p <= at::AFTER_BASE),
+            RephGoes::AfterBelow => through(&|p| !matches!(p, at::POST | at::AFTER_POST | at::SIGNS)),
+            _ => None,
+        };
+        if let Some(k) = settled {
+            return k;
+        }
+        let mut end = (1..n).rev().find(|&k| s.pos(k) != at::SIGNS).unwrap_or(0);
+        if s.is(end, &[cat::H]) {
+            let mut i = base + 1;
+            while i < end {
+                end -= usize::from(MATRAS.contains(&s.class(i)));
+                i += 1;
+            }
+        }
+        end
+    }
+
+    // A glyph pref formed moves before the base: where a pre-base matra would go, else just before the base.
+    fn move_pref(&self, s: &mut Syllable, base: usize) {
+        let n = s.len();
+        if base + 1 >= n {
+            return;
+        }
+        let pref = self.data.masks.pref;
+        let Some(i) = (base + 1..n).find(|&i| s[i].mask & pref != 0) else { return };
+        if !s[i].only_ligated() {
+            return;
+        }
+        let mut to = base;
+        if self.data.rules.half_forms {
+            while to > 0 && !s.is(to - 1, &MATRAS_OR_VIRAMA) {
+                to -= 1;
+            }
+        }
+        if to > 0 && s.is(to - 1, &[cat::H]) && to < n && s.is(to, &JOINERS) {
+            to += 1;
+        }
+        s.carry(i, to);
+    }
+
+    // A syllable opening with a pre-base matra takes init where it starts a word; inside one, it can't be broken
+    // from what precedes it.
+    fn init_or_join(&self, s: &mut Syllable) {
+        use GeneralCategory as G;
+        let Some(previous) = s.start.checked_sub(1) else {
+            s[0].mask |= self.data.masks.init;
+            return;
+        };
+        let gc = s.run.glyphs[previous].category;
+        match matches!(gc, G::Format | G::Unassigned | G::PrivateUse | G::Surrogate) || gc.is_letter() || gc.is_mark() {
+            true => s.run.unsafe_to_break(previous..s.start + 1),
+            false => s[0].mask |= self.data.masks.init,
         }
     }
 }
 
-fn reorder_reph(p: &Plan, start: usize, base: &mut usize, end: usize, buffer: &mut Buffer) {
-    if start + 1 >= end || buffer.info[start].indic_position() != position::RA_TO_BECOME_REPH {
-        return;
-    }
-    let is_repha_char = buffer.info[start].shaper_category == category::REPHA;
-    if is_repha_char == buffer.info[start].ligated_and_didnt_multiply() {
-        return;
+// The spec's sign placement: a nukta, joiner or virama goes with what it follows (past pre-base matras, for a virama),
+// a post-base matra takes a modifier before it along, and signs between consonants after the base go with the later.
+fn place_marks(s: &mut Syllable, base: usize) {
+    let n = s.len();
+    let mut last = at::FIRST;
+    for i in 0..n {
+        let class = s.class(i);
+        if matches!(class, cat::ZWJ | cat::ZWNJ | cat::N | cat::MEDIAL | cat::H) {
+            let behind_matras = (class == cat::H && last == at::PRE_MATRA)
+                .then(|| (0..i).rfind(|&k| s.pos(k) != at::PRE_MATRA))
+                .flatten();
+            s.set_pos(i, behind_matras.map_or(last, |k| s.pos(k)));
+        } else if s.pos(i) != at::SIGNS {
+            if class == cat::M_POST && i > 0 && s.class(i - 1) == cat::SM {
+                s.set_pos(i - 1, s.pos(i));
+            }
+            last = s.pos(i);
+        }
     }
 
-    let new_reph_pos = find_reph_position(p, start, *base, end, buffer);
-
-    buffer.merge_clusters(start, new_reph_pos + 1);
-    let reph = buffer.info[start];
-    for i in 0..new_reph_pos - start {
-        buffer.info[i + start] = buffer.info[i + start + 1];
-    }
-    buffer.info[new_reph_pos] = reph;
-
-    if start < *base && *base <= new_reph_pos {
-        *base -= 1;
+    let mut owner = base;
+    for i in base + 1..n {
+        if s.is(i, &CONSONANTS) {
+            let place = s.pos(i);
+            for j in owner + 1..i {
+                if s.pos(j) < at::SIGNS {
+                    s.set_pos(j, place);
+                }
+            }
+            owner = i;
+        } else if MATRAS.contains(&s.class(i)) {
+            owner = i;
+        }
     }
 }
 
-fn find_reph_position(p: &Plan, start: usize, base: usize, end: usize, buffer: &Buffer) -> usize {
-    let after_first_halant = || {
-        let mut at = start + 1;
-        while at < base && !buffer.info[at].is_halant() {
-            at += 1;
-        }
-        if at < base && buffer.info[at].is_halant() {
-            if at + 1 < base && buffer.info[at + 1].is_joiner() {
-                at += 1;
-            }
-            return Some(at);
-        }
-        None
-    };
-
-    if p.config.reph_pos != RephPosition::AfterPost {
-        if let Some(at) = after_first_halant() {
-            return at;
-        }
-
-        if p.config.reph_pos == RephPosition::AfterMain {
-            let mut at = base;
-            while at + 1 < end && buffer.info[at + 1].indic_position() <= position::AFTER_MAIN {
-                at += 1;
-            }
-            if at < end {
-                return at;
-            }
-        }
-
-        if p.config.reph_pos == RephPosition::AfterSub {
-            let mut at = base;
-            while at + 1 < end
-                && !matches!(
-                    buffer.info[at + 1].indic_position(),
-                    position::POST_C | position::AFTER_POST | position::SMVD
-                )
-            {
-                at += 1;
-            }
-            if at < end {
-                return at;
-            }
-        }
-    }
-
-    if let Some(at) = after_first_halant() {
-        return at;
-    }
-
-    let mut at = end - 1;
-    while at > start && buffer.info[at].indic_position() == position::SMVD {
-        at -= 1;
-    }
-
-    if buffer.info[at].is_halant() {
-        let matras = buffer.info[base + 1..at].iter().filter(|i| i.is_matra()).count();
-        at -= matras;
-    }
-    at
-}
-
-fn reorder_pre_base_reordering_consonant(
-    p: &Plan,
-    start: usize,
-    base: usize,
-    end: usize,
-    buffer: &mut Buffer,
-    try_pref: bool,
-) {
-    if !try_pref || base + 1 >= end {
-        return;
-    }
-
-    for i in base + 1..end {
-        if buffer.info[i].mask & p.masks[PREF] == 0 {
-            continue;
-        }
-        if !buffer.info[i].ligated_and_didnt_multiply() {
-            break;
-        }
-
-        let mut new_pos = base;
-        if p.config.has_half_forms {
-            while new_pos > start
-                && !buffer.info[new_pos - 1]
-                    .is_category(&[category::M, category::MPST, category::H])
-            {
-                new_pos -= 1;
-            }
-        }
-
-        if new_pos > start
-            && buffer.info[new_pos - 1].is_halant()
-            && new_pos < end
-            && buffer.info[new_pos].is_joiner()
-        {
-            new_pos += 1;
-        }
-
-        let old_pos = i;
-        buffer.merge_clusters(new_pos, old_pos + 1);
-        let consonant = buffer.info[old_pos];
-        for k in (0..old_pos - new_pos).rev() {
-            buffer.info[k + new_pos + 1] = buffer.info[k + new_pos];
-        }
-        buffer.info[new_pos] = consonant;
-        break;
-    }
-}
-
-fn clear_syllables(_: &ShapePlan, _: &Face, buffer: &mut Buffer) -> bool {
-    let len = buffer.len;
-    for info in &mut buffer.info[..len] {
-        info.syllable = 0;
-    }
-    false
-}
+#[cfg(test)]
+#[path = "../../../tests/unit/daeshaper/script/indic.rs"]
+mod tests;

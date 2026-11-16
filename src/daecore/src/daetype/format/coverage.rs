@@ -1,78 +1,56 @@
-use super::super::decoder::{read_u16_be, search_records, window};
+use core::cmp::Ordering;
+use super::super::decoder::{midpoint_search, read_u16_be, read_u24_be};
 
-const LINEAR_MAX: usize = 64;
-
-pub fn coverage_index(data: &[u8], glyph: u16) -> Option<u16> {
-    match read_u16_be(data, 0)? {
+/// A glyph's index in the Coverage table at the start of `data`; None for one it doesn't cover. Formats 3 and 4 are
+/// 1 and 2 with 24-bit glyphs, and a table cut short answers from the records that fit.
+// By `midpoint_search`, which picks the record where glyphs repeat or misorder. A range's index is a 32-bit sum
+// and can pass 65,535.
+pub fn coverage_index(data: &[u8], glyph: u32) -> Option<u32> {
+    let format = read_u16_be(data, 0)?;
+    let count = usize::from(read_u16_be(data, 2)?);
+    let records = data.get(4..)?;
+    match format {
         1 => {
-            let count = read_u16_be(data, 2)? as usize;
-            if count <= LINEAR_MAX {
-                let avail = data.get(4..).map_or(&[][..], |r| &r[..(count * 2).min(r.len())]);
-                let (recs, _) = avail.as_chunks::<2>();
-                for (i, r) in recs.iter().enumerate() {
-                    let g = u16::from_be_bytes(*r);
-                    if g == glyph {
-                        return u16::try_from(i).ok();
-                    }
-                    if g > glyph {
-                        return None;
-                    }
-                }
-                return None;
-            }
-            let hit = match data.get(4..).and_then(|r| r.get(..count * 2)) {
-                Some(whole) => {
-                    let (recs, _) = whole.as_chunks::<2>();
-                    search_records(count, glyph as u32, |i| {
-                        recs.get(i).map(|r| u32::from(u16::from_be_bytes(*r)))
-                    })?
-                }
-                None => search_records(count, glyph as u32, |i| {
-                    read_u16_be(data, 4 + i * 2).map(u32::from)
-                })?,
-            }
-            .ok()?;
-            u16::try_from(hit).ok()
+            let (glyphs, _) = records[..records.len().min(count * 2)].as_chunks::<2>();
+            let i = midpoint_search(glyphs.len(), |i| Some(glyph.cmp(&u32::from(u16::from_be_bytes(glyphs[i])))))?;
+            u32::try_from(i).ok()
         }
         2 => {
-            let count = read_u16_be(data, 2)? as usize;
-            if count <= LINEAR_MAX {
-                let avail = data.get(4..).map_or(&[][..], |r| &r[..(count * 6).min(r.len())]);
-                let (recs, _) = avail.as_chunks::<6>();
-                for r in recs {
-                    let start = u16::from_be_bytes([r[0], r[1]]);
-                    if glyph < start {
-                        return None;
-                    }
-                    if glyph <= u16::from_be_bytes([r[2], r[3]]) {
-                        return u16::from_be_bytes([r[4], r[5]]).checked_add(glyph - start);
-                    }
-                }
-                return None;
-            }
-            let records = data.get(4..).and_then(|r| r.get(..count * 6));
-            let cand = match match records {
-                Some(whole) => {
-                    let (recs, _) = whole.as_chunks::<6>();
-                    search_records(count, glyph as u32, |i| {
-                        recs.get(i).map(|r| u32::from(u16::from_be_bytes([r[0], r[1]])))
-                    })?
-                }
-                None => search_records(count, glyph as u32, |i| {
-                    read_u16_be(data, 4 + i * 6).map(u32::from)
-                })?,
-            } {
-                Ok(i) => i,
-                Err(0) => return None,
-                Err(i) => i - 1,
+            let (ranges, _) = records[..records.len().min(count * 6)].as_chunks::<6>();
+            let field = |r: &[u8; 6], at: usize| u32::from(u16::from_be_bytes([r[at], r[at + 1]]));
+            let place = |r: &[u8; 6]| match glyph {
+                g if g < field(r, 0) => Ordering::Less,
+                g if g <= field(r, 2) => Ordering::Equal,
+                _ => Ordering::Greater,
             };
-            let rec = 4 + cand * 6;
-            let h = window::<4>(data, rec)?;
-            let start = u16::from_be_bytes([h[0], h[1]]);
-            let end = u16::from_be_bytes([h[2], h[3]]);
-            if glyph < start || glyph > end { return None; }
-            read_u16_be(data, rec + 4)?.checked_add(glyph - start)
+            let range = &ranges[midpoint_search(ranges.len(), |i| Some(place(&ranges[i])))?];
+            Some(field(range, 4) + (glyph - field(range, 0)))
         }
+        3 | 4 => medium_index(data, format == 4, glyph),
         _ => None,
     }
 }
+
+// Out of line, so the 16-bit formats' search reads as before.
+#[inline(never)]
+fn medium_index(data: &[u8], ranges: bool, glyph: u32) -> Option<u32> {
+    let size = if ranges { 9 } else { 3 };
+    let records = data.get(5..)?;
+    let held = (records.len() / size).min(read_u24_be(data, 2)? as usize);
+    let field = |i: usize, at: usize| read_u24_be(records, i * size + at).unwrap_or(0);
+    if !ranges {
+        let i = midpoint_search(held, |i| Some(glyph.cmp(&field(i, 0))))?;
+        return u32::try_from(i).ok();
+    }
+    let place = |i: usize| match glyph {
+        g if g < field(i, 0) => Ordering::Less,
+        g if g <= field(i, 3) => Ordering::Equal,
+        _ => Ordering::Greater,
+    };
+    let i = midpoint_search(held, |i| Some(place(i)))?;
+    Some(field(i, 6) + (glyph - field(i, 0)))
+}
+
+#[cfg(test)]
+#[path = "../../../tests/unit/daetype/format/coverage.rs"]
+mod tests;

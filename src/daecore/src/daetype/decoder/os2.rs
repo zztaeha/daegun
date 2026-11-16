@@ -1,7 +1,13 @@
-use alloc::string::String;
-use alloc::collections::BTreeMap;
 use super::io::{read_u16_be, read_i16_be};
-use crate::daecore::daetype::TableBytes;
+use crate::daecore::daetype::Tables;
+
+// fsSelection's bits. USE_TYPO_METRICS and OBLIQUE are read in any version: the spec reserves both before
+// version 4, but fonts set them there.
+pub const FS_ITALIC: u16 = 0x0001;
+pub const FS_BOLD: u16 = 0x0020;
+pub const FS_REGULAR: u16 = 0x0040;
+pub const FS_USE_TYPO_METRICS: u16 = 0x0080;
+pub const FS_OBLIQUE: u16 = 0x0200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Os2Metrics {
@@ -27,6 +33,9 @@ pub struct Os2WinMetrics {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Os2Fields {
     pub version: u16,
+    pub us_weight_class: Option<u16>,
+    pub us_width_class: Option<u16>,
+    pub fs_type: Option<u16>,
     pub metrics: Option<Os2Metrics>,
     pub s_family_class: Option<u16>,
     pub fs_selection: Option<u16>,
@@ -37,9 +46,8 @@ pub struct Os2Fields {
 }
 
 impl Os2Fields {
-    // Bit 7 is reserved before version 4, and the spec says to ignore it there.
     pub fn use_typo_metrics(&self) -> bool {
-        self.version >= 4 && self.fs_selection.is_some_and(|v| v & 0x0080 != 0)
+        self.fs_selection.is_some_and(|v| v & FS_USE_TYPO_METRICS != 0)
     }
 }
 
@@ -59,7 +67,7 @@ fn parse_metrics(os2: &[u8]) -> Option<Os2Metrics> {
     })
 }
 
-pub fn parse_os2(table_map: &BTreeMap<String, TableBytes>) -> Option<Os2Fields> {
+pub fn parse_os2(table_map: &Tables) -> Option<Os2Fields> {
     let os2 = table_map.get("OS/2")?;
     let version = read_u16_be(os2, 0)?;
 
@@ -91,6 +99,9 @@ pub fn parse_os2(table_map: &BTreeMap<String, TableBytes>) -> Option<Os2Fields> 
 
     Some(Os2Fields {
         version,
+        us_weight_class: read_u16_be(os2, 4),
+        us_width_class: read_u16_be(os2, 6),
+        fs_type: read_u16_be(os2, 8),
         metrics,
         s_family_class,
         fs_selection,

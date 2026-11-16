@@ -1,0 +1,14 @@
+# Lint the public API as new code, so a lint asking for a breaking change is met or expected with a reason.
+avoid-breaking-exported-api = false
+
+# A thread-local read through these panics once the thread's storage is torn down, as a destructor's call may find it:
+# `try_with` answers there instead.
+disallowed-methods = [
+    { path = "std::thread::LocalKey::with", reason = "panics after the thread's teardown; take `try_with`" },
+    { path = "std::thread::LocalKey::with_borrow", reason = "panics after the thread's teardown; take `try_with`" },
+    { path = "std::thread::LocalKey::with_borrow_mut", reason = "panics after the thread's teardown; take `try_with`" },
+    { path = "std::thread::LocalKey::set", reason = "panics after the thread's teardown; take `try_with`" },
+    { path = "std::thread::LocalKey::get", reason = "panics after the thread's teardown; take `try_with`" },
+    { path = "std::thread::LocalKey::take", reason = "panics after the thread's teardown; take `try_with`" },
+    { path = "std::thread::LocalKey::replace", reason = "panics after the thread's teardown; take `try_with`" },
+]

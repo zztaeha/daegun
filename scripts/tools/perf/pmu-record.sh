@@ -1,27 +1,31 @@
 #!/bin/sh
 set -eu
-[ -n "${DEVELOPER_DIR:-}" ] || [ ! -d /Applications/Xcode-beta.app ] \
-    || export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
-xcrun xctrace version >/dev/null 2>&1 || { echo "xctrace not found: install Xcode, or set DEVELOPER_DIR" >&2; exit 1; }
+. "$(dirname "$0")/xctrace.sh"
 cd "$(dirname "$0")/../../.."
 
 FILTER="$1"
+# Recordings stay for attribution, and go once a day old.
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'attr.*' -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
 OUT="${2:-${TMPDIR:-/tmp}/attr.$$}"; mkdir -p "$OUT"
 MIN_ROWS="${MIN_ROWS:-1200}"
 ATTEMPTS="${ATTEMPTS:-8}"
 
-trap "find \"${TMPDIR:-/tmp}\" -maxdepth 1 -name 'instruments*.ktrace' -mmin +60 -exec rm -rf {} + 2>/dev/null || true" EXIT
+trap 'rm -rf "$OUT/t.trace"; xctrace_clean; rm -f "$XCTRACE_SINCE"' EXIT
 trap 'exit 130' INT TERM
 
 PROFILE="${PROFILE:-pmu}"
-BENCH_TARGET="${BENCH_TARGET:-shaper}"
-# Where the target's benches live, from its [[test]] entry in Cargo.toml.
-BENCH_PATH=$(python3 -c 'import sys, tomllib
+# `lib`, the core's suites in the library's own tests, or a [[test]] target such as `api`.
+BENCH_TARGET="${BENCH_TARGET:-lib}"
+# Where the target's benches live: the core's suites, or the [[test]] entry's folder in Cargo.toml.
+case $BENCH_TARGET in
+    lib) TARGET="--lib" ARTIFACT=daegun BENCH_PATH=src/daecore/tests ;;
+    *) TARGET="--test=$BENCH_TARGET" ARTIFACT=$BENCH_TARGET BENCH_PATH=$(python3 -c 'import sys, tomllib
 tests = tomllib.load(open("Cargo.toml", "rb")).get("test", [])
-print(next((t["path"].rsplit("/", 1)[0] for t in tests if t["name"] == sys.argv[1]), ""))' "$BENCH_TARGET")
+print(next((t["path"].rsplit("/", 1)[0] for t in tests if t["name"] == sys.argv[1]), ""))' "$BENCH_TARGET") ;;
+esac
 [ -n "$BENCH_PATH" ] || { echo "Cargo.toml has no test target named $BENCH_TARGET" >&2; exit 1; }
-BIN=$(cargo test --test "$BENCH_TARGET" --profile "$PROFILE" --no-run --message-format=json 2>/dev/null \
-      | python3 scripts/tools/perf/pick-test-binary.py "$BENCH_TARGET")
+BIN=$(cargo test "$TARGET" --profile "$PROFILE" --no-run --message-format=json 2>/dev/null \
+      | python3 scripts/tools/perf/pick-test-binary.py "$ARTIFACT")
 [ -n "$BIN" ] || { echo "no test binary: did the build fail?" >&2; exit 1; }
 
 if [ "$("$BIN" --ignored --list "$FILTER" 2>/dev/null | grep -c ': test$')" -eq 0 ]; then
@@ -46,6 +50,7 @@ while [ "$i" -lt "$ATTEMPTS" ]; do
             --xpath "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"$t\"]" \
             2>/dev/null > "$OUT/$t.xml" || true
     done
+    xctrace_clean
     # Through cat, so a missing file counts 0 too: grep -c prints its 0 and fails, and `|| echo 0` would
     # add a second line that no numeric test can read.
     ROWS=$(cat "$OUT/kdebug-counters-with-time-sample.xml" 2>/dev/null | grep -c '<row>' || true)

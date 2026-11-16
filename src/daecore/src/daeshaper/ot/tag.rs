@@ -1,168 +1,185 @@
+use alloc::string::String;
+
+use crate::daecore::daeshaper::generated::language_tags::{ANY_SPAN, LANGUAGE_TAGS, TAG_RULES};
 use crate::daecore::daeshaper::unicode::Script;
-use crate::daecore::daeshaper::generated::unicode_tables as t;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub struct Tag(pub(crate) u32);
+pub use crate::daecore::daekit::base::tag::Tag;
 
-impl Tag {
-    pub(crate) const fn from_bytes(b: &[u8; 4]) -> Tag {
-        Tag(((b[0] as u32) << 24) | ((b[1] as u32) << 16) | ((b[2] as u32) << 8) | b[3] as u32)
+// From the OpenType script tag registry: the scripts whose tag isn't their ISO 15924 code lowercased.
+const OWN_TAGS: [(&str, &[u8; 4]); 5] =
+    [("Hira", b"kana"), ("Laoo", b"lao "), ("Nkoo", b"nko "), ("Vaii", b"vai "), ("Yiii", b"yi  ")];
+
+// The scripts the registry gives a second tag for their second shaping spec, by the stem its digit follows. All but
+// Myanmar answer to a third too, under which a font asks for the Universal Shaping Engine's model (`script::select`).
+const INDIC_STEMS: [(&str, &[u8; 3]); 10] = [
+    ("Beng", b"bng"), ("Deva", b"dev"), ("Gujr", b"gjr"), ("Guru", b"gur"), ("Knda", b"knd"),
+    ("Mlym", b"mlm"), ("Mymr", b"mym"), ("Orya", b"ory"), ("Taml", b"tml"), ("Telu", b"tel"),
+];
+
+// A script's OpenType tags, newest first; DFLT for one that takes its script from the text around it.
+pub fn script_tags(script: Script) -> Tags {
+    let mut tags = Tags::default();
+    let Some(iso) = script.iso15924().filter(|_| !script.is_context_dependent()) else {
+        tags.push(Tag::DEFAULT_SCRIPT);
+        return tags;
+    };
+    if let Some(&(_, &[a, b, c])) = INDIC_STEMS.iter().find(|(code, _)| *code == iso) {
+        let versions: &[u8] = if iso == "Mymr" { b"2" } else { b"32" };
+        versions.iter().for_each(|&digit| tags.push(Tag::new(&[a, b, c, digit])));
     }
-
-    pub(crate) fn to_bytes(self) -> [u8; 4] {
-        self.0.to_be_bytes()
-    }
-
-    pub(crate) const DEFAULT_SCRIPT: Tag = Tag::from_bytes(b"DFLT");
+    let own = OWN_TAGS.iter().find(|(code, _)| *code == iso).map(|&(_, tag)| *tag);
+    tags.push(Tag::new(&own.unwrap_or_else(|| lowercased(iso))));
+    tags
 }
 
-fn v2_tag(iso: &str) -> Option<Tag> {
-    Some(match iso {
-        "Beng" => Tag::from_bytes(b"bng2"),
-        "Deva" => Tag::from_bytes(b"dev2"),
-        "Gujr" => Tag::from_bytes(b"gjr2"),
-        "Guru" => Tag::from_bytes(b"gur2"),
-        "Knda" => Tag::from_bytes(b"knd2"),
-        "Mlym" => Tag::from_bytes(b"mlm2"),
-        "Orya" => Tag::from_bytes(b"ory2"),
-        "Taml" => Tag::from_bytes(b"tml2"),
-        "Telu" => Tag::from_bytes(b"tel2"),
-        "Mymr" => Tag::from_bytes(b"mym2"),
-        _ => return None,
-    })
+fn lowercased(iso: &str) -> [u8; 4] {
+    let mut tag = [b' '; 4];
+    tag.iter_mut().zip(iso.bytes()).for_each(|(to, from)| *to = from.to_ascii_lowercase());
+    tag
 }
 
-fn v1_tag(iso: &str) -> Tag {
-    match iso {
-        "Laoo" => Tag::from_bytes(b"lao "),
-        "Yiii" => Tag::from_bytes(b"yi  "),
-        "Nkoo" => Tag::from_bytes(b"nko "),
-        "Vaii" => Tag::from_bytes(b"vai "),
-        "Hira" => Tag::from_bytes(b"kana"),
-        _ => {
-            let b = iso.as_bytes();
-            if b.len() != 4 {
-                return Tag::DEFAULT_SCRIPT;
-            }
-            Tag::from_bytes(&[b[0].to_ascii_lowercase(), b[1], b[2], b[3]])
+// At most three tags, kept without allocating: a script's versions, or a language's systems.
+#[derive(Debug)]
+pub struct Tags {
+    tags: [Tag; 3],
+    len: usize,
+}
+
+impl Default for Tags {
+    fn default() -> Tags {
+        Tags { tags: [Tag(0); 3], len: 0 }
+    }
+}
+
+impl Tags {
+    pub(crate) fn push(&mut self, tag: Tag) {
+        if let Some(slot) = self.tags.get_mut(self.len) {
+            *slot = tag;
+            self.len += 1;
         }
     }
+
+    pub fn as_slice(&self) -> &[Tag] {
+        &self.tags[..self.len]
+    }
 }
 
-pub fn script_tags(script: Script) -> heapless3::Tags {
-    let mut tags = heapless3::Tags::new();
-    if script.is_context_dependent() {
-        tags.push(Tag::DEFAULT_SCRIPT);
+impl IntoIterator for Tags {
+    type Item = Tag;
+    type IntoIter = core::iter::Take<core::array::IntoIter<Tag, 3>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.tags.into_iter().take(self.len)
+    }
+}
+
+// A language tag as the shaper compares it: up to its first NUL, lowercase, `_` read as `-`, and cut at the first
+// byte that can't stand in a tag. None for an empty one.
+pub(crate) fn canonical_language(tag: &[u8]) -> Option<String> {
+    canonical_language_bytes(tag).map(|bytes| bytes.map(char::from).collect())
+}
+
+// `canonical_language`'s bytes, read without building it.
+pub(crate) fn canonical_language_bytes(tag: &[u8]) -> Option<impl Iterator<Item = u8> + '_> {
+    let tag = tag.split(|&b| b == 0).next().filter(|t| !t.is_empty())?;
+    Some(tag.iter().map_while(|&b| match b {
+        b'a'..=b'z' | b'0'..=b'9' | b'-' => Some(b),
+        b'A'..=b'Z' => Some(b.to_ascii_lowercase()),
+        b'_' => Some(b'-'),
+        _ => None,
+    }))
+}
+
+// Where a rule wants the language tag's language.
+pub(crate) enum Head {
+    // Anywhere: the rule's subtags alone decide.
+    Any,
+    // The whole tag, as written: a grandfathered one, which no other rule reads.
+    Whole(&'static str),
+    // At the start, with its hyphen.
+    Language(&'static str),
+    // At the start with its script, and region if any, each subtag whole and before the limit.
+    Prefix(&'static str),
+}
+
+// Tags for a language tag that matches the head and holds every one of the subtags.
+pub(crate) struct Rule {
+    pub(crate) head: Head,
+    pub(crate) subtags: &'static [&'static str],
+    pub(crate) tags: &'static [[u8; 4]],
+}
+
+impl Rule {
+    fn matches(&self, language: &str, limit: usize, any: bool) -> bool {
+        let head = match self.head {
+            Head::Any => any,
+            Head::Whole(_) => false,
+            Head::Language(start) => language.starts_with(start),
+            Head::Prefix(start) => {
+                limit >= start.len()
+                    && language.starts_with(start)
+                    && matches!(language.as_bytes().get(start.len()), None | Some(b'-'))
+            }
+        };
+        head && self.subtags.iter().all(|s| has_subtag(language, limit, s))
+    }
+}
+
+// Whether `subtag`, with its leading hyphen, stands whole in `language` before `limit`.
+fn has_subtag(language: &str, limit: usize, subtag: &str) -> bool {
+    let whole = |at: usize| !language.as_bytes().get(at + subtag.len()).is_some_and(u8::is_ascii_alphanumeric);
+    language.match_indices(subtag).map(|(at, _)| at).take_while(|&at| at < limit).any(whole)
+}
+
+// The OpenType language systems for a canonical language tag, most specific first. Matching stops at its first
+// singleton, where a private-use or extension section starts.
+pub(crate) fn language_tags(language: &str) -> Tags {
+    let mut tags = Tags::default();
+    let bytes = language.as_bytes();
+    if bytes.starts_with(b"x-") {
+        return tags;
+    }
+    let singleton = (1..bytes.len().saturating_sub(1)).find(|&i| bytes[i - 1] == b'-' && bytes[i + 1] == b'-');
+    let mut limit = singleton.map_or(bytes.len(), |i| i - 1);
+    // A grandfathered tag is irregular, so it's matched as written. Any other is read from an extended language
+    // subtag, three letters after the first, on: that's the language, as RFC 5646's canonical form writes it.
+    let mut rule = TAG_RULES.iter().find(|r| matches!(r.head, Head::Whole(tag) if tag == language));
+    let mut language = language;
+    if let Some((first, rest)) = language.split_once('-')
+        && limit >= 6
+        && rest.split('-').next().is_some_and(|e| e.len() == 3 && e.bytes().all(|b| b.is_ascii_lowercase()))
+    {
+        limit -= first.len() + 1;
+        language = rest;
+    }
+    let hyphen = language.find('-');
+    let any = hyphen.is_some_and(|at| limit >= ANY_SPAN + 2 && at < limit && limit - at >= ANY_SPAN);
+    rule = rule.or_else(|| TAG_RULES.iter().find(|r| r.matches(language, limit, any)));
+    if let Some(rule) = rule {
+        rule.tags.iter().for_each(|t| tags.push(Tag::new(t)));
         return tags;
     }
 
-    let iso = t::SCRIPT_ISO_CODES
-        .get(script.0 as usize)
-        .copied()
-        .unwrap_or("Zzzz");
-
-    if let Some(v2) = v2_tag(iso) {
-        if v2 != Tag::from_bytes(b"mym2") {
-            let mut b = v2.to_bytes();
-            b[3] = b'3';
-            tags.push(Tag::from_bytes(&b));
-        }
-        tags.push(v2);
+    let subtag = language.split('-').next().unwrap_or_default().as_bytes();
+    if !(2..=3).contains(&subtag.len()) || !subtag.iter().all(u8::is_ascii_lowercase) {
+        return tags;
     }
-    tags.push(v1_tag(iso));
+    let mut key = [0; 3];
+    key[..subtag.len()].copy_from_slice(subtag);
+    let rows = &LANGUAGE_TAGS[LANGUAGE_TAGS.partition_point(|&(k, _)| k < key)..];
+    let mut found = rows.iter().take_while(|&&(k, _)| k == key).peekable();
+    if found.peek().is_none() {
+        // An unlisted three-letter subtag is taken as an ISO 639-3 code, which is its tag in capitals.
+        if subtag.len() == 3 {
+            let [a, b, c] = key.map(|k| k.to_ascii_uppercase());
+            tags.push(Tag::new(&[a, b, c, b' ']));
+        }
+        return tags;
+    }
+    found.map_while(|(_, t)| (*t != [0; 4]).then(|| Tag::new(t))).for_each(|t| tags.push(t));
     tags
 }
 
-pub(crate) use crate::daecore::daeshaper::generated::language_tags::{LANGUAGE_TAGS, SUBTAG_WIDTH};
-
-static TAG_FALLBACKS: &[(&[u8; 4], &[u8; 4])] = &[(b"DIV ", b"DHV "), (b"ZHTM", b"ZHH ")];
-
-fn normalize_chinese(lower: &str) -> Option<&'static [u8; 4]> {
-    let rest = lower.strip_prefix("zh")?;
-    if !rest.is_empty() && !rest.starts_with('-') {
-        return None;
-    }
-    if rest.contains("-hans") {
-        return Some(b"ZHS ");
-    }
-    if rest.contains("-mo") {
-        return Some(b"ZHTM");
-    }
-    if rest.contains("-hk") {
-        return Some(b"ZHH ");
-    }
-    if rest.contains("-hant") || rest.contains("-tw") {
-        return Some(b"ZHT ");
-    }
-    Some(b"ZHS ")
-}
-
-pub(crate) fn language_tag(language: &str) -> Option<Tag> {
-    let lower: alloc::string::String = language.trim().to_ascii_lowercase();
-    if lower.is_empty() {
-        return None;
-    }
-
-    if let Some(t) = normalize_chinese(&lower) {
-        return Some(Tag::from_bytes(t));
-    }
-
-    let lookup = |key: &str| {
-        let bytes = key.as_bytes();
-        if bytes.len() > SUBTAG_WIDTH {
-            return None;
-        }
-        let mut probe = [0u8; SUBTAG_WIDTH];
-        probe[..bytes.len()].copy_from_slice(bytes);
-        LANGUAGE_TAGS
-            .binary_search_by(|&(k, _)| k.cmp(&probe))
-            .ok()
-            .map(|i| Tag::from_bytes(&LANGUAGE_TAGS[i].1))
-    };
-
-    if let Some(t) = lookup(&lower) {
-        return Some(t);
-    }
-    let primary = lower.split('-').next()?;
-    lookup(primary)
-}
-
-pub(crate) fn language_tags(language: &str) -> heapless3::Tags {
-    let mut tags = heapless3::Tags::new();
-    let Some(primary) = language_tag(language) else { return tags };
-    tags.push(primary);
-    for &(specific, fallback) in TAG_FALLBACKS {
-        if Tag::from_bytes(specific) == primary {
-            tags.push(Tag::from_bytes(fallback));
-        }
-    }
-    tags
-}
-
-pub(crate) mod heapless3 {
-    use super::Tag;
-
-    #[derive(Debug)]
-    pub struct Tags {
-        items: [Tag; 3],
-        len: usize,
-    }
-
-    impl Tags {
-        pub fn new() -> Tags {
-            Tags { items: [Tag(0); 3], len: 0 }
-        }
-
-        pub(crate) fn push(&mut self, tag: Tag) {
-            if self.len < self.items.len() {
-                self.items[self.len] = tag;
-                self.len += 1;
-            }
-        }
-
-        pub fn as_slice(&self) -> &[Tag] {
-            &self.items[..self.len]
-        }
-
-    }
-}
+#[cfg(test)]
+#[path = "../../../tests/unit/daeshaper/ot/tag.rs"]
+mod tests;

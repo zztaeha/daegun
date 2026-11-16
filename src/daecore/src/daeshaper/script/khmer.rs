@@ -1,238 +1,149 @@
-use crate::daecore::daeshaper::buffer::{scratch_flags, Buffer};
+// Khmer, after Microsoft's Khmer script development spec: syllables found by the Khmer grammar, then a coeng RO and
+// a pre-base vowel moved before the base, then the basic forms per syllable and the presentation forms.
+use super::indic_category::{self, category};
+use super::syllabic::{self, Circle, Step, Syllable};
+use super::syllable;
+use super::{MarkAdvances, Model, ModelData, Normalization, Shaper};
 use crate::daecore::daeshaper::face::Face;
-use super::indic_category::category;
-use crate::daecore::daeshaper::ot::map::{feature_flags as ff, MapBuilder};
-use crate::daecore::daeshaper::normalize;
-use crate::daecore::daeshaper::plan::ShapePlan;
-use super::{PauseFn, Shaper, ZeroWidthMarks};
-use super::syllabic;
-use super::syllable::{self};
 use crate::daecore::daeshaper::generated::syllable_tables::{khmer_accept, KhmerSyllable, KHMER_TRANSITIONS};
 use crate::daecore::daeshaper::ot::tag::Tag;
-use crate::daecore::daeshaper::unicode;
+use crate::daecore::daeshaper::plan::{FeatureUse as U, Features, Plan, Planner};
+use crate::daecore::daeshaper::run::{Glyph, Mask, Run};
+use crate::daecore::daeshaper::unicode::{self, Script};
 
-pub(crate) const SHAPER: Shaper = Shaper {
-    name: "khmer",
-    collect_features: Some(collect_features),
-    pauses: PAUSES,
-    override_features: Some(override_features),
-    preprocess_text: None,
-    postprocess_glyphs: None,
-    normalization_preference: normalize::Mode::ComposedDiacriticsNoShortCircuit,
-    decompose: Some(decompose),
-    compose: Some(compose),
-    setup_masks: Some(setup_masks),
-    gpos_tag: None,
-    reorder_marks: None,
-    zero_width_marks: ZeroWidthMarks::Never,
-    fallback_position: false,
-};
+pub(crate) struct Khmer;
 
-const PAUSES: &[PauseFn] = &[setup_syllables, reorder, clear_syllables];
+pub(crate) const MODEL: Khmer = Khmer;
 
-const PAUSE_SETUP_SYLLABLES: usize = 0;
-const PAUSE_REORDER: usize = 1;
-const PAUSE_CLEAR_SYLLABLES: usize = 2;
+const PER_SYLLABLE: U = U::GLOBAL.and(U::PER_SYLLABLE);
+const BASIC: U = U::SEES_JOINERS.and(U::PER_SYLLABLE);
+const PRESENTATION: U = U::GLOBAL.and(U::SEES_JOINERS);
 
-const FEATURES: [(&[u8; 4], u32); 9] = [
-    (b"pref", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"blwf", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"abvf", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"pstf", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"cfar", ff::MANUAL_JOINERS | ff::PER_SYLLABLE),
-    (b"pres", ff::GLOBAL_MANUAL_JOINERS),
-    (b"abvs", ff::GLOBAL_MANUAL_JOINERS),
-    (b"blws", ff::GLOBAL_MANUAL_JOINERS),
-    (b"psts", ff::GLOBAL_MANUAL_JOINERS),
+const PLAN: &[Step] = &[
+    Step::End(Some(find_syllables)),
+    Step::End(Some(reorder)),
+    Step::Together(&[
+        (b"locl", PER_SYLLABLE),
+        (b"ccmp", PER_SYLLABLE),
+        (b"pref", BASIC),
+        (b"blwf", BASIC),
+        (b"abvf", BASIC),
+        (b"pstf", BASIC),
+        (b"cfar", BASIC),
+    ]),
+    Step::End(Some(syllable::clear)),
+    Step::Together(&[
+        (b"pres", PRESENTATION),
+        (b"abvs", PRESENTATION),
+        (b"blws", PRESENTATION),
+        (b"psts", PRESENTATION),
+    ]),
 ];
 
-const PREF: usize = 0;
-const BLWF: usize = 1;
-const ABVF: usize = 2;
-const PSTF: usize = 3;
-const CFAR: usize = 4;
-const BASIC: usize = 5;
+const CIRCLE: Circle = Circle {
+    broken: KhmerSyllable::BrokenCluster as u8,
+    class: category::DOTTED_CIRCLE,
+    position: None,
+    after: Some(category::REPHA),
+};
 
-fn collect_features(b: &mut MapBuilder, _: Option<Tag>) {
-    b.add_gsub_pause(Some(PAUSE_SETUP_SYLLABLES));
-    b.add_gsub_pause(Some(PAUSE_REORDER));
-
-    b.enable_feature(Tag::from_bytes(b"locl"), ff::PER_SYLLABLE, 1);
-    b.enable_feature(Tag::from_bytes(b"ccmp"), ff::PER_SYLLABLE, 1);
-
-    for (tag, flags) in FEATURES.iter().take(BASIC) {
-        b.add_feature(Tag::from_bytes(tag), *flags, 1);
-    }
-
-    b.add_gsub_pause(Some(PAUSE_CLEAR_SYLLABLES));
-
-    for (tag, flags) in FEATURES.iter().skip(BASIC) {
-        b.add_feature(Tag::from_bytes(tag), *flags, 1);
-    }
+// The basic forms a reordered syllable's glyphs take.
+struct Masks {
+    pref: Mask,
+    after_base: Mask,
+    cfar: Mask,
 }
 
-fn override_features(b: &mut MapBuilder) {
-    b.enable_feature(Tag::from_bytes(b"clig"), ff::NONE, 1);
-    b.disable_feature(Tag::from_bytes(b"liga"));
-}
+impl Model for Khmer {
+    fn kind(&self) -> Shaper {
+        Shaper::Khmer
+    }
 
-fn decompose(_: &normalize::Context, ab: char) -> Option<(char, Option<char>)> {
-    match ab {
-        '\u{17BE}' | '\u{17BF}' | '\u{17C0}' | '\u{17C4}' | '\u{17C5}' => {
-            Some(('\u{17C1}', Some(ab)))
+    fn plan_features(&self, planner: &mut Planner<'_>, _: Option<Tag>) {
+        syllabic::declare(planner, PLAN);
+    }
+
+    // After the caller's features, so they hold: Khmer's ligatures are contextual, never discretionary.
+    fn plan_late_features(&self, planner: &mut Planner<'_>) {
+        planner.on(Tag::new(b"clig"), U::PLAIN);
+        planner.off(Tag::new(b"liga"));
+    }
+
+    fn plan_data(&self, features: &Features, _: &Face, _: Option<Script>, _: Option<Tag>) -> Option<ModelData> {
+        let [pref, blwf, abvf, pstf, cfar] = syllabic::bits(features, [b"pref", b"blwf", b"abvf", b"pstf", b"cfar"]);
+        Some(alloc::boxed::Box::new(Masks { pref, after_base: blwf | abvf | pstf, cfar }))
+    }
+
+    fn mark_advances(&self) -> MarkAdvances {
+        MarkAdvances::Keep
+    }
+
+    fn takes_fallbacks(&self) -> bool {
+        false
+    }
+
+    fn normalization(&self) -> Normalization {
+        Normalization::Recomposed
+    }
+
+    // The split vowels go to their pre-base part, U+17C1, and themselves, which the font draws as the rest.
+    fn decompose(&self, c: char) -> Option<(char, Option<char>)> {
+        match c {
+            '\u{17BE}'..='\u{17C0}' | '\u{17C4}' | '\u{17C5}' => Some(('\u{17C1}', Some(c))),
+            _ => unicode::decompose(c),
         }
-        _ => unicode::decompose(ab),
+    }
+
+    fn compose(&self, a: char, b: char, _: bool) -> Option<char> {
+        (!unicode::general_category(a).is_mark()).then(|| unicode::compose(a, b)).flatten()
+    }
+
+    fn setup_masks(&self, run: &mut Run, _: &Plan, _: &Face) {
+        let len = run.len;
+        for glyph in &mut run.glyphs[..len] {
+            glyph.script_class = indic_category::lookup(glyph.id).0;
+        }
     }
 }
 
-fn compose(_: &normalize::Context, a: char, b: char) -> Option<char> {
-    if unicode::general_category(a).is_mark() {
-        return None;
-    }
-    unicode::compose(a, b)
-}
-
-fn setup_masks(_: &ShapePlan, _: &Face, buffer: &mut Buffer) {
-    let len = buffer.len;
-    for info in &mut buffer.info[..len] {
-        info.shaper_category = super::indic_category::lookup(info.id).0;
-    }
-}
-
-fn setup_syllables(_: &ShapePlan, _: &Face, buffer: &mut Buffer) -> bool {
-    segment_into_syllables(buffer);
-
-    let mut start = 0;
-    while start < buffer.len {
-        let end = next_syllable(buffer, start);
-        buffer.unsafe_to_break(start, end);
-        start = end;
-    }
-
+fn find_syllables(run: &mut Run, _: &Plan, _: &Face) -> bool {
+    let class = |glyphs: &[Glyph], i: usize| Some(glyphs[i].script_class);
+    syllable::setup(run, &KHMER_TRANSITIONS, class, khmer_accept, KhmerSyllable::BrokenCluster.into());
     false
 }
 
-fn segment_into_syllables(buffer: &mut Buffer) {
-    let mut segments = syllable::Segments::new();
-
-    let len = buffer.len;
-    syllable::segment(
-        len,
-        &KHMER_TRANSITIONS,
-        |i| buffer.info[i].shaper_category,
-        khmer_accept,
-        |s| segments.push(s),
-    );
-
-    let segments = segments.as_slice();
-    if segments.iter().any(|s| s.kind == u8::from(KhmerSyllable::BrokenCluster)) {
-        buffer.scratch_flags |= scratch_flags::HAS_BROKEN_SYLLABLE;
+fn reorder(run: &mut Run, plan: &Plan, face: &Face) -> bool {
+    let circled = syllabic::circle_broken_syllables(face, run, &CIRCLE);
+    if let Some(masks) = plan.data::<Masks>() {
+        let khmer = |kind| kind != KhmerSyllable::NonKhmerCluster as u8;
+        syllabic::each_syllable(run, khmer, |s| arrange(s, masks));
     }
-    syllable::set_syllables(buffer, segments);
+    circled
 }
 
-fn next_syllable(buffer: &Buffer, start: usize) -> usize {
-    if start >= buffer.len {
-        return start;
-    }
-    let syllable = buffer.info[start].syllable;
-    let mut end = start + 1;
-    while end < buffer.len && buffer.info[end].syllable == syllable {
-        end += 1;
-    }
-    end
-}
-
-fn reorder(plan: &ShapePlan, face: &Face, buffer: &mut Buffer) -> bool {
-    let inserted = syllabic::insert_dotted_circles(
-        face,
-        buffer,
-        KhmerSyllable::BrokenCluster.into(),
-        category::DOTTEDCIRCLE,
-        Some(category::REPHA),
-        None,
-    );
-
-    let masks = mask_array(plan);
-
-    let mut start = 0;
-    while start < buffer.len {
-        let end = next_syllable(buffer, start);
-        if buffer.info[start].syllable & 0x0F != KhmerSyllable::NonKhmerCluster.into() {
-            reorder_consonant_syllable(&masks, start, end, buffer);
-        }
-        start = end;
-    }
-
-    inserted
-}
-
-fn mask_array(plan: &ShapePlan) -> [u32; FEATURES.len()] {
-    let mut masks = [0; FEATURES.len()];
-    for (i, (tag, flags)) in FEATURES.iter().enumerate() {
-        if flags & ff::GLOBAL == 0 {
-            masks[i] = plan.map.one_mask(Tag::from_bytes(tag));
-        }
-    }
-    masks
-}
-
-fn reorder_consonant_syllable(
-    masks: &[u32; FEATURES.len()],
-    start: usize,
-    end: usize,
-    buffer: &mut Buffer,
-) {
-    let post_base = masks[BLWF] | masks[ABVF] | masks[PSTF];
-    for info in &mut buffer.info[start + 1..end] {
-        info.mask |= post_base;
-    }
-
+// All but the first glyph may take after-base forms; a coeng RO goes before the base as pref, opening the rest to
+// `cfar`, and a pre-base vowel goes first. Coengs are read while two or fewer came before, a coeng RO counting two.
+fn arrange(s: &mut Syllable, masks: &Masks) {
+    let n = s.len();
+    s.glyphs()[1..].iter_mut().for_each(|g| g.mask |= masks.after_base);
     let mut coengs = 0;
-    let mut i = start + 1;
-
-    while i < end {
-        if buffer.info[i].shaper_category == category::H && coengs <= 2 && i + 1 < end {
-            coengs += 1;
-
-            if buffer.info[i + 1].shaper_category == category::RA {
-                buffer.info[i].mask |= masks[PREF];
-                buffer.info[i + 1].mask |= masks[PREF];
-
-                buffer.merge_clusters(start, i + 2);
-                let coeng = buffer.info[i];
-                let ro = buffer.info[i + 1];
-                for k in (0..i - start).rev() {
-                    buffer.info[k + start + 2] = buffer.info[k + start];
+    for i in 1..n {
+        match s.class(i) {
+            category::H if coengs <= 2 && i + 1 < n => {
+                coengs += 1;
+                if s.class(i + 1) != category::RA {
+                    continue;
                 }
-                buffer.info[start] = coeng;
-                buffer.info[start + 1] = ro;
-
-                if masks[CFAR] != 0 {
-                    for info in &mut buffer.info[i + 2..end] {
-                        info.mask |= masks[CFAR];
-                    }
-                }
-
+                s[i].mask |= masks.pref;
+                s[i + 1].mask |= masks.pref;
+                s.join(0..i + 2);
+                s.place(i, 0);
+                s.place(i + 1, 1);
+                s.glyphs()[i + 2..].iter_mut().for_each(|g| g.mask |= masks.cfar);
                 coengs = 2;
             }
-        } else if buffer.info[i].shaper_category == category::V_PRE {
-            buffer.merge_clusters(start, i + 1);
-            let matra = buffer.info[i];
-            for k in (0..i - start).rev() {
-                buffer.info[k + start + 1] = buffer.info[k + start];
-            }
-            buffer.info[start] = matra;
+            category::V_PRE => s.carry(i, 0),
+            _ => {}
         }
-
-        i += 1;
     }
-}
-
-fn clear_syllables(_: &ShapePlan, _: &Face, buffer: &mut Buffer) -> bool {
-    let len = buffer.len;
-    for info in &mut buffer.info[..len] {
-        info.syllable = 0;
-    }
-    false
 }

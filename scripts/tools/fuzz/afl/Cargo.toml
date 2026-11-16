@@ -1,0 +1,15 @@
+[package]
+name = "daegun-fuzz-afl"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Without `threading`, so the default build's paths are fuzzed too, as libFuzzer's targets run with it.
+[dependencies]
+afl = "0.18"
+daegun-fuzz-harness = { path = "../harness" }
+
+[profile.release]
+debug = 1
+overflow-checks = true
+debug-assertions = true

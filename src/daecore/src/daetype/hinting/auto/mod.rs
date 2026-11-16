@@ -2,24 +2,36 @@ mod blues;
 mod latin;
 pub mod points;
 
-use alloc::vec::Vec;
-
 pub use blues::BlueZones;
-pub use points::{AutoPoints, CollectPen, CONIC, CUBIC, ON_CURVE};
+pub use points::{AutoPoints, CollectPen, CUBIC, ON_CURVE};
+#[cfg(test)]
+pub(crate) use points::CONIC;
 
 use super::{state::{FLAG_CUBIC, FLAG_ON_CURVE}, HintedOutline};
 
 pub struct AutoHinter {
     blues: BlueZones,
     upm: u16,
+    // The size the zones were last fitted at, held in what was the struct's padding: a location carries a hinter.
+    fitted_at: Option<core::num::NonZeroI32>,
     scratch: latin::Scratch,
+    // The last glyph hinted, lent until the next.
+    out: HintedOutline,
 }
 
 impl AutoHinter {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        use crate::daecore::daekit::base::sync::heap_of;
+        let AutoHinter { blues, upm: _, fitted_at: _, scratch, out } = self;
+        let HintedOutline { x, y, flags, contour_ends } = out;
+        heap_of(&blues.zones) + scratch.heap_bytes() + heap_of(x) + heap_of(y) + heap_of(flags) + heap_of(contour_ends)
+    }
+
+    #[cfg(test)]
     pub fn new(
         upm: u16,
-        resolve: &mut dyn FnMut(char) -> Option<u16>,
-        outline_of: &mut dyn FnMut(u16) -> Option<AutoPoints>,
+        resolve: &mut dyn FnMut(char) -> Option<u32>,
+        outline_of: &mut dyn FnMut(u32) -> Option<AutoPoints>,
     ) -> Option<AutoHinter> {
         if upm == 0 {
             return None;
@@ -28,31 +40,40 @@ impl AutoHinter {
         if blues.zones.len() < 2 {
             return None;
         }
-        Some(AutoHinter { blues, upm, scratch: latin::Scratch::default() })
+        let (scratch, out) = (latin::Scratch::default(), HintedOutline::default());
+        Some(AutoHinter { blues, upm, fitted_at: None, scratch, out })
     }
 
     pub fn from_zones(blues: BlueZones, upm: u16) -> Option<AutoHinter> {
-        (upm != 0 && blues.zones.len() >= 2).then_some(AutoHinter { blues, upm, scratch: latin::Scratch::default() })
+        let (scratch, out) = (latin::Scratch::default(), HintedOutline::default());
+        (upm != 0 && blues.zones.len() >= 2).then_some(AutoHinter { blues, upm, fitted_at: None, scratch, out })
+    }
+
+    // One with the same zones and none of the working room, for a thread hinting on its own.
+    #[cfg(feature = "threading")]
+    pub fn fresh(&self) -> AutoHinter {
+        let (scratch, out) = (latin::Scratch::default(), HintedOutline::default());
+        AutoHinter { blues: self.blues.clone(), upm: self.upm, fitted_at: self.fitted_at, scratch, out }
     }
 
     pub fn compute_zones(
         upm: u16,
-        resolve: &mut dyn FnMut(char) -> Option<u16>,
-        outline_of: &mut dyn FnMut(u16) -> Option<AutoPoints>,
+        resolve: &mut dyn FnMut(char) -> Option<u32>,
+        outline_of: &mut dyn FnMut(u32) -> Option<AutoPoints>,
     ) -> BlueZones {
         if upm == 0 { return BlueZones::default() }
         blues::compute(upm, resolve, outline_of)
     }
 
-    pub fn hint(&mut self, pts: &AutoPoints, size: super::f26dot6::Size) -> HintedOutline {
-        let y = latin::fit(pts, &self.blues, size, self.upm, &mut self.scratch).to_vec();
-        let x = pts
-            .x
-            .iter()
-            .map(|&v| super::f26dot6::scale_f32(v, size, self.upm))
-            .collect::<Vec<i32>>();
-        let flags = pts.flags.iter().map(|&f| hinted_flag(f)).collect();
-        HintedOutline { x, y, flags, contour_ends: pts.contour_ends.clone() }
+    pub fn hint(&mut self, pts: &AutoPoints, size: super::f26dot6::Size) -> &mut HintedOutline {
+        let HintedOutline { x, y, flags, contour_ends } = &mut self.out;
+        latin::fit(pts, &mut self.blues, &mut self.fitted_at, size, self.upm, &mut self.scratch, y);
+        x.clear();
+        super::f26dot6::scale_f32_into(&pts.x, size, self.upm, x);
+        flags.clear();
+        flags.extend(pts.flags.iter().map(|&f| hinted_flag(f)));
+        contour_ends.clone_from(&pts.contour_ends);
+        &mut self.out
     }
 }
 
@@ -69,19 +90,5 @@ pub(crate) fn hinted_flag(f: u8) -> u8 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use super::blues::BlueZone;
-
-    // A variable instance's fractional coordinates scale as they are: 0.9 and -0.9 units of 64 at
-    // 64 px are 58/64 px either side of zero, where truncating first would make both 0.
-    #[test]
-    fn a_fractional_coordinate_is_scaled_as_it_is() {
-        let zone = |reference, overshoot, is_top| BlueZone { reference, overshoot, is_top };
-        let blues = BlueZones { zones: alloc::vec![zone(50.0, 51.0, true), zone(0.0, -1.0, false)] };
-        let mut hinter = AutoHinter::from_zones(blues, 64).expect("two zones");
-        let pts = AutoPoints { x: alloc::vec![0.9, -0.9], y: alloc::vec![0.9, -0.9], flags: alloc::vec![ON_CURVE; 2], contour_ends: alloc::vec![0, 1] };
-        let out = hinter.hint(&pts, super::super::f26dot6::Size::from_px(64.0).expect("a size"));
-        assert_eq!((out.x, out.y), (alloc::vec![58, -58], alloc::vec![58, -58]));
-    }
-}
+#[path = "../../../../tests/unit/daetype/hinting/auto/mod.rs"]
+mod tests;

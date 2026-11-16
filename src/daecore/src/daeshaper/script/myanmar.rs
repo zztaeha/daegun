@@ -1,271 +1,159 @@
-use crate::daecore::daeshaper::buffer::{scratch_flags, Buffer, GlyphInfo};
+// Myanmar, after Microsoft's Myanmar script development spec: each syllable sorted into the spec's visual order, then
+// the basic and the presentation forms. Zawgyi text isn't in Unicode's order, so it gets none of that.
+use super::indic_category::{self, category, position};
+use super::syllabic::{self, Circle, Step, Syllable};
+use super::syllable;
+use super::{MarkAdvances, Model, Normalization, Shaper};
 use crate::daecore::daeshaper::face::Face;
-use super::indic_category::{category, position};
-use crate::daecore::daeshaper::ot::map::{feature_flags as ff, MapBuilder};
-use crate::daecore::daeshaper::normalize;
-use crate::daecore::daeshaper::plan::ShapePlan;
-use super::{PauseFn, Shaper, ZeroWidthMarks};
-use super::syllabic;
-use super::syllable::{self};
 use crate::daecore::daeshaper::generated::syllable_tables::{myanmar_accept, MyanmarSyllable, MYANMAR_TRANSITIONS};
 use crate::daecore::daeshaper::ot::tag::Tag;
+use crate::daecore::daeshaper::plan::{FeatureUse as U, Plan, Planner};
+use crate::daecore::daeshaper::run::{Glyph, Run};
 
-pub(crate) const SHAPER: Shaper = Shaper {
-    name: "myanmar",
-    collect_features: Some(collect_features),
-    pauses: PAUSES,
-    override_features: None,
-    preprocess_text: None,
-    postprocess_glyphs: None,
-    normalization_preference: normalize::Mode::ComposedDiacriticsNoShortCircuit,
-    decompose: None,
-    compose: None,
-    setup_masks: Some(setup_masks),
-    gpos_tag: None,
-    reorder_marks: None,
-    zero_width_marks: ZeroWidthMarks::ByGdefEarly,
-    fallback_position: false,
+pub(crate) struct Myanmar;
+
+pub(crate) const MODEL: Myanmar = Myanmar;
+
+// Myanmar in the Zawgyi encoding, whose characters aren't Unicode's order, so nothing reorders or recomposes them.
+pub(crate) struct Zawgyi;
+
+pub(crate) const ZAWGYI: Zawgyi = Zawgyi;
+
+const PER_SYLLABLE: U = U::GLOBAL.and(U::PER_SYLLABLE);
+const BASIC: U = U::GLOBAL.and(U::SEES_ZWJ).and(U::PER_SYLLABLE);
+const PRESENTATION: U = U::GLOBAL.and(U::SEES_ZWJ);
+
+const PLAN: &[Step] = &[
+    Step::End(Some(find_syllables)),
+    Step::Together(&[(b"locl", PER_SYLLABLE), (b"ccmp", PER_SYLLABLE)]),
+    Step::End(Some(reorder)),
+    Step::OneByOne(&[(b"rphf", BASIC), (b"pref", BASIC), (b"blwf", BASIC), (b"pstf", BASIC)]),
+    Step::End(Some(syllable::clear)),
+    Step::Together(&[
+        (b"pres", PRESENTATION),
+        (b"abvs", PRESENTATION),
+        (b"blws", PRESENTATION),
+        (b"psts", PRESENTATION),
+    ]),
+];
+
+const CIRCLE: Circle = Circle {
+    broken: MyanmarSyllable::BrokenCluster as u8,
+    class: category::DOTTED_CIRCLE,
+    position: None,
+    after: None,
 };
 
-pub(crate) const ZAWGYI_SHAPER: Shaper = Shaper {
-    name: "myanmar_zawgyi",
-    collect_features: None,
-    pauses: &[],
-    override_features: None,
-    preprocess_text: None,
-    postprocess_glyphs: None,
-    normalization_preference: normalize::Mode::None,
-    decompose: None,
-    compose: None,
-    setup_masks: None,
-    gpos_tag: None,
-    reorder_marks: None,
-    zero_width_marks: ZeroWidthMarks::Never,
-    fallback_position: false,
-};
+// What can stand as a syllable's base.
+const BASES: [u8; 6] =
+    [category::C, category::STACKER, category::RA, category::V, category::PLACEHOLDER, category::DOTTED_CIRCLE];
 
-const PAUSES: &[PauseFn] = &[setup_syllables, reorder, clear_syllables];
-
-const PAUSE_SETUP_SYLLABLES: usize = 0;
-const PAUSE_REORDER: usize = 1;
-const PAUSE_CLEAR_SYLLABLES: usize = 2;
-
-const BASIC_FEATURES: [&[u8; 4]; 4] = [b"rphf", b"pref", b"blwf", b"pstf"];
-const JOINING_FEATURES: [&[u8; 4]; 4] = [b"pres", b"abvs", b"blws", b"psts"];
-
-fn collect_features(b: &mut MapBuilder, _: Option<Tag>) {
-    b.add_gsub_pause(Some(PAUSE_SETUP_SYLLABLES));
-
-    b.enable_feature(Tag::from_bytes(b"locl"), ff::PER_SYLLABLE, 1);
-    b.enable_feature(Tag::from_bytes(b"ccmp"), ff::PER_SYLLABLE, 1);
-
-    b.add_gsub_pause(Some(PAUSE_REORDER));
-
-    for tag in BASIC_FEATURES {
-        b.enable_feature(Tag::from_bytes(tag), ff::MANUAL_ZWJ | ff::PER_SYLLABLE, 1);
-        b.add_gsub_pause(None);
+impl Model for Myanmar {
+    fn kind(&self) -> Shaper {
+        Shaper::Myanmar
     }
 
-    b.add_gsub_pause(Some(PAUSE_CLEAR_SYLLABLES));
+    fn plan_features(&self, planner: &mut Planner<'_>, _: Option<Tag>) {
+        syllabic::declare(planner, PLAN);
+    }
 
-    for tag in JOINING_FEATURES {
-        b.enable_feature(Tag::from_bytes(tag), ff::MANUAL_ZWJ, 1);
+    fn mark_advances(&self) -> MarkAdvances {
+        MarkAdvances::ZeroBeforeGpos
+    }
+
+    fn takes_fallbacks(&self) -> bool {
+        false
+    }
+
+    fn normalization(&self) -> Normalization {
+        Normalization::Recomposed
+    }
+
+    fn setup_masks(&self, run: &mut Run, _: &Plan, _: &Face) {
+        let len = run.len;
+        for glyph in &mut run.glyphs[..len] {
+            (glyph.script_class, glyph.script_slot) = indic_category::lookup(glyph.id);
+        }
     }
 }
 
-impl GlyphInfo {
-    fn myanmar_position(&self) -> u8 {
-        self.shaper_auxiliary
+impl Model for Zawgyi {
+    fn kind(&self) -> Shaper {
+        Shaper::MyanmarZawgyi
     }
 
-    fn set_myanmar_position(&mut self, position: u8) {
-        self.shaper_auxiliary = position;
+    fn mark_advances(&self) -> MarkAdvances {
+        MarkAdvances::Keep
     }
 
-    fn is_myanmar_consonant(&self) -> bool {
-        matches!(
-            self.shaper_category,
-            category::C
-                | category::CS
-                | category::RA
-                | category::V
-                | category::PLACEHOLDER
-                | category::DOTTEDCIRCLE
-        )
+    fn takes_fallbacks(&self) -> bool {
+        false
+    }
+
+    fn normalization(&self) -> Normalization {
+        Normalization::Unrecomposed
     }
 }
 
-fn setup_masks(_: &ShapePlan, _: &Face, buffer: &mut Buffer) {
-    let len = buffer.len;
-    for info in &mut buffer.info[..len] {
-        let (cat, pos) = super::indic_category::lookup(info.id);
-        info.shaper_category = cat;
-        info.set_myanmar_position(pos);
-    }
-}
-
-fn setup_syllables(_: &ShapePlan, _: &Face, buffer: &mut Buffer) -> bool {
-    segment_into_syllables(buffer);
-
-    let mut start = 0;
-    while start < buffer.len {
-        let end = next_syllable(buffer, start);
-        buffer.unsafe_to_break(start, end);
-        start = end;
-    }
-
+fn find_syllables(run: &mut Run, _: &Plan, _: &Face) -> bool {
+    let class = |glyphs: &[Glyph], i: usize| Some(glyphs[i].script_class);
+    syllable::setup(run, &MYANMAR_TRANSITIONS, class, myanmar_accept, MyanmarSyllable::BrokenCluster.into());
     false
 }
 
-fn segment_into_syllables(buffer: &mut Buffer) {
-    let mut segments = syllable::Segments::new();
-
-    let len = buffer.len;
-    syllable::segment(
-        len,
-        &MYANMAR_TRANSITIONS,
-        |i| buffer.info[i].shaper_category,
-        myanmar_accept,
-        |s| segments.push(s),
-    );
-
-    let segments = segments.as_slice();
-    if segments.iter().any(|s| s.kind == u8::from(MyanmarSyllable::BrokenCluster)) {
-        buffer.scratch_flags |= scratch_flags::HAS_BROKEN_SYLLABLE;
-    }
-    syllable::set_syllables(buffer, segments);
+fn reorder(run: &mut Run, _: &Plan, face: &Face) -> bool {
+    let circled = syllabic::circle_broken_syllables(face, run, &CIRCLE);
+    const CONSONANT: u8 = MyanmarSyllable::ConsonantSyllable as u8;
+    const BROKEN: u8 = MyanmarSyllable::BrokenCluster as u8;
+    syllabic::each_syllable(run, |kind| matches!(kind, CONSONANT | BROKEN), arrange);
+    circled
 }
 
-fn next_syllable(buffer: &Buffer, start: usize) -> usize {
-    if start >= buffer.len {
-        return start;
-    }
-    let syllable = buffer.info[start].syllable;
-    let mut end = start + 1;
-    while end < buffer.len && buffer.info[end].syllable == syllable {
-        end += 1;
-    }
-    end
-}
+// Gives each glyph its place in the spec's order, then sorts the syllable by them.
+fn arrange(s: &mut Syllable) {
+    let n = s.len();
+    let kinzi = n >= 3 && [category::RA, category::AS, category::H].iter().enumerate().all(|(i, &c)| s.class(i) == c);
+    let lead = if kinzi { 3 } else { 0 };
+    let base = (lead..n).find(|&i| s.is(i, &BASES)).unwrap_or(0);
 
-fn reorder(_: &ShapePlan, face: &Face, buffer: &mut Buffer) -> bool {
-    let inserted = syllabic::insert_dotted_circles(
-        face,
-        buffer,
-        MyanmarSyllable::BrokenCluster.into(),
-        category::DOTTEDCIRCLE,
-        None,
-        None,
-    );
-
-    let mut start = 0;
-    while start < buffer.len {
-        let end = next_syllable(buffer, start);
-        let kind = buffer.info[start].syllable & 0x0F;
-        if kind == MyanmarSyllable::ConsonantSyllable.into()
-            || kind == MyanmarSyllable::BrokenCluster.into()
-        {
-            reorder_consonant_syllable(start, end, buffer);
-        }
-        start = end;
+    // Kinzi, then what stands before the base, then the base.
+    (0..lead).for_each(|i| s.set_pos(i, position::AFTER_BASE));
+    let mut next = lead;
+    while next < base {
+        s.set_pos(next, position::PRE_BASE);
+        next += 1;
+    }
+    if next < n {
+        s.set_pos(next, position::BASE);
+        next += 1;
     }
 
-    inserted
-}
-
-fn reorder_consonant_syllable(start: usize, end: usize, buffer: &mut Buffer) {
-    let has_kinzi = start + 3 <= end
-        && buffer.info[start].shaper_category == category::RA
-        && buffer.info[start + 1].shaper_category == category::AS
-        && buffer.info[start + 2].shaper_category == category::H;
-
-    let limit = if has_kinzi { start + 3 } else { start };
-    let base = (limit..end)
-        .find(|&i| buffer.info[i].is_myanmar_consonant())
-        .unwrap_or(start);
-
-    let mut i = start;
-
-    while i < start + if has_kinzi { 3 } else { 0 } {
-        buffer.info[i].set_myanmar_position(position::AFTER_MAIN);
-        i += 1;
-    }
-
-    while i < base {
-        buffer.info[i].set_myanmar_position(position::PRE_C);
-        i += 1;
-    }
-
-    if i < end {
-        buffer.info[i].set_myanmar_position(position::BASE_C);
-        i += 1;
-    }
-
-    let mut pos = position::AFTER_MAIN;
-    while i < end {
-        let category = buffer.info[i].shaper_category;
-
-        if category == category::MR {
-            buffer.info[i].set_myanmar_position(position::PRE_C);
-        } else if category == category::V_PRE {
-            buffer.info[i].set_myanmar_position(position::PRE_M);
-        } else if category == category::VS {
-            let previous = buffer.info[i - 1].myanmar_position();
-            buffer.info[i].set_myanmar_position(previous);
-        } else if pos == position::AFTER_MAIN && category == category::V_BLW {
-            pos = position::BELOW_C;
-            buffer.info[i].set_myanmar_position(pos);
-        } else if pos == position::BELOW_C && category == category::A {
-            buffer.info[i].set_myanmar_position(position::BEFORE_SUB);
-        } else if pos == position::BELOW_C && category == category::V_BLW {
-            buffer.info[i].set_myanmar_position(pos);
-        } else if pos == position::BELOW_C {
-            pos = position::AFTER_SUB;
-            buffer.info[i].set_myanmar_position(pos);
-        } else {
-            buffer.info[i].set_myanmar_position(pos);
-        }
-
-        i += 1;
-    }
-
-    buffer.sort(start, end, |a, b| a.myanmar_position() > b.myanmar_position());
-
-    flip_pre_base_vowel_run(start, end, buffer);
-}
-
-fn flip_pre_base_vowel_run(start: usize, end: usize, buffer: &mut Buffer) {
-    let mut first = end;
-    let mut last = end;
-
-    for i in start..end {
-        if buffer.info[i].myanmar_position() == position::PRE_M {
-            if first == end {
-                first = i;
+    // After the base, the zone moves on from after-main through below-base to after the below-base vowels.
+    let mut zone = position::AFTER_BASE;
+    for i in next..n {
+        let place = match s.class(i) {
+            category::MR => position::PRE_BASE,
+            category::V_PRE => position::PRE_MATRA,
+            category::VS => s.pos(i - 1),
+            category::V_BLW if zone <= position::BELOW => {
+                zone = position::BELOW;
+                zone
             }
-            last = i;
-        }
+            category::A if zone == position::BELOW => position::BEFORE_BELOW,
+            _ if zone == position::BELOW => {
+                zone = position::AFTER_BELOW;
+                zone
+            }
+            _ => zone,
+        };
+        s.set_pos(i, place);
     }
 
-    if first >= last {
-        return;
+    let span = s.start..s.start + n;
+    s.run.sort_span_by(span, |g| g.script_slot);
+    let first = (0..n).find(|&i| s.pos(i) == position::PRE_MATRA);
+    let last = (0..n).rfind(|&i| s.pos(i) == position::PRE_MATRA);
+    if let (Some(first), Some(last)) = (first, last) {
+        s.flip_pre_base(first..last + 1, &[category::V_PRE]);
     }
-
-    buffer.reverse_range(first, last + 1);
-
-    let mut group_start = first;
-    for j in first..=last {
-        if buffer.info[j].shaper_category == category::V_PRE {
-            buffer.reverse_range(group_start, j + 1);
-            group_start = j + 1;
-        }
-    }
-}
-
-fn clear_syllables(_: &ShapePlan, _: &Face, buffer: &mut Buffer) -> bool {
-    let len = buffer.len;
-    for info in &mut buffer.info[..len] {
-        info.syllable = 0;
-    }
-    false
 }

@@ -5,16 +5,21 @@ OUT=${TMPDIR:-/tmp}/daegun-profile
 mkdir -p "$OUT"
 cd "$ROOT"
 
-BENCH_TARGET="${BENCH_TARGET:-shaper}"
-FILTER="${1:-}"
+# The benches: `lib`, the core's suites in the library's own tests, the shaper's unless FILTER names another
+# (tests::daetype::, tests::daekit::), or a [[test]] target such as `api`.
+BENCH_TARGET="${BENCH_TARGET:-lib}"
+case $BENCH_TARGET in
+    lib) TARGET="--lib" ARTIFACT=daegun FILTER="${1:-tests::daeshaper::}" ;;
+    *) TARGET="--test=$BENCH_TARGET" ARTIFACT=$BENCH_TARGET FILTER="${1:-}" ;;
+esac
 BIN=$(CARGO_PROFILE_RELEASE_DEBUG="line-tables-only" CARGO_PROFILE_RELEASE_STRIP="none" \
-  cargo test --test "$BENCH_TARGET" --release --no-run --message-format=json 2>/dev/null \
-  | python3 "$ROOT/scripts/tools/perf/pick-test-binary.py" "$BENCH_TARGET")
-[ -n "$BIN" ] || { echo "no test binary: is $BENCH_TARGET a [[test]] target in Cargo.toml?" >&2; exit 1; }
+  cargo test "$TARGET" --release --no-run --message-format=json 2>/dev/null \
+  | python3 "$ROOT/scripts/tools/perf/pick-test-binary.py" "$ARTIFACT")
+[ -n "$BIN" ] || { echo "no test binary: is $BENCH_TARGET lib or a [[test]] target in Cargo.toml?" >&2; exit 1; }
 cp "$BIN" "$OUT/bench"
 if [ "$("$OUT/bench" --ignored --list "$FILTER" 2>/dev/null | grep -c ': test$')" -eq 0 ]; then
     echo "$BENCH_TARGET has no #[ignore] benches${FILTER:+ matching $FILTER}, so there is nothing to measure." >&2
-    echo "Set BENCH_TARGET to one that has: shaper, type, machine, api." >&2
+    echo "Pick a suite of the library's with FILTER, or set BENCH_TARGET=api." >&2
     exit 1
 fi
 

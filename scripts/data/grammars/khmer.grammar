@@ -1,69 +1,43 @@
-# Khmer syllables, from Microsoft's OpenType script development specification.
-#
-#   https://learn.microsoft.com/en-us/typography/script-development/khmer
-#
-# Under "Syllables beginning with consonants" that page publishes the canonical order outright, with
-# a notation legend and a class chart giving each class its codepoints:
-#
-#   Cons + {COENG + (Cons | IndV)} + [PreV | BlwV] + [RegShift] + [AbvV] + {AbvS} + [PstV] + [PstS]
-#
-# where `{ }` is nought to two occurrences, `[ ]` is nought or one, `|` is exclusive, and `+` joins.
-#
-# **This is the one grammar where the spec is not the whole answer**, and it is worth saying why. The
-# reference implementation records that its own matra handling was worked out experimentally from
-# what Uniscribe accepts rather than from any specification. So the productions below start from the
-# published order and are then closed against the machine's observed behavior, proved identical by
-# scripts/verify-syllable-equivalence.py – every input of every length, not a sample.
-#
-# **The table's classes are finer than the spec's.** The spec has one Cons; the table separates Ra,
-# because Ra is what becomes a robat. Its four vowel positions arrive as VPre, VBlw, VAbv and VPst,
-# which is the spec's own PreV/BlwV/AbvV/PstV under different names. And Robatic, Xgroup and Ygroup
-# are groupings the table adds for signs the spec lists individually.
-#
-# Numbers match src/daeshaper/script/indic_category.rs, since the same table feeds this.
+# Khmer syllables: the order of Microsoft's Khmer specification ("Syllables beginning with consonants"), its class
+# chart's classes, and what its own text adds, each noted where it's used. Numbers are categories.py's.
 
 categories:
   C            = 1
-  V            = 2    # the spec's IndV, independent vowels
-  H            = 4    # the coeng, which subjoins the consonant after it
+  V            = 2
+  H            = 4
   ZWNJ         = 5
   ZWJ          = 6
-  PLACEHOLDER  = 10
-  DOTTEDCIRCLE = 11
-  Ra           = 15
-  VAbv         = 19
-  VBlw         = 20
-  VPre         = 21
-  VPst         = 22
-  Robatic      = 31   # the robat, and the register shifters that behave like it
-  Xgroup       = 32
-  Ygroup       = 33
+  Placeholder  = 10
+  DottedCircle = 11
+  Ra           = 12
+  VPre         = 20
+  VAbv         = 21
+  VBlw         = 22
+  VPst         = 23
+  RegShift     = 24
+  Robat        = 25
+  AbvS         = 26
+  PstS         = 27
 
 definitions:
-  # The spec's `Cons`, plus the independent vowels it allows after a coeng.
-  c = C | Ra | V
+  # The spec's Cons and IndV; Ra is told apart because its subscript goes before the base.
+  letter = C | Ra | V
   joiner = ZWJ | ZWNJ
-
-  # A consonant with the robat that may follow it.
-  consonant_with_robat = c ((joiner? Robatic))?
-
-  x_signs = (joiner* Xgroup)*
-  y_signs = Ygroup*
-
-  # The spec's `[PreV | BlwV] + [RegShift] + [AbvV] + {AbvS} + [PstV] + [PstS]`, matched in *written*
-  # order – before, below, above, after – whatever order the characters arrived in. That is what
-  # makes the reordering pass's job well defined.
-  vowels_in_written_order = VPre? x_signs VBlw? x_signs (joiner? VAbv)? x_signs VPst?
-  after_base = x_signs vowels_in_written_order x_signs (H c)? y_signs
+  # The spec's {COENG + (Cons | IndV)}, its { } nought to two.
+  subscripts = (H letter)? (H letter)?
+  shift = joiner? RegShift
+  # The spec's [PreV | BlwV] + [RegShift] + [AbvV] + {AbvS} + [PstV] + [PstS]. A split vowel reaches here as its
+  # pre-base part, U+17C1, then the rest; Khmer writes am as aa then nikahit, so a sign above may follow the vowel.
+  signs = (VPre | VBlw)? shift? (joiner? VPre? VAbv)? AbvS? AbvS? (VPre? VPst)? AbvS? PstS?
+  # The robat follows its consonant; a register shifter, which changes the consonant's vowel, follows it or its
+  # subscripts; text often types a subscript after the vowel; and a coeng may end a syllable with nothing under it.
+  tail = Robat? shift? subscripts (H | shift? signs (H letter)?) joiner?
 
 syllables:
-  # Order is priority: where two match the same length, the first listed wins.
-  #
-  # The spec's `Cons + {COENG + (Cons | IndV)}` is the `(H consonant_with_robat)*` run below; a coeng
-  # with nothing under it ends the syllable, which is the bare `H` alternative.
-  consonant_syllable = (consonant_with_robat | PLACEHOLDER | DOTTEDCIRCLE) (Robatic? (H consonant_with_robat)* (H | after_base))
-  # Not in the spec, and required by it: "if an invalid combination is found ... a new cluster will be
-  # formed that has the dotted circle as the base glyph". This is that cluster – the syllable with
-  # its base missing.
-  broken_cluster     = Robatic? (H consonant_with_robat)* (H | after_base)
+  # Order is priority where two match the same length. The spec: "a syllable will begin with a Cons, IndV, or
+  # Number", a number being the table's placeholder.
+  consonant_syllable = (letter | Placeholder | DottedCircle) tail
+  non_khmer_cluster  = joiner
+  # Signs with no base, which the spec has a dotted circle carry.
+  broken_cluster     = tail
   non_khmer_cluster  = any

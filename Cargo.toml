@@ -1,36 +1,77 @@
 [package]
 name = "daegun"
-version = "1.2.0"
+version = "2.0.0"
 edition = "2024"
-rust-version = "1.97.1"
-description = "The text engine that hands your rasterizer everything it needs. Rust, no_std, zero dependencies."
+rust-version = "1.99"
+description = "Text and shaping engine. Rust, no_std, zero dependencies"
 license = "MIT"
 readme = "README.md"
-homepage = "https://dg.calia.cc"
+homepage = "https://zztaeha.dev/daegun"
 repository = "https://github.com/zztaeha/daegun"
 keywords = ["font", "opentype", "truetype", "variable-fonts", "subsetting"]
-categories = ["text-processing", "parser-implementations", "no-std"]
-exclude = ["tasks/", ".gitignore", "assets/", "scripts/"]
+categories = ["text-processing", "parser-implementations", "no-std", "graphics", "internationalization"]
+exclude = ["tasks/", ".gitignore", "assets/", "scripts/", "src/**/tests/", "benchmark.md", "clippy.toml"]
 
-[lib]
-path = "src/daegun/lib.rs"
+[package.metadata.docs.rs]
+all-features = true
+
+# `cargo cinstall` (cargo-c): the C library, its headers as they are and a daegun.pc. The library and the .pc carry
+# the C ABI's version, not the crate's, and a shared library is named by its major, as the README's builds are.
+[package.metadata.capi]
+min_version = "0.10.26"
+
+[package.metadata.capi.header]
+generation = false
+subdirectory = false
+
+[package.metadata.capi.install.include]
+asset = [{ from = "src/api/c/include/**/*.h", to = "" }]
+
+# The notices software built from daegun carries with it, in share/doc/daegun.
+[package.metadata.capi.install.data]
+asset = [
+    { from = "LICENSE", to = "doc/daegun" },
+    { from = "CREDITS.txt", to = "doc/daegun" },
+]
+
+[package.metadata.capi.library]
+version = "2.0.0"
+version_suffix_components = 1
+
+[package.metadata.capi.pkg_config]
+version = "2.0.0"
+description = "Text and shaping engine: the C ABI"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# Set by the benches that count allocations in a release build (src/daecore/tests/shaper/allocs.rs), and for a
+# sanitizer, which a freed C handle kept for its thread's next would hide a use after free from.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(daegun_counting)", "cfg(daegun_no_spares)"] }
+missing_debug_implementations = "warn"
+unnameable_types = "warn"
+
+# What a minor release may grow is non-exhaustive; the exceptions say why with an `expect` (the crate docs list them).
+[lints.clippy]
+exhaustive_structs = "warn"
+exhaustive_enums = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+return_self_not_must_use = "warn"
+
+[lints.rustdoc]
+unescaped_backticks = "warn"
 
 [features]
 default = ["std"]
 std = []
 threading = ["std"]
 capi = ["threading"]
+# Word lists for breaking Thai, Lao, Khmer and Myanmar lines between words, about 1 MB.
+dictionaries = []
 
 [[test]]
 name = "api"
-path = "src/daegun/tests/api/main.rs"
-
-[[test]]
-name = "alloc"
-path = "src/daegun/tests/alloc/main.rs"
+path = "src/api/rust/tests/api/main.rs"
 
 [profile.release]
 opt-level = 3
@@ -47,17 +88,5 @@ strip = "none"
 split-debuginfo = "packed"
 
 [[test]]
-name = "fingerprint"
-path = "src/daecore/tests/fingerprint/main.rs"
-
-[[test]]
-name = "machine"
-path = "src/daecore/tests/machine/main.rs"
-
-[[test]]
-name = "shaper"
-path = "src/daecore/tests/shaper/main.rs"
-
-[[test]]
-name = "type"
-path = "src/daecore/tests/type/main.rs"
+name = "text"
+path = "src/daecore/tests/text/main.rs"

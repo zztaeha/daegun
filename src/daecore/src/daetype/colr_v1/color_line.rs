@@ -1,22 +1,28 @@
-#[cfg(all(not(feature = "std"), not(test)))]
-use crate::daecore::daemachine::float::FloatExt;
 use alloc::vec::Vec;
-use super::super::decoder::{read_i16_be, read_u16_be, read_u32_be, records_fit};
+use super::super::decoder::{f2dot14, read_i16_be, read_u16_be, read_u32_be};
 use super::paint::ColorStop;
 use super::varfield::{resolve_var_field, VarField};
 use super::Colrv1Ctx;
+use crate::daecore::daekit::draw::Extend;
 
+// The color line at `off`, its stops read into `stops` and its extend returned; drawn, an extend past reflect fails
+// the line. A walk that measures reads no line: every gradient's fill counts the same whatever its stops.
 pub(super) fn parse_color_line(
-    ctx: &Colrv1Ctx, off: usize, is_var: bool, budget: &mut super::PaintBudget,
-) -> Option<(u8, Vec<ColorStop>)> {
+    ctx: &Colrv1Ctx, off: usize, is_var: bool, budget: &mut super::PaintBudget, stops: &mut Vec<ColorStop>,
+) -> Option<Extend> {
+    stops.clear();
+    if !ctx.drawn { return Some(Extend::Pad); }
     let colr = ctx.colr;
-    let extend = *colr.get(off)?;
-    let num_stops = read_u16_be(colr, off + 1)? as usize;
-    let stop_size = if is_var { 10 } else { 6 };
-
-    if !records_fit(off + 3, num_stops, stop_size, colr.len()) { return None; }
+    // COLR numbers them pad, repeat, reflect: not `Extend`'s order, which is SVG's.
+    let extend = match *colr.get(off)? {
+        0 => Extend::Pad,
+        1 => Extend::Repeat,
+        2 => Extend::Reflect,
+        _ => return None,
+    };
+    let (num_stops, stop_size) = super::format::color_line_stops(colr, off, is_var)?;
     if !budget.spend_stops(num_stops) { return None; }
-    let mut stops = Vec::with_capacity(num_stops);
+    stops.reserve_exact(num_stops);
     for i in 0..num_stops {
         let s = off + 3 + i * stop_size;
         let stop_offset_raw = read_i16_be(colr, s)?;
@@ -27,24 +33,15 @@ pub(super) fn parse_color_line(
             let var_index_base = read_u32_be(colr, s + 6)?;
             (
                 resolve_var_field(stop_offset_raw as i32, VarField::F2Dot14, var_index_base, 0, ctx),
-                resolve_var_field(alpha_raw as i32, VarField::F2Dot14, var_index_base, 1, ctx),
+                resolve_var_field(alpha_raw as i32, VarField::Alpha, var_index_base, 1, ctx),
             )
         } else {
-            (stop_offset_raw as f64 / 16384.0, alpha_raw as f64 / 16384.0)
+            (f2dot14(stop_offset_raw), f2dot14(alpha_raw))
         };
 
-        let stop_alpha = alpha.clamp(0.0, 1.0);
-        let (is_foreground, r, g, b, alpha_byte) = if palette_index == 0xFFFF {
-            (true, 0, 0, 0, (stop_alpha * 255.0).round() as u8)
-        } else {
-            let (cpal, palette) = (ctx.cpal?, ctx.palette.as_ref()?);
-            let (r, g, b, cpal_a) = palette.entry(cpal, palette_index)?;
-            let combined = stop_alpha * (cpal_a as f64 / 255.0);
-            (false, r, g, b, (combined * 255.0).round() as u8)
-        };
-
-        stops.push(ColorStop { offset: stop_offset, is_foreground, r, g, b, alpha: alpha_byte });
+        let (color, foreground) = ctx.color(palette_index, alpha)?;
+        stops.push(ColorStop { offset: stop_offset, color, foreground });
     }
 
-    Some((extend, stops))
+    Some(extend)
 }

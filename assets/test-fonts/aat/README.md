@@ -29,6 +29,5 @@ These are minimal test fonts. A latency figure from one measures per-call overhe
 AAT font costs – a production `morx` runs many subtables over thousands of glyphs, where these run
 one over a handful. Treat the numbers as a floor.
 
-For a realistically sized `morx`, HarfBuzz's in-house set has a 79 KB font with 7 subtables across
-four types; macOS ships 96 more. Neither is here: the first needs its OFL provenance confirmed per
-file, and the second cannot be redistributed.
+A realistically sized `morx` isn't here: the 96 fonts with one that macOS ships can't be
+redistributed.

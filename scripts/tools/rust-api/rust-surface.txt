@@ -1,0 +1,2624 @@
+assoc_const daegun::GlyphId::NOTDEF GlyphId
+assoc_const daegun::NameId::COMPATIBLE_FULL_NAME NameId
+assoc_const daegun::NameId::COPYRIGHT_NOTICE NameId
+assoc_const daegun::NameId::DARK_BACKGROUND_PALETTE NameId
+assoc_const daegun::NameId::DESCRIPTION NameId
+assoc_const daegun::NameId::DESIGNER NameId
+assoc_const daegun::NameId::DESIGNER_URL NameId
+assoc_const daegun::NameId::FAMILY_NAME NameId
+assoc_const daegun::NameId::FULL_NAME NameId
+assoc_const daegun::NameId::LICENSE_DESCRIPTION NameId
+assoc_const daegun::NameId::LICENSE_URL NameId
+assoc_const daegun::NameId::LIGHT_BACKGROUND_PALETTE NameId
+assoc_const daegun::NameId::MANUFACTURER NameId
+assoc_const daegun::NameId::POSTSCRIPT_CID_FINDFONT_NAME NameId
+assoc_const daegun::NameId::POSTSCRIPT_NAME NameId
+assoc_const daegun::NameId::SAMPLE_TEXT NameId
+assoc_const daegun::NameId::SUBFAMILY_NAME NameId
+assoc_const daegun::NameId::TRADEMARK NameId
+assoc_const daegun::NameId::TYPOGRAPHIC_FAMILY_NAME NameId
+assoc_const daegun::NameId::TYPOGRAPHIC_SUBFAMILY_NAME NameId
+assoc_const daegun::NameId::UNIQUE_ID NameId
+assoc_const daegun::NameId::VARIATIONS_POSTSCRIPT_NAME_PREFIX NameId
+assoc_const daegun::NameId::VENDOR_URL NameId
+assoc_const daegun::NameId::VERSION_STRING NameId
+assoc_const daegun::NameId::WWS_FAMILY_NAME NameId
+assoc_const daegun::NameId::WWS_SUBFAMILY_NAME NameId
+assoc_const daegun::color::SceneOptions::DEFAULT SceneOptions
+assoc_const daegun::layout::LayoutOptions::DEFAULT LayoutOptions<'static>
+assoc_const daegun::metrics::PdfFlags::FIXED_PITCH PdfFlags
+assoc_const daegun::metrics::PdfFlags::ITALIC PdfFlags
+assoc_const daegun::metrics::PdfFlags::NONSYMBOLIC PdfFlags
+assoc_const daegun::metrics::PdfFlags::SCRIPT PdfFlags
+assoc_const daegun::metrics::PdfFlags::SERIF PdfFlags
+assoc_const daegun::metrics::PdfFlags::SYMBOLIC PdfFlags
+assoc_const daegun::outline::OutlineOptions::DEFAULT OutlineOptions
+assoc_const daegun::raster::RasterOptions::DEFAULT RasterOptions<'static>
+assoc_const daegun::shape::ShapeOptions::DEFAULT ShapeOptions<'static>
+assoc_const daegun::unicode::Script::ADLAM Script
+assoc_const daegun::unicode::Script::AHOM Script
+assoc_const daegun::unicode::Script::ANATOLIAN_HIEROGLYPHS Script
+assoc_const daegun::unicode::Script::ARABIC Script
+assoc_const daegun::unicode::Script::ARMENIAN Script
+assoc_const daegun::unicode::Script::AVESTAN Script
+assoc_const daegun::unicode::Script::BALINESE Script
+assoc_const daegun::unicode::Script::BAMUM Script
+assoc_const daegun::unicode::Script::BASSA_VAH Script
+assoc_const daegun::unicode::Script::BATAK Script
+assoc_const daegun::unicode::Script::BENGALI Script
+assoc_const daegun::unicode::Script::BERIA_ERFE Script
+assoc_const daegun::unicode::Script::BHAIKSUKI Script
+assoc_const daegun::unicode::Script::BOPOMOFO Script
+assoc_const daegun::unicode::Script::BRAHMI Script
+assoc_const daegun::unicode::Script::BRAILLE Script
+assoc_const daegun::unicode::Script::BUGINESE Script
+assoc_const daegun::unicode::Script::BUHID Script
+assoc_const daegun::unicode::Script::CANADIAN_ABORIGINAL Script
+assoc_const daegun::unicode::Script::CARIAN Script
+assoc_const daegun::unicode::Script::CAUCASIAN_ALBANIAN Script
+assoc_const daegun::unicode::Script::CHAKMA Script
+assoc_const daegun::unicode::Script::CHAM Script
+assoc_const daegun::unicode::Script::CHEROKEE Script
+assoc_const daegun::unicode::Script::CHORASMIAN Script
+assoc_const daegun::unicode::Script::COMMON Script
+assoc_const daegun::unicode::Script::COPTIC Script
+assoc_const daegun::unicode::Script::CUNEIFORM Script
+assoc_const daegun::unicode::Script::CYPRIOT Script
+assoc_const daegun::unicode::Script::CYPRO_MINOAN Script
+assoc_const daegun::unicode::Script::CYRILLIC Script
+assoc_const daegun::unicode::Script::DESERET Script
+assoc_const daegun::unicode::Script::DEVANAGARI Script
+assoc_const daegun::unicode::Script::DIVES_AKURU Script
+assoc_const daegun::unicode::Script::DOGRA Script
+assoc_const daegun::unicode::Script::DUPLOYAN Script
+assoc_const daegun::unicode::Script::EGYPTIAN_HIEROGLYPHS Script
+assoc_const daegun::unicode::Script::ELBASAN Script
+assoc_const daegun::unicode::Script::ELYMAIC Script
+assoc_const daegun::unicode::Script::ETHIOPIC Script
+assoc_const daegun::unicode::Script::GARAY Script
+assoc_const daegun::unicode::Script::GEORGIAN Script
+assoc_const daegun::unicode::Script::GLAGOLITIC Script
+assoc_const daegun::unicode::Script::GOTHIC Script
+assoc_const daegun::unicode::Script::GRANTHA Script
+assoc_const daegun::unicode::Script::GREEK Script
+assoc_const daegun::unicode::Script::GUJARATI Script
+assoc_const daegun::unicode::Script::GUNJALA_GONDI Script
+assoc_const daegun::unicode::Script::GURMUKHI Script
+assoc_const daegun::unicode::Script::GURUNG_KHEMA Script
+assoc_const daegun::unicode::Script::HAN Script
+assoc_const daegun::unicode::Script::HANGUL Script
+assoc_const daegun::unicode::Script::HANIFI_ROHINGYA Script
+assoc_const daegun::unicode::Script::HANUNOO Script
+assoc_const daegun::unicode::Script::HATRAN Script
+assoc_const daegun::unicode::Script::HEBREW Script
+assoc_const daegun::unicode::Script::HIRAGANA Script
+assoc_const daegun::unicode::Script::IMPERIAL_ARAMAIC Script
+assoc_const daegun::unicode::Script::INHERITED Script
+assoc_const daegun::unicode::Script::INSCRIPTIONAL_PAHLAVI Script
+assoc_const daegun::unicode::Script::INSCRIPTIONAL_PARTHIAN Script
+assoc_const daegun::unicode::Script::JAVANESE Script
+assoc_const daegun::unicode::Script::JURCHEN Script
+assoc_const daegun::unicode::Script::KAITHI Script
+assoc_const daegun::unicode::Script::KANNADA Script
+assoc_const daegun::unicode::Script::KATAKANA Script
+assoc_const daegun::unicode::Script::KAWI Script
+assoc_const daegun::unicode::Script::KAYAH_LI Script
+assoc_const daegun::unicode::Script::KHAROSHTHI Script
+assoc_const daegun::unicode::Script::KHITAN_SMALL_SCRIPT Script
+assoc_const daegun::unicode::Script::KHMER Script
+assoc_const daegun::unicode::Script::KHOJKI Script
+assoc_const daegun::unicode::Script::KHUDAWADI Script
+assoc_const daegun::unicode::Script::KIRAT_RAI Script
+assoc_const daegun::unicode::Script::LAO Script
+assoc_const daegun::unicode::Script::LATIN Script
+assoc_const daegun::unicode::Script::LEPCHA Script
+assoc_const daegun::unicode::Script::LIMBU Script
+assoc_const daegun::unicode::Script::LINEAR_A Script
+assoc_const daegun::unicode::Script::LINEAR_B Script
+assoc_const daegun::unicode::Script::LISU Script
+assoc_const daegun::unicode::Script::LYCIAN Script
+assoc_const daegun::unicode::Script::LYDIAN Script
+assoc_const daegun::unicode::Script::MAHAJANI Script
+assoc_const daegun::unicode::Script::MAKASAR Script
+assoc_const daegun::unicode::Script::MALAYALAM Script
+assoc_const daegun::unicode::Script::MANDAIC Script
+assoc_const daegun::unicode::Script::MANICHAEAN Script
+assoc_const daegun::unicode::Script::MARCHEN Script
+assoc_const daegun::unicode::Script::MASARAM_GONDI Script
+assoc_const daegun::unicode::Script::MEDEFAIDRIN Script
+assoc_const daegun::unicode::Script::MEETEI_MAYEK Script
+assoc_const daegun::unicode::Script::MENDE_KIKAKUI Script
+assoc_const daegun::unicode::Script::MEROITIC_CURSIVE Script
+assoc_const daegun::unicode::Script::MEROITIC_HIEROGLYPHS Script
+assoc_const daegun::unicode::Script::MIAO Script
+assoc_const daegun::unicode::Script::MODI Script
+assoc_const daegun::unicode::Script::MONGOLIAN Script
+assoc_const daegun::unicode::Script::MRO Script
+assoc_const daegun::unicode::Script::MULTANI Script
+assoc_const daegun::unicode::Script::MYANMAR Script
+assoc_const daegun::unicode::Script::NABATAEAN Script
+assoc_const daegun::unicode::Script::NAG_MUNDARI Script
+assoc_const daegun::unicode::Script::NANDINAGARI Script
+assoc_const daegun::unicode::Script::NEWA Script
+assoc_const daegun::unicode::Script::NEW_TAI_LUE Script
+assoc_const daegun::unicode::Script::NKO Script
+assoc_const daegun::unicode::Script::NUSHU Script
+assoc_const daegun::unicode::Script::NYIAKENG_PUACHUE_HMONG Script
+assoc_const daegun::unicode::Script::OGHAM Script
+assoc_const daegun::unicode::Script::OLD_HUNGARIAN Script
+assoc_const daegun::unicode::Script::OLD_ITALIC Script
+assoc_const daegun::unicode::Script::OLD_NORTH_ARABIAN Script
+assoc_const daegun::unicode::Script::OLD_PERMIC Script
+assoc_const daegun::unicode::Script::OLD_PERSIAN Script
+assoc_const daegun::unicode::Script::OLD_SOGDIAN Script
+assoc_const daegun::unicode::Script::OLD_SOUTH_ARABIAN Script
+assoc_const daegun::unicode::Script::OLD_TURKIC Script
+assoc_const daegun::unicode::Script::OLD_UYGHUR Script
+assoc_const daegun::unicode::Script::OL_CHIKI Script
+assoc_const daegun::unicode::Script::OL_ONAL Script
+assoc_const daegun::unicode::Script::ORIYA Script
+assoc_const daegun::unicode::Script::OSAGE Script
+assoc_const daegun::unicode::Script::OSMANYA Script
+assoc_const daegun::unicode::Script::PAHAWH_HMONG Script
+assoc_const daegun::unicode::Script::PALMYRENE Script
+assoc_const daegun::unicode::Script::PAU_CIN_HAU Script
+assoc_const daegun::unicode::Script::PHAGS_PA Script
+assoc_const daegun::unicode::Script::PHOENICIAN Script
+assoc_const daegun::unicode::Script::PROTO_CUNEIFORM Script
+assoc_const daegun::unicode::Script::PSALTER_PAHLAVI Script
+assoc_const daegun::unicode::Script::REJANG Script
+assoc_const daegun::unicode::Script::RUNIC Script
+assoc_const daegun::unicode::Script::SAMARITAN Script
+assoc_const daegun::unicode::Script::SAURASHTRA Script
+assoc_const daegun::unicode::Script::SEAL Script
+assoc_const daegun::unicode::Script::SHARADA Script
+assoc_const daegun::unicode::Script::SHAVIAN Script
+assoc_const daegun::unicode::Script::SIDDHAM Script
+assoc_const daegun::unicode::Script::SIDETIC Script
+assoc_const daegun::unicode::Script::SIGNWRITING Script
+assoc_const daegun::unicode::Script::SINHALA Script
+assoc_const daegun::unicode::Script::SOGDIAN Script
+assoc_const daegun::unicode::Script::SORA_SOMPENG Script
+assoc_const daegun::unicode::Script::SOYOMBO Script
+assoc_const daegun::unicode::Script::SUNDANESE Script
+assoc_const daegun::unicode::Script::SUNUWAR Script
+assoc_const daegun::unicode::Script::SYLOTI_NAGRI Script
+assoc_const daegun::unicode::Script::SYRIAC Script
+assoc_const daegun::unicode::Script::TAGALOG Script
+assoc_const daegun::unicode::Script::TAGBANWA Script
+assoc_const daegun::unicode::Script::TAI_LE Script
+assoc_const daegun::unicode::Script::TAI_THAM Script
+assoc_const daegun::unicode::Script::TAI_VIET Script
+assoc_const daegun::unicode::Script::TAI_YO Script
+assoc_const daegun::unicode::Script::TAKRI Script
+assoc_const daegun::unicode::Script::TAMIL Script
+assoc_const daegun::unicode::Script::TANGSA Script
+assoc_const daegun::unicode::Script::TANGUT Script
+assoc_const daegun::unicode::Script::TELUGU Script
+assoc_const daegun::unicode::Script::THAANA Script
+assoc_const daegun::unicode::Script::THAI Script
+assoc_const daegun::unicode::Script::TIBETAN Script
+assoc_const daegun::unicode::Script::TIFINAGH Script
+assoc_const daegun::unicode::Script::TIRHUTA Script
+assoc_const daegun::unicode::Script::TODHRI Script
+assoc_const daegun::unicode::Script::TOLONG_SIKI Script
+assoc_const daegun::unicode::Script::TOTO Script
+assoc_const daegun::unicode::Script::TULU_TIGALARI Script
+assoc_const daegun::unicode::Script::UGARITIC Script
+assoc_const daegun::unicode::Script::VAI Script
+assoc_const daegun::unicode::Script::VITHKUQI Script
+assoc_const daegun::unicode::Script::WANCHO Script
+assoc_const daegun::unicode::Script::WARANG_CITI Script
+assoc_const daegun::unicode::Script::YEZIDI Script
+assoc_const daegun::unicode::Script::YI Script
+assoc_const daegun::unicode::Script::ZANABAZAR_SQUARE Script
+auto daegun::Axis: RefUnwindSafe
+auto daegun::Axis: Send
+auto daegun::Axis: Sync
+auto daegun::Axis: Unpin
+auto daegun::Axis: UnwindSafe
+auto daegun::Bounds: RefUnwindSafe
+auto daegun::Bounds: Send
+auto daegun::Bounds: Sync
+auto daegun::Bounds: Unpin
+auto daegun::Bounds: UnwindSafe
+auto daegun::Cache: RefUnwindSafe
+auto daegun::Cache: Send
+auto daegun::Cache: Sync
+auto daegun::Cache: Unpin
+auto daegun::Cache: UnwindSafe
+auto daegun::CachePool: !RefUnwindSafe
+auto daegun::CachePool: !Send
+auto daegun::CachePool: !Sync
+auto daegun::CachePool: !UnwindSafe
+auto daegun::CachePool: Unpin
+auto daegun::CacheStats: RefUnwindSafe
+auto daegun::CacheStats: Send
+auto daegun::CacheStats: Sync
+auto daegun::CacheStats: Unpin
+auto daegun::CacheStats: UnwindSafe
+auto daegun::Error: RefUnwindSafe
+auto daegun::Error: Send
+auto daegun::Error: Sync
+auto daegun::Error: Unpin
+auto daegun::Error: UnwindSafe
+auto daegun::ErrorKind: RefUnwindSafe
+auto daegun::ErrorKind: Send
+auto daegun::ErrorKind: Sync
+auto daegun::ErrorKind: Unpin
+auto daegun::ErrorKind: UnwindSafe
+auto daegun::Font: !RefUnwindSafe
+auto daegun::Font: !Send
+auto daegun::Font: !Sync
+auto daegun::Font: !UnwindSafe
+auto daegun::Font: Unpin
+auto daegun::FontStyle: RefUnwindSafe
+auto daegun::FontStyle: Send
+auto daegun::FontStyle: Sync
+auto daegun::FontStyle: Unpin
+auto daegun::FontStyle: UnwindSafe
+auto daegun::GlyphClass: RefUnwindSafe
+auto daegun::GlyphClass: Send
+auto daegun::GlyphClass: Sync
+auto daegun::GlyphClass: Unpin
+auto daegun::GlyphClass: UnwindSafe
+auto daegun::GlyphId: RefUnwindSafe
+auto daegun::GlyphId: Send
+auto daegun::GlyphId: Sync
+auto daegun::GlyphId: Unpin
+auto daegun::GlyphId: UnwindSafe
+auto daegun::LocalizedName: RefUnwindSafe
+auto daegun::LocalizedName: Send
+auto daegun::LocalizedName: Sync
+auto daegun::LocalizedName: Unpin
+auto daegun::LocalizedName: UnwindSafe
+auto daegun::Location: !Send
+auto daegun::Location: !Sync
+auto daegun::Location: RefUnwindSafe
+auto daegun::Location: Unpin
+auto daegun::Location: UnwindSafe
+auto daegun::NameId: RefUnwindSafe
+auto daegun::NameId: Send
+auto daegun::NameId: Sync
+auto daegun::NameId: Unpin
+auto daegun::NameId: UnwindSafe
+auto daegun::NamedInstance: RefUnwindSafe
+auto daegun::NamedInstance: Send
+auto daegun::NamedInstance: Sync
+auto daegun::NamedInstance: Unpin
+auto daegun::NamedInstance: UnwindSafe
+auto daegun::Orientation: RefUnwindSafe
+auto daegun::Orientation: Send
+auto daegun::Orientation: Sync
+auto daegun::Orientation: Unpin
+auto daegun::Orientation: UnwindSafe
+auto daegun::Tag: RefUnwindSafe
+auto daegun::Tag: Send
+auto daegun::Tag: Sync
+auto daegun::Tag: Unpin
+auto daegun::Tag: UnwindSafe
+auto daegun::color::BitmapImage: RefUnwindSafe
+auto daegun::color::BitmapImage: Send
+auto daegun::color::BitmapImage: Sync
+auto daegun::color::BitmapImage: Unpin
+auto daegun::color::BitmapImage: UnwindSafe
+auto daegun::color::Blend: RefUnwindSafe
+auto daegun::color::Blend: Send
+auto daegun::color::Blend: Sync
+auto daegun::color::Blend: Unpin
+auto daegun::color::Blend: UnwindSafe
+auto daegun::color::Center: RefUnwindSafe
+auto daegun::color::Center: Send
+auto daegun::color::Center: Sync
+auto daegun::color::Center: Unpin
+auto daegun::color::Center: UnwindSafe
+auto daegun::color::ClipShape: RefUnwindSafe
+auto daegun::color::ClipShape: Send
+auto daegun::color::ClipShape: Sync
+auto daegun::color::ClipShape: Unpin
+auto daegun::color::ClipShape: UnwindSafe
+auto daegun::color::ColorStop: RefUnwindSafe
+auto daegun::color::ColorStop: Send
+auto daegun::color::ColorStop: Sync
+auto daegun::color::ColorStop: Unpin
+auto daegun::color::ColorStop: UnwindSafe
+auto daegun::color::ColrLayer: RefUnwindSafe
+auto daegun::color::ColrLayer: Send
+auto daegun::color::ColrLayer: Sync
+auto daegun::color::ColrLayer: Unpin
+auto daegun::color::ColrLayer: UnwindSafe
+auto daegun::color::DisplayList: RefUnwindSafe
+auto daegun::color::DisplayList: Send
+auto daegun::color::DisplayList: Sync
+auto daegun::color::DisplayList: Unpin
+auto daegun::color::DisplayList: UnwindSafe
+auto daegun::color::Extend: RefUnwindSafe
+auto daegun::color::Extend: Send
+auto daegun::color::Extend: Sync
+auto daegun::color::Extend: Unpin
+auto daegun::color::Extend: UnwindSafe
+auto daegun::color::GlyphBitmap: RefUnwindSafe
+auto daegun::color::GlyphBitmap: Send
+auto daegun::color::GlyphBitmap: Sync
+auto daegun::color::GlyphBitmap: Unpin
+auto daegun::color::GlyphBitmap: UnwindSafe
+auto daegun::color::Gradient: RefUnwindSafe
+auto daegun::color::Gradient: Send
+auto daegun::color::Gradient: Sync
+auto daegun::color::Gradient: Unpin
+auto daegun::color::Gradient: UnwindSafe
+auto daegun::color::GradientId: RefUnwindSafe
+auto daegun::color::GradientId: Send
+auto daegun::color::GradientId: Sync
+auto daegun::color::GradientId: Unpin
+auto daegun::color::GradientId: UnwindSafe
+auto daegun::color::GradientKind: RefUnwindSafe
+auto daegun::color::GradientKind: Send
+auto daegun::color::GradientKind: Sync
+auto daegun::color::GradientKind: Unpin
+auto daegun::color::GradientKind: UnwindSafe
+auto daegun::color::Op: RefUnwindSafe
+auto daegun::color::Op: Send
+auto daegun::color::Op: Sync
+auto daegun::color::Op: Unpin
+auto daegun::color::Op: UnwindSafe
+auto daegun::color::Paint: RefUnwindSafe
+auto daegun::color::Paint: Send
+auto daegun::color::Paint: Sync
+auto daegun::color::Paint: Unpin
+auto daegun::color::Paint: UnwindSafe
+auto daegun::color::PaintGraph: RefUnwindSafe
+auto daegun::color::PaintGraph: Send
+auto daegun::color::PaintGraph: Sync
+auto daegun::color::PaintGraph: Unpin
+auto daegun::color::PaintGraph: UnwindSafe
+auto daegun::color::PaintNode: RefUnwindSafe
+auto daegun::color::PaintNode: Send
+auto daegun::color::PaintNode: Sync
+auto daegun::color::PaintNode: Unpin
+auto daegun::color::PaintNode: UnwindSafe
+auto daegun::color::PaintRef: RefUnwindSafe
+auto daegun::color::PaintRef: Send
+auto daegun::color::PaintRef: Sync
+auto daegun::color::PaintRef: Unpin
+auto daegun::color::PaintRef: UnwindSafe
+auto daegun::color::Palette: RefUnwindSafe
+auto daegun::color::Palette: Send
+auto daegun::color::Palette: Sync
+auto daegun::color::Palette: Unpin
+auto daegun::color::Palette: UnwindSafe
+auto daegun::color::PathId: RefUnwindSafe
+auto daegun::color::PathId: Send
+auto daegun::color::PathId: Sync
+auto daegun::color::PathId: Unpin
+auto daegun::color::PathId: UnwindSafe
+auto daegun::color::Premultiplied: RefUnwindSafe
+auto daegun::color::Premultiplied: Send
+auto daegun::color::Premultiplied: Sync
+auto daegun::color::Premultiplied: Unpin
+auto daegun::color::Premultiplied: UnwindSafe
+auto daegun::color::Rgba: RefUnwindSafe
+auto daegun::color::Rgba: Send
+auto daegun::color::Rgba: Sync
+auto daegun::color::Rgba: Unpin
+auto daegun::color::Rgba: UnwindSafe
+auto daegun::color::SceneOptions: RefUnwindSafe
+auto daegun::color::SceneOptions: Send
+auto daegun::color::SceneOptions: Sync
+auto daegun::color::SceneOptions: Unpin
+auto daegun::color::SceneOptions: UnwindSafe
+auto daegun::color::Stop: RefUnwindSafe
+auto daegun::color::Stop: Send
+auto daegun::color::Stop: Sync
+auto daegun::color::Stop: Unpin
+auto daegun::color::Stop: UnwindSafe
+auto daegun::color::Stops: RefUnwindSafe
+auto daegun::color::Stops: Send
+auto daegun::color::Stops: Sync
+auto daegun::color::Stops: Unpin
+auto daegun::color::Stops: UnwindSafe
+auto daegun::color::gradient::Interpolation: RefUnwindSafe
+auto daegun::color::gradient::Interpolation: Send
+auto daegun::color::gradient::Interpolation: Sync
+auto daegun::color::gradient::Interpolation: Unpin
+auto daegun::color::gradient::Interpolation: UnwindSafe
+auto daegun::color::gradient::Ramp: RefUnwindSafe
+auto daegun::color::gradient::Ramp: Send
+auto daegun::color::gradient::Ramp: Sync
+auto daegun::color::gradient::Ramp: Unpin
+auto daegun::color::gradient::Ramp: UnwindSafe
+auto daegun::layout::Adjustment: RefUnwindSafe
+auto daegun::layout::Adjustment: Send
+auto daegun::layout::Adjustment: Sync
+auto daegun::layout::Adjustment: Unpin
+auto daegun::layout::Adjustment: UnwindSafe
+auto daegun::layout::Align: RefUnwindSafe
+auto daegun::layout::Align: Send
+auto daegun::layout::Align: Sync
+auto daegun::layout::Align: Unpin
+auto daegun::layout::Align: UnwindSafe
+auto daegun::layout::BreakStrategy: RefUnwindSafe
+auto daegun::layout::BreakStrategy: Send
+auto daegun::layout::BreakStrategy: Sync
+auto daegun::layout::BreakStrategy: Unpin
+auto daegun::layout::BreakStrategy: UnwindSafe
+auto daegun::layout::JstfModLists: RefUnwindSafe
+auto daegun::layout::JstfModLists: Send
+auto daegun::layout::JstfModLists: Sync
+auto daegun::layout::JstfModLists: Unpin
+auto daegun::layout::JstfModLists: UnwindSafe
+auto daegun::layout::Justified: RefUnwindSafe
+auto daegun::layout::Justified: Send
+auto daegun::layout::Justified: Sync
+auto daegun::layout::Justified: Unpin
+auto daegun::layout::Justified: UnwindSafe
+auto daegun::layout::JustifyOptions: RefUnwindSafe
+auto daegun::layout::JustifyOptions: Send
+auto daegun::layout::JustifyOptions: Sync
+auto daegun::layout::JustifyOptions: Unpin
+auto daegun::layout::JustifyOptions: UnwindSafe
+auto daegun::layout::LayoutLine: RefUnwindSafe
+auto daegun::layout::LayoutLine: Send
+auto daegun::layout::LayoutLine: Sync
+auto daegun::layout::LayoutLine: Unpin
+auto daegun::layout::LayoutLine: UnwindSafe
+auto daegun::layout::LayoutOptions: !RefUnwindSafe
+auto daegun::layout::LayoutOptions: !UnwindSafe
+auto daegun::layout::LayoutOptions: Send
+auto daegun::layout::LayoutOptions: Sync
+auto daegun::layout::LayoutOptions: Unpin
+auto daegun::layout::PositionedRun: RefUnwindSafe
+auto daegun::layout::PositionedRun: Send
+auto daegun::layout::PositionedRun: Sync
+auto daegun::layout::PositionedRun: Unpin
+auto daegun::layout::PositionedRun: UnwindSafe
+auto daegun::layout::TextLayout: RefUnwindSafe
+auto daegun::layout::TextLayout: Send
+auto daegun::layout::TextLayout: Sync
+auto daegun::layout::TextLayout: Unpin
+auto daegun::layout::TextLayout: UnwindSafe
+auto daegun::layout::TextOrientation: RefUnwindSafe
+auto daegun::layout::TextOrientation: Send
+auto daegun::layout::TextOrientation: Sync
+auto daegun::layout::TextOrientation: Unpin
+auto daegun::layout::TextOrientation: UnwindSafe
+auto daegun::layout::WritingMode: RefUnwindSafe
+auto daegun::layout::WritingMode: Send
+auto daegun::layout::WritingMode: Sync
+auto daegun::layout::WritingMode: Unpin
+auto daegun::layout::WritingMode: UnwindSafe
+auto daegun::math::GlyphAssembly: RefUnwindSafe
+auto daegun::math::GlyphAssembly: Send
+auto daegun::math::GlyphAssembly: Sync
+auto daegun::math::GlyphAssembly: Unpin
+auto daegun::math::GlyphAssembly: UnwindSafe
+auto daegun::math::GlyphPart: RefUnwindSafe
+auto daegun::math::GlyphPart: Send
+auto daegun::math::GlyphPart: Sync
+auto daegun::math::GlyphPart: Unpin
+auto daegun::math::GlyphPart: UnwindSafe
+auto daegun::math::MathConstants: RefUnwindSafe
+auto daegun::math::MathConstants: Send
+auto daegun::math::MathConstants: Sync
+auto daegun::math::MathConstants: Unpin
+auto daegun::math::MathConstants: UnwindSafe
+auto daegun::math::MathGlyphConstruction: RefUnwindSafe
+auto daegun::math::MathGlyphConstruction: Send
+auto daegun::math::MathGlyphConstruction: Sync
+auto daegun::math::MathGlyphConstruction: Unpin
+auto daegun::math::MathGlyphConstruction: UnwindSafe
+auto daegun::math::MathGlyphVariant: RefUnwindSafe
+auto daegun::math::MathGlyphVariant: Send
+auto daegun::math::MathGlyphVariant: Sync
+auto daegun::math::MathGlyphVariant: Unpin
+auto daegun::math::MathGlyphVariant: UnwindSafe
+auto daegun::math::MathKernCorner: RefUnwindSafe
+auto daegun::math::MathKernCorner: Send
+auto daegun::math::MathKernCorner: Sync
+auto daegun::math::MathKernCorner: Unpin
+auto daegun::math::MathKernCorner: UnwindSafe
+auto daegun::metrics::DecorationLine: RefUnwindSafe
+auto daegun::metrics::DecorationLine: Send
+auto daegun::metrics::DecorationLine: Sync
+auto daegun::metrics::DecorationLine: Unpin
+auto daegun::metrics::DecorationLine: UnwindSafe
+auto daegun::metrics::LineMetrics: RefUnwindSafe
+auto daegun::metrics::LineMetrics: Send
+auto daegun::metrics::LineMetrics: Sync
+auto daegun::metrics::LineMetrics: Unpin
+auto daegun::metrics::LineMetrics: UnwindSafe
+auto daegun::metrics::Os2: RefUnwindSafe
+auto daegun::metrics::Os2: Send
+auto daegun::metrics::Os2: Sync
+auto daegun::metrics::Os2: Unpin
+auto daegun::metrics::Os2: UnwindSafe
+auto daegun::metrics::PdfFlags: RefUnwindSafe
+auto daegun::metrics::PdfFlags: Send
+auto daegun::metrics::PdfFlags: Sync
+auto daegun::metrics::PdfFlags: Unpin
+auto daegun::metrics::PdfFlags: UnwindSafe
+auto daegun::metrics::ScriptMetrics: RefUnwindSafe
+auto daegun::metrics::ScriptMetrics: Send
+auto daegun::metrics::ScriptMetrics: Sync
+auto daegun::metrics::ScriptMetrics: Unpin
+auto daegun::metrics::ScriptMetrics: UnwindSafe
+auto daegun::metrics::Stat: RefUnwindSafe
+auto daegun::metrics::Stat: Send
+auto daegun::metrics::Stat: Sync
+auto daegun::metrics::Stat: Unpin
+auto daegun::metrics::Stat: UnwindSafe
+auto daegun::metrics::StatAxis: RefUnwindSafe
+auto daegun::metrics::StatAxis: Send
+auto daegun::metrics::StatAxis: Sync
+auto daegun::metrics::StatAxis: Unpin
+auto daegun::metrics::StatAxis: UnwindSafe
+auto daegun::metrics::StatAxisValue: RefUnwindSafe
+auto daegun::metrics::StatAxisValue: Send
+auto daegun::metrics::StatAxisValue: Sync
+auto daegun::metrics::StatAxisValue: Unpin
+auto daegun::metrics::StatAxisValue: UnwindSafe
+auto daegun::metrics::TypographicMetrics: RefUnwindSafe
+auto daegun::metrics::TypographicMetrics: Send
+auto daegun::metrics::TypographicMetrics: Sync
+auto daegun::metrics::TypographicMetrics: Unpin
+auto daegun::metrics::TypographicMetrics: UnwindSafe
+auto daegun::metrics::WinMetrics: RefUnwindSafe
+auto daegun::metrics::WinMetrics: Send
+auto daegun::metrics::WinMetrics: Sync
+auto daegun::metrics::WinMetrics: Unpin
+auto daegun::metrics::WinMetrics: UnwindSafe
+auto daegun::outline::Cap: RefUnwindSafe
+auto daegun::outline::Cap: Send
+auto daegun::outline::Cap: Sync
+auto daegun::outline::Cap: Unpin
+auto daegun::outline::Cap: UnwindSafe
+auto daegun::outline::CffHints: RefUnwindSafe
+auto daegun::outline::CffHints: Send
+auto daegun::outline::CffHints: Sync
+auto daegun::outline::CffHints: Unpin
+auto daegun::outline::CffHints: UnwindSafe
+auto daegun::outline::CffMask: RefUnwindSafe
+auto daegun::outline::CffMask: Send
+auto daegun::outline::CffMask: Sync
+auto daegun::outline::CffMask: Unpin
+auto daegun::outline::CffMask: UnwindSafe
+auto daegun::outline::CffStem: RefUnwindSafe
+auto daegun::outline::CffStem: Send
+auto daegun::outline::CffStem: Sync
+auto daegun::outline::CffStem: Unpin
+auto daegun::outline::CffStem: UnwindSafe
+auto daegun::outline::FillRule: RefUnwindSafe
+auto daegun::outline::FillRule: Send
+auto daegun::outline::FillRule: Sync
+auto daegun::outline::FillRule: Unpin
+auto daegun::outline::FillRule: UnwindSafe
+auto daegun::outline::HintMode: RefUnwindSafe
+auto daegun::outline::HintMode: Send
+auto daegun::outline::HintMode: Sync
+auto daegun::outline::HintMode: Unpin
+auto daegun::outline::HintMode: UnwindSafe
+auto daegun::outline::HintedOutline: RefUnwindSafe
+auto daegun::outline::HintedOutline: Send
+auto daegun::outline::HintedOutline: Sync
+auto daegun::outline::HintedOutline: Unpin
+auto daegun::outline::HintedOutline: UnwindSafe
+auto daegun::outline::Join: RefUnwindSafe
+auto daegun::outline::Join: Send
+auto daegun::outline::Join: Sync
+auto daegun::outline::Join: Unpin
+auto daegun::outline::Join: UnwindSafe
+auto daegun::outline::OutlineOptions: RefUnwindSafe
+auto daegun::outline::OutlineOptions: Send
+auto daegun::outline::OutlineOptions: Sync
+auto daegun::outline::OutlineOptions: Unpin
+auto daegun::outline::OutlineOptions: UnwindSafe
+auto daegun::outline::Path: RefUnwindSafe
+auto daegun::outline::Path: Send
+auto daegun::outline::Path: Sync
+auto daegun::outline::Path: Unpin
+auto daegun::outline::Path: UnwindSafe
+auto daegun::outline::PathView: RefUnwindSafe
+auto daegun::outline::PathView: Send
+auto daegun::outline::PathView: Sync
+auto daegun::outline::PathView: Unpin
+auto daegun::outline::PathView: UnwindSafe
+auto daegun::outline::Point: RefUnwindSafe
+auto daegun::outline::Point: Send
+auto daegun::outline::Point: Sync
+auto daegun::outline::Point: Unpin
+auto daegun::outline::Point: UnwindSafe
+auto daegun::outline::PointKind: RefUnwindSafe
+auto daegun::outline::PointKind: Send
+auto daegun::outline::PointKind: Sync
+auto daegun::outline::PointKind: Unpin
+auto daegun::outline::PointKind: UnwindSafe
+auto daegun::outline::PreparedGlyph: RefUnwindSafe
+auto daegun::outline::PreparedGlyph: Send
+auto daegun::outline::PreparedGlyph: Sync
+auto daegun::outline::PreparedGlyph: Unpin
+auto daegun::outline::PreparedGlyph: UnwindSafe
+auto daegun::outline::Quad: RefUnwindSafe
+auto daegun::outline::Quad: Send
+auto daegun::outline::Quad: Sync
+auto daegun::outline::Quad: Unpin
+auto daegun::outline::Quad: UnwindSafe
+auto daegun::outline::QuadraticPen: RefUnwindSafe
+auto daegun::outline::QuadraticPen: Send
+auto daegun::outline::QuadraticPen: Sync
+auto daegun::outline::QuadraticPen: Unpin
+auto daegun::outline::QuadraticPen: UnwindSafe
+auto daegun::outline::StrokeStyle: RefUnwindSafe
+auto daegun::outline::StrokeStyle: Send
+auto daegun::outline::StrokeStyle: Sync
+auto daegun::outline::StrokeStyle: Unpin
+auto daegun::outline::StrokeStyle: UnwindSafe
+auto daegun::outline::TransformPen: !UnwindSafe
+auto daegun::outline::TransformPen: RefUnwindSafe
+auto daegun::outline::TransformPen: Send
+auto daegun::outline::TransformPen: Sync
+auto daegun::outline::TransformPen: Unpin
+auto daegun::outline::Verb: RefUnwindSafe
+auto daegun::outline::Verb: Send
+auto daegun::outline::Verb: Sync
+auto daegun::outline::Verb: Unpin
+auto daegun::outline::Verb: UnwindSafe
+auto daegun::raster::Bitmap: RefUnwindSafe
+auto daegun::raster::Bitmap: Send
+auto daegun::raster::Bitmap: Sync
+auto daegun::raster::Bitmap: Unpin
+auto daegun::raster::Bitmap: UnwindSafe
+auto daegun::raster::Field: RefUnwindSafe
+auto daegun::raster::Field: Send
+auto daegun::raster::Field: Sync
+auto daegun::raster::Field: Unpin
+auto daegun::raster::Field: UnwindSafe
+auto daegun::raster::Gamma: RefUnwindSafe
+auto daegun::raster::Gamma: Send
+auto daegun::raster::Gamma: Sync
+auto daegun::raster::Gamma: Unpin
+auto daegun::raster::Gamma: UnwindSafe
+auto daegun::raster::Image: RefUnwindSafe
+auto daegun::raster::Image: Send
+auto daegun::raster::Image: Sync
+auto daegun::raster::Image: Unpin
+auto daegun::raster::Image: UnwindSafe
+auto daegun::raster::RasterOptions: RefUnwindSafe
+auto daegun::raster::RasterOptions: Send
+auto daegun::raster::RasterOptions: Sync
+auto daegun::raster::RasterOptions: Unpin
+auto daegun::raster::RasterOptions: UnwindSafe
+auto daegun::raster::Rasterizer: RefUnwindSafe
+auto daegun::raster::Rasterizer: Send
+auto daegun::raster::Rasterizer: Sync
+auto daegun::raster::Rasterizer: Unpin
+auto daegun::raster::Rasterizer: UnwindSafe
+auto daegun::raster::Rect: RefUnwindSafe
+auto daegun::raster::Rect: Send
+auto daegun::raster::Rect: Sync
+auto daegun::raster::Rect: Unpin
+auto daegun::raster::Rect: UnwindSafe
+auto daegun::raster::ShelfPacker: RefUnwindSafe
+auto daegun::raster::ShelfPacker: Send
+auto daegun::raster::ShelfPacker: Sync
+auto daegun::raster::ShelfPacker: Unpin
+auto daegun::raster::ShelfPacker: UnwindSafe
+auto daegun::raster::StripeOrder: RefUnwindSafe
+auto daegun::raster::StripeOrder: Send
+auto daegun::raster::StripeOrder: Sync
+auto daegun::raster::StripeOrder: Unpin
+auto daegun::raster::StripeOrder: UnwindSafe
+auto daegun::raster::SubpixelLayout: RefUnwindSafe
+auto daegun::raster::SubpixelLayout: Send
+auto daegun::raster::SubpixelLayout: Sync
+auto daegun::raster::SubpixelLayout: Unpin
+auto daegun::raster::SubpixelLayout: UnwindSafe
+auto daegun::raster::Target: !UnwindSafe
+auto daegun::raster::Target: RefUnwindSafe
+auto daegun::raster::Target: Send
+auto daegun::raster::Target: Sync
+auto daegun::raster::Target: Unpin
+auto daegun::raw::format::AnchorPoint: RefUnwindSafe
+auto daegun::raw::format::AnchorPoint: Send
+auto daegun::raw::format::AnchorPoint: Sync
+auto daegun::raw::format::AnchorPoint: Unpin
+auto daegun::raw::format::AnchorPoint: UnwindSafe
+auto daegun::raw::format::Ankr: RefUnwindSafe
+auto daegun::raw::format::Ankr: Send
+auto daegun::raw::format::Ankr: Sync
+auto daegun::raw::format::Ankr: Unpin
+auto daegun::raw::format::Ankr: UnwindSafe
+auto daegun::raw::format::DeltaSetIndex: RefUnwindSafe
+auto daegun::raw::format::DeltaSetIndex: Send
+auto daegun::raw::format::DeltaSetIndex: Sync
+auto daegun::raw::format::DeltaSetIndex: Unpin
+auto daegun::raw::format::DeltaSetIndex: UnwindSafe
+auto daegun::raw::format::Entry: RefUnwindSafe
+auto daegun::raw::format::Entry: Send
+auto daegun::raw::format::Entry: Sync
+auto daegun::raw::format::Entry: Unpin
+auto daegun::raw::format::Entry: UnwindSafe
+auto daegun::raw::format::FeatureVariations: RefUnwindSafe
+auto daegun::raw::format::FeatureVariations: Send
+auto daegun::raw::format::FeatureVariations: Sync
+auto daegun::raw::format::FeatureVariations: Unpin
+auto daegun::raw::format::FeatureVariations: UnwindSafe
+auto daegun::raw::format::GlyphValue: RefUnwindSafe
+auto daegun::raw::format::GlyphValue: Send
+auto daegun::raw::format::GlyphValue: Sync
+auto daegun::raw::format::GlyphValue: Unpin
+auto daegun::raw::format::GlyphValue: UnwindSafe
+auto daegun::raw::format::ItemVariationStore: RefUnwindSafe
+auto daegun::raw::format::ItemVariationStore: Send
+auto daegun::raw::format::ItemVariationStore: Sync
+auto daegun::raw::format::ItemVariationStore: Unpin
+auto daegun::raw::format::ItemVariationStore: UnwindSafe
+auto daegun::raw::format::Ivd: RefUnwindSafe
+auto daegun::raw::format::Ivd: Send
+auto daegun::raw::format::Ivd: Sync
+auto daegun::raw::format::Ivd: Unpin
+auto daegun::raw::format::Ivd: UnwindSafe
+auto daegun::raw::format::Lookup: RefUnwindSafe
+auto daegun::raw::format::Lookup: Send
+auto daegun::raw::format::Lookup: Sync
+auto daegun::raw::format::Lookup: Unpin
+auto daegun::raw::format::Lookup: UnwindSafe
+auto daegun::raw::format::RegionAxis: RefUnwindSafe
+auto daegun::raw::format::RegionAxis: Send
+auto daegun::raw::format::RegionAxis: Sync
+auto daegun::raw::format::RegionAxis: Unpin
+auto daegun::raw::format::RegionAxis: UnwindSafe
+auto daegun::raw::format::StateTable: RefUnwindSafe
+auto daegun::raw::format::StateTable: Send
+auto daegun::raw::format::StateTable: Sync
+auto daegun::raw::format::StateTable: Unpin
+auto daegun::raw::format::StateTable: UnwindSafe
+auto daegun::raw::format::Substitution: RefUnwindSafe
+auto daegun::raw::format::Substitution: Send
+auto daegun::raw::format::Substitution: Sync
+auto daegun::raw::format::Substitution: Unpin
+auto daegun::raw::format::Substitution: UnwindSafe
+auto daegun::shape::BidiRun: RefUnwindSafe
+auto daegun::shape::BidiRun: Send
+auto daegun::shape::BidiRun: Sync
+auto daegun::shape::BidiRun: Unpin
+auto daegun::shape::BidiRun: UnwindSafe
+auto daegun::shape::ClusterLevel: RefUnwindSafe
+auto daegun::shape::ClusterLevel: Send
+auto daegun::shape::ClusterLevel: Sync
+auto daegun::shape::ClusterLevel: Unpin
+auto daegun::shape::ClusterLevel: UnwindSafe
+auto daegun::shape::Direction: RefUnwindSafe
+auto daegun::shape::Direction: Send
+auto daegun::shape::Direction: Sync
+auto daegun::shape::Direction: Unpin
+auto daegun::shape::Direction: UnwindSafe
+auto daegun::shape::Feature: RefUnwindSafe
+auto daegun::shape::Feature: Send
+auto daegun::shape::Feature: Sync
+auto daegun::shape::Feature: Unpin
+auto daegun::shape::Feature: UnwindSafe
+auto daegun::shape::Ignorables: RefUnwindSafe
+auto daegun::shape::Ignorables: Send
+auto daegun::shape::Ignorables: Sync
+auto daegun::shape::Ignorables: Unpin
+auto daegun::shape::Ignorables: UnwindSafe
+auto daegun::shape::Offset: RefUnwindSafe
+auto daegun::shape::Offset: Send
+auto daegun::shape::Offset: Sync
+auto daegun::shape::Offset: Unpin
+auto daegun::shape::Offset: UnwindSafe
+auto daegun::shape::ShapeOptions: RefUnwindSafe
+auto daegun::shape::ShapeOptions: Send
+auto daegun::shape::ShapeOptions: Sync
+auto daegun::shape::ShapeOptions: Unpin
+auto daegun::shape::ShapeOptions: UnwindSafe
+auto daegun::shape::ShapedRun: RefUnwindSafe
+auto daegun::shape::ShapedRun: Send
+auto daegun::shape::ShapedRun: Sync
+auto daegun::shape::ShapedRun: Unpin
+auto daegun::shape::ShapedRun: UnwindSafe
+auto daegun::shape::Shaper: RefUnwindSafe
+auto daegun::shape::Shaper: Send
+auto daegun::shape::Shaper: Sync
+auto daegun::shape::Shaper: Unpin
+auto daegun::shape::Shaper: UnwindSafe
+auto daegun::tables::BaseScript: RefUnwindSafe
+auto daegun::tables::BaseScript: Send
+auto daegun::tables::BaseScript: Sync
+auto daegun::tables::BaseScript: Unpin
+auto daegun::tables::BaseScript: UnwindSafe
+auto daegun::tables::Extents: RefUnwindSafe
+auto daegun::tables::Extents: Send
+auto daegun::tables::Extents: Sync
+auto daegun::tables::Extents: Unpin
+auto daegun::tables::Extents: UnwindSafe
+auto daegun::tables::Subset: RefUnwindSafe
+auto daegun::tables::Subset: Send
+auto daegun::tables::Subset: Sync
+auto daegun::tables::Subset: Unpin
+auto daegun::tables::Subset: UnwindSafe
+auto daegun::unicode::BaseDirection: RefUnwindSafe
+auto daegun::unicode::BaseDirection: Send
+auto daegun::unicode::BaseDirection: Sync
+auto daegun::unicode::BaseDirection: Unpin
+auto daegun::unicode::BaseDirection: UnwindSafe
+auto daegun::unicode::BidiParagraph: RefUnwindSafe
+auto daegun::unicode::BidiParagraph: Send
+auto daegun::unicode::BidiParagraph: Sync
+auto daegun::unicode::BidiParagraph: Unpin
+auto daegun::unicode::BidiParagraph: UnwindSafe
+auto daegun::unicode::GeneralCategory: RefUnwindSafe
+auto daegun::unicode::GeneralCategory: Send
+auto daegun::unicode::GeneralCategory: Sync
+auto daegun::unicode::GeneralCategory: Unpin
+auto daegun::unicode::GeneralCategory: UnwindSafe
+auto daegun::unicode::LineBreak: RefUnwindSafe
+auto daegun::unicode::LineBreak: Send
+auto daegun::unicode::LineBreak: Sync
+auto daegun::unicode::LineBreak: Unpin
+auto daegun::unicode::LineBreak: UnwindSafe
+auto daegun::unicode::ParagraphRun: RefUnwindSafe
+auto daegun::unicode::ParagraphRun: Send
+auto daegun::unicode::ParagraphRun: Sync
+auto daegun::unicode::ParagraphRun: Unpin
+auto daegun::unicode::ParagraphRun: UnwindSafe
+auto daegun::unicode::Script: RefUnwindSafe
+auto daegun::unicode::Script: Send
+auto daegun::unicode::Script: Sync
+auto daegun::unicode::Script: Unpin
+auto daegun::unicode::Script: UnwindSafe
+auto daegun::unicode::ScriptDirection: RefUnwindSafe
+auto daegun::unicode::ScriptDirection: Send
+auto daegun::unicode::ScriptDirection: Sync
+auto daegun::unicode::ScriptDirection: Unpin
+auto daegun::unicode::ScriptDirection: UnwindSafe
+auto daegun::unicode::ScriptRun: RefUnwindSafe
+auto daegun::unicode::ScriptRun: Send
+auto daegun::unicode::ScriptRun: Sync
+auto daegun::unicode::ScriptRun: Unpin
+auto daegun::unicode::ScriptRun: UnwindSafe
+auto daegun::unicode::VerticalOrientation: RefUnwindSafe
+auto daegun::unicode::VerticalOrientation: Send
+auto daegun::unicode::VerticalOrientation: Sync
+auto daegun::unicode::VerticalOrientation: Unpin
+auto daegun::unicode::VerticalOrientation: UnwindSafe
+auto daegun::unicode::VisualRun: RefUnwindSafe
+auto daegun::unicode::VisualRun: Send
+auto daegun::unicode::VisualRun: Sync
+auto daegun::unicode::VisualRun: Unpin
+auto daegun::unicode::VisualRun: UnwindSafe
+auto daegun::unicode::WordSegmenter: !RefUnwindSafe
+auto daegun::unicode::WordSegmenter: !UnwindSafe
+auto daegun::unicode::WordSegmenter: Send
+auto daegun::unicode::WordSegmenter: Sync
+auto daegun::unicode::WordSegmenter: Unpin
+constant daegun::color::IDENTITY Matrix
+constant daegun::metrics::DEFAULT_POINT_SIZE f64
+constant daegun::outline::MAX_FLATTEN_POINTS usize
+constant daegun::raster::MAX_DRAW_BYTES usize
+constant daegun::raster::MAX_OVERSAMPLE u8
+constant daegun::raster::MAX_SIDE u32
+constant daegun::raster::MAX_TAPS usize
+constant daegun::raster::MAX_WEIGHTS usize
+constant daegun::raw::format::class::DELETED_GLYPH u16
+constant daegun::raw::format::class::END_OF_TEXT u16
+constant daegun::raw::format::state::START_OF_TEXT u16
+enum daegun::Cache
+enum daegun::ErrorKind
+enum daegun::FontStyle
+enum daegun::GlyphClass
+enum daegun::Orientation
+enum daegun::color::BitmapImage
+enum daegun::color::Blend
+enum daegun::color::Extend
+enum daegun::color::GradientKind
+enum daegun::color::Op
+enum daegun::color::Paint
+enum daegun::color::PaintNode
+enum daegun::color::Stops
+enum daegun::color::gradient::Interpolation
+enum daegun::layout::Adjustment
+enum daegun::layout::Align
+enum daegun::layout::BreakStrategy
+enum daegun::layout::TextOrientation
+enum daegun::layout::WritingMode
+enum daegun::math::MathKernCorner
+enum daegun::metrics::StatAxisValue
+enum daegun::outline::Cap
+enum daegun::outline::FillRule
+enum daegun::outline::HintMode
+enum daegun::outline::Join
+enum daegun::outline::PointKind
+enum daegun::outline::Verb
+enum daegun::raster::Field
+enum daegun::raster::Gamma
+enum daegun::raster::StripeOrder
+enum daegun::raw::format::Substitution
+enum daegun::shape::ClusterLevel
+enum daegun::shape::Direction
+enum daegun::shape::Ignorables
+enum daegun::shape::Shaper
+enum daegun::unicode::BaseDirection
+enum daegun::unicode::GeneralCategory
+enum daegun::unicode::ScriptDirection
+enum daegun::unicode::VerticalOrientation
+field daegun::Axis.default f64
+field daegun::Axis.hidden bool
+field daegun::Axis.max f64
+field daegun::Axis.min f64
+field daegun::Axis.name_id crate::daecore::NameId
+field daegun::Axis.tag crate::daecore::Tag
+field daegun::Bounds.x_max f64
+field daegun::Bounds.x_min f64
+field daegun::Bounds.y_max f64
+field daegun::Bounds.y_min f64
+field daegun::CacheStats.bytes usize
+field daegun::CacheStats.entries usize
+field daegun::GlyphId.0 u32
+field daegun::LocalizedName.language alloc::string::String
+field daegun::LocalizedName.name alloc::string::String
+field daegun::NameId.0 u16
+field daegun::NamedInstance.coords alloc::vec::Vec<(crate::daecore::Tag, f64)>
+field daegun::NamedInstance.name Option<alloc::string::String>
+field daegun::NamedInstance.postscript_name Option<alloc::string::String>
+field daegun::color::Center.x f64
+field daegun::color::Center.y f64
+field daegun::color::ClipShape.path PathId
+field daegun::color::ClipShape.rule crate::daecore::daetype::outline::FillRule
+field daegun::color::ClipShape.transform [f64; 6]
+field daegun::color::ColorStop.color crate::daecore::daekit::draw::Rgba
+field daegun::color::ColorStop.foreground bool
+field daegun::color::ColorStop.offset f64
+field daegun::color::ColrLayer.color crate::daecore::daekit::draw::Rgba
+field daegun::color::ColrLayer.foreground bool
+field daegun::color::ColrLayer.glyph crate::daecore::GlyphId
+field daegun::color::GlyphBitmap.image BitmapImage<'a>
+field daegun::color::GlyphBitmap.left i16
+field daegun::color::GlyphBitmap.mirrored bool
+field daegun::color::GlyphBitmap.ppem u16
+field daegun::color::GlyphBitmap.top i16
+field daegun::color::Gradient.extend Extend
+field daegun::color::Gradient.kind GradientKind
+field daegun::color::Gradient.stops &'s [Stop]
+field daegun::color::Gradient.transform [f64; 6]
+field daegun::color::GradientId.0 usize
+field daegun::color::Palette.dark_safe bool
+field daegun::color::Palette.index u16
+field daegun::color::Palette.light_safe bool
+field daegun::color::Palette.name_id Option<crate::daecore::NameId>
+field daegun::color::PathId.0 usize
+field daegun::color::Premultiplied.alpha f32
+field daegun::color::Premultiplied.color Rgb
+field daegun::color::Rgba.a u8
+field daegun::color::Rgba.b u8
+field daegun::color::Rgba.g u8
+field daegun::color::Rgba.r u8
+field daegun::color::SceneOptions.foreground Rgba
+field daegun::color::SceneOptions.palette u16
+field daegun::color::Stop.color Rgba
+field daegun::color::Stop.offset f32
+field daegun::layout::JstfModLists.extension_disable_gpos Option<alloc::vec::Vec<u16>>
+field daegun::layout::JstfModLists.extension_disable_gsub Option<alloc::vec::Vec<u16>>
+field daegun::layout::JstfModLists.extension_enable_gpos Option<alloc::vec::Vec<u16>>
+field daegun::layout::JstfModLists.extension_enable_gsub Option<alloc::vec::Vec<u16>>
+field daegun::layout::JstfModLists.shrinkage_disable_gpos Option<alloc::vec::Vec<u16>>
+field daegun::layout::JstfModLists.shrinkage_disable_gsub Option<alloc::vec::Vec<u16>>
+field daegun::layout::JstfModLists.shrinkage_enable_gpos Option<alloc::vec::Vec<u16>>
+field daegun::layout::JstfModLists.shrinkage_enable_gsub Option<alloc::vec::Vec<u16>>
+field daegun::layout::Justified.adjustment Adjustment
+field daegun::layout::Justified.best_effort bool
+field daegun::layout::Justified.level Option<usize>
+field daegun::layout::Justified.run alloc::sync::Arc<crate::daecore::daekit::text::shape::ShapedRun>
+field daegun::layout::Justified.width f64
+field daegun::layout::JustifyOptions.language_system Option<crate::daecore::Tag>
+field daegun::layout::JustifyOptions.script crate::daecore::Tag
+field daegun::layout::JustifyOptions.target_width f64
+field daegun::layout::JustifyOptions.tolerance f64
+field daegun::layout::LayoutLine.ascent f64
+field daegun::layout::LayoutLine.baseline f64
+field daegun::layout::LayoutLine.bytes core::range::Range<usize>
+field daegun::layout::LayoutLine.descent f64
+field daegun::layout::LayoutLine.hard_break bool
+field daegun::layout::LayoutLine.inline_size f64
+field daegun::layout::LayoutLine.runs alloc::vec::Vec<PositionedRun>
+field daegun::layout::LayoutOptions.align Align
+field daegun::layout::LayoutOptions.base_direction crate::daecore::daeshaper::unicode::bidi::BaseDirection
+field daegun::layout::LayoutOptions.features &'a [crate::daecore::daekit::text::shape::Feature]
+field daegun::layout::LayoutOptions.language Option<&'a str>
+field daegun::layout::LayoutOptions.line_height Option<f64>
+field daegun::layout::LayoutOptions.max_inline_size f64
+field daegun::layout::LayoutOptions.max_lines Option<usize>
+field daegun::layout::LayoutOptions.segmenter Option<crate::daecore::daekit::text::WordSegmenter<'a>>
+field daegun::layout::LayoutOptions.strategy BreakStrategy
+field daegun::layout::LayoutOptions.tab_size f64
+field daegun::layout::LayoutOptions.text_orientation TextOrientation
+field daegun::layout::LayoutOptions.writing_mode WritingMode
+field daegun::layout::PositionedRun.bytes core::range::Range<usize>
+field daegun::layout::PositionedRun.level u8
+field daegun::layout::PositionedRun.offset crate::daecore::daekit::text::shape::Offset
+field daegun::layout::PositionedRun.run crate::daecore::daekit::text::shape::ShapedRun
+field daegun::layout::PositionedRun.upright bool
+field daegun::layout::TextLayout.block_size f64
+field daegun::layout::TextLayout.inline_size f64
+field daegun::layout::TextLayout.lines alloc::vec::Vec<LayoutLine>
+field daegun::layout::TextLayout.truncated Option<usize>
+field daegun::math::GlyphAssembly.italics_correction f64
+field daegun::math::GlyphAssembly.parts alloc::vec::Vec<GlyphPart>
+field daegun::math::GlyphPart.end_connector_length f64
+field daegun::math::GlyphPart.extender bool
+field daegun::math::GlyphPart.full_advance f64
+field daegun::math::GlyphPart.glyph crate::daecore::GlyphId
+field daegun::math::GlyphPart.start_connector_length f64
+field daegun::math::MathConstants.accent_base_height f64
+field daegun::math::MathConstants.axis_height f64
+field daegun::math::MathConstants.delimited_sub_formula_min_height f64
+field daegun::math::MathConstants.display_operator_min_height f64
+field daegun::math::MathConstants.flattened_accent_base_height f64
+field daegun::math::MathConstants.fraction_denom_display_style_gap_min f64
+field daegun::math::MathConstants.fraction_denominator_display_style_shift_down f64
+field daegun::math::MathConstants.fraction_denominator_gap_min f64
+field daegun::math::MathConstants.fraction_denominator_shift_down f64
+field daegun::math::MathConstants.fraction_num_display_style_gap_min f64
+field daegun::math::MathConstants.fraction_numerator_display_style_shift_up f64
+field daegun::math::MathConstants.fraction_numerator_gap_min f64
+field daegun::math::MathConstants.fraction_numerator_shift_up f64
+field daegun::math::MathConstants.fraction_rule_thickness f64
+field daegun::math::MathConstants.lower_limit_baseline_drop_min f64
+field daegun::math::MathConstants.lower_limit_gap_min f64
+field daegun::math::MathConstants.math_leading f64
+field daegun::math::MathConstants.overbar_extra_ascender f64
+field daegun::math::MathConstants.overbar_rule_thickness f64
+field daegun::math::MathConstants.overbar_vertical_gap f64
+field daegun::math::MathConstants.radical_degree_bottom_raise_percent f64
+field daegun::math::MathConstants.radical_display_style_vertical_gap f64
+field daegun::math::MathConstants.radical_extra_ascender f64
+field daegun::math::MathConstants.radical_kern_after_degree f64
+field daegun::math::MathConstants.radical_kern_before_degree f64
+field daegun::math::MathConstants.radical_rule_thickness f64
+field daegun::math::MathConstants.radical_vertical_gap f64
+field daegun::math::MathConstants.script_percent_scale_down f64
+field daegun::math::MathConstants.script_script_percent_scale_down f64
+field daegun::math::MathConstants.skewed_fraction_horizontal_gap f64
+field daegun::math::MathConstants.skewed_fraction_vertical_gap f64
+field daegun::math::MathConstants.space_after_script f64
+field daegun::math::MathConstants.stack_bottom_display_style_shift_down f64
+field daegun::math::MathConstants.stack_bottom_shift_down f64
+field daegun::math::MathConstants.stack_display_style_gap_min f64
+field daegun::math::MathConstants.stack_gap_min f64
+field daegun::math::MathConstants.stack_top_display_style_shift_up f64
+field daegun::math::MathConstants.stack_top_shift_up f64
+field daegun::math::MathConstants.stretch_stack_bottom_shift_down f64
+field daegun::math::MathConstants.stretch_stack_gap_above_min f64
+field daegun::math::MathConstants.stretch_stack_gap_below_min f64
+field daegun::math::MathConstants.stretch_stack_top_shift_up f64
+field daegun::math::MathConstants.sub_superscript_gap_min f64
+field daegun::math::MathConstants.subscript_baseline_drop_min f64
+field daegun::math::MathConstants.subscript_shift_down f64
+field daegun::math::MathConstants.subscript_top_max f64
+field daegun::math::MathConstants.superscript_baseline_drop_max f64
+field daegun::math::MathConstants.superscript_bottom_max_with_subscript f64
+field daegun::math::MathConstants.superscript_bottom_min f64
+field daegun::math::MathConstants.superscript_shift_up f64
+field daegun::math::MathConstants.superscript_shift_up_cramped f64
+field daegun::math::MathConstants.underbar_extra_descender f64
+field daegun::math::MathConstants.underbar_rule_thickness f64
+field daegun::math::MathConstants.underbar_vertical_gap f64
+field daegun::math::MathConstants.upper_limit_baseline_rise_min f64
+field daegun::math::MathConstants.upper_limit_gap_min f64
+field daegun::math::MathGlyphConstruction.assembly Option<GlyphAssembly>
+field daegun::math::MathGlyphConstruction.variants alloc::vec::Vec<MathGlyphVariant>
+field daegun::math::MathGlyphVariant.advance f64
+field daegun::math::MathGlyphVariant.glyph crate::daecore::GlyphId
+field daegun::metrics::DecorationLine.position f64
+field daegun::metrics::DecorationLine.thickness f64
+field daegun::metrics::LineMetrics.ascent f64
+field daegun::metrics::LineMetrics.descent f64
+field daegun::metrics::LineMetrics.line_gap f64
+field daegun::metrics::Os2.family_class Option<u16>
+field daegun::metrics::Os2.fs_type Option<u16>
+field daegun::metrics::Os2.selection Option<u16>
+field daegun::metrics::Os2.typo_metrics Option<LineMetrics>
+field daegun::metrics::Os2.version u16
+field daegun::metrics::Os2.weight_class Option<u16>
+field daegun::metrics::Os2.width_class Option<u16>
+field daegun::metrics::Os2.win_metrics Option<WinMetrics>
+field daegun::metrics::ScriptMetrics.x_offset f64
+field daegun::metrics::ScriptMetrics.x_size f64
+field daegun::metrics::ScriptMetrics.y_offset f64
+field daegun::metrics::ScriptMetrics.y_size f64
+field daegun::metrics::Stat.axes alloc::vec::Vec<StatAxis>
+field daegun::metrics::Stat.elided_fallback_name Option<alloc::string::String>
+field daegun::metrics::Stat.values alloc::vec::Vec<StatAxisValue>
+field daegun::metrics::StatAxis.name Option<alloc::string::String>
+field daegun::metrics::StatAxis.ordering u16
+field daegun::metrics::StatAxis.tag crate::daecore::Tag
+field daegun::metrics::TypographicMetrics.strikeout Option<DecorationLine>
+field daegun::metrics::TypographicMetrics.subscript Option<ScriptMetrics>
+field daegun::metrics::TypographicMetrics.superscript Option<ScriptMetrics>
+field daegun::metrics::TypographicMetrics.underline Option<DecorationLine>
+field daegun::metrics::TypographicMetrics.x_height Option<f64>
+field daegun::metrics::WinMetrics.ascent f64
+field daegun::metrics::WinMetrics.descent f64
+field daegun::outline::CffHints.masks alloc::vec::Vec<CffMask>
+field daegun::outline::CffHints.stems alloc::vec::Vec<CffStem>
+field daegun::outline::CffMask.bits alloc::vec::Vec<u8>
+field daegun::outline::CffMask.point usize
+field daegun::outline::CffStem.max f32
+field daegun::outline::CffStem.min f32
+field daegun::outline::CffStem.vertical bool
+field daegun::outline::OutlineOptions.embolden Option<f32>
+field daegun::outline::OutlineOptions.hinting HintMode
+field daegun::outline::OutlineOptions.oblique Option<f32>
+field daegun::outline::OutlineOptions.stroke Option<StrokeStyle>
+field daegun::outline::OutlineOptions.transform Option<[f32; 6]>
+field daegun::outline::Point.x f32
+field daegun::outline::Point.y f32
+field daegun::outline::PreparedGlyph.advance_height f32
+field daegun::outline::PreparedGlyph.advance_width f32
+field daegun::outline::PreparedGlyph.hinted bool
+field daegun::outline::Quad.control crate::daecore::daetype::outline::Point
+field daegun::outline::Quad.end crate::daecore::daetype::outline::Point
+field daegun::outline::Quad.start crate::daecore::daetype::outline::Point
+field daegun::outline::StrokeStyle.cap Cap
+field daegun::outline::StrokeStyle.join Join
+field daegun::outline::StrokeStyle.width f32
+field daegun::raster::Bitmap.channels u8
+field daegun::raster::Bitmap.height u32
+field daegun::raster::Bitmap.left i32
+field daegun::raster::Bitmap.pixels alloc::vec::Vec<u8>
+field daegun::raster::Bitmap.top i32
+field daegun::raster::Bitmap.width u32
+field daegun::raster::Image.channels u8
+field daegun::raster::Image.height u32
+field daegun::raster::Image.left i32
+field daegun::raster::Image.pixels &'a [u8]
+field daegun::raster::Image.stride usize
+field daegun::raster::Image.top i32
+field daegun::raster::Image.width u32
+field daegun::raster::RasterOptions.darken bool
+field daegun::raster::RasterOptions.gamma Gamma
+field daegun::raster::RasterOptions.layout &'a SubpixelLayout
+field daegun::raster::RasterOptions.offset [f32; 2]
+field daegun::raster::RasterOptions.outline crate::outline::OutlineOptions
+field daegun::raster::Rect.h usize
+field daegun::raster::Rect.w usize
+field daegun::raster::Rect.x usize
+field daegun::raster::Rect.y usize
+field daegun::raster::Target.height u32
+field daegun::raster::Target.left i32
+field daegun::raster::Target.pixels &'a mut [u8]
+field daegun::raster::Target.stride usize
+field daegun::raster::Target.top i32
+field daegun::raster::Target.width u32
+field daegun::raw::format::AnchorPoint.x i16
+field daegun::raw::format::AnchorPoint.y i16
+field daegun::raw::format::DeltaSetIndex.inner u32
+field daegun::raw::format::DeltaSetIndex.outer u32
+field daegun::raw::format::Entry.flags u16
+field daegun::raw::format::Entry.new_state u16
+field daegun::raw::format::Entry.word1 u16
+field daegun::raw::format::Entry.word2 u16
+field daegun::raw::format::GlyphValue.glyph u32
+field daegun::raw::format::GlyphValue.value u16
+field daegun::raw::format::ItemVariationStore.axis_count usize
+field daegun::raw::format::ItemVariationStore.ivd_data alloc::vec::Vec<Ivd>
+field daegun::raw::format::ItemVariationStore.regions alloc::vec::Vec<alloc::vec::Vec<RegionAxis>>
+field daegun::raw::format::Ivd.region_indices alloc::vec::Vec<usize>
+field daegun::raw::format::RegionAxis.end f64
+field daegun::raw::format::RegionAxis.peak f64
+field daegun::raw::format::RegionAxis.start f64
+field daegun::shape::BidiRun.bytes core::range::Range<usize>
+field daegun::shape::BidiRun.level u8
+field daegun::shape::BidiRun.run alloc::sync::Arc<ShapedRun>
+field daegun::shape::Feature.bytes core::range::Range<usize>
+field daegun::shape::Feature.tag crate::daecore::Tag
+field daegun::shape::Feature.value u32
+field daegun::shape::Offset.x f64
+field daegun::shape::Offset.y f64
+field daegun::shape::ShapeOptions.after &'a str
+field daegun::shape::ShapeOptions.before &'a str
+field daegun::shape::ShapeOptions.beginning_of_text bool
+field daegun::shape::ShapeOptions.cluster_level crate::daecore::daeshaper::run::ClusterLevel
+field daegun::shape::ShapeOptions.direction Option<crate::daecore::daeshaper::run::Direction>
+field daegun::shape::ShapeOptions.features &'a [Feature]
+field daegun::shape::ShapeOptions.ignorables Ignorables
+field daegun::shape::ShapeOptions.invisible_glyph Option<crate::daecore::GlyphId>
+field daegun::shape::ShapeOptions.language Option<&'a str>
+field daegun::shape::ShapeOptions.not_found_glyph crate::daecore::GlyphId
+field daegun::shape::ShapeOptions.not_found_variation_selector_glyph Option<crate::daecore::GlyphId>
+field daegun::shape::ShapeOptions.point_size Option<f64>
+field daegun::shape::ShapeOptions.report_tatweel_positions bool
+field daegun::shape::ShapeOptions.report_unsafe_to_concat bool
+field daegun::shape::ShapeOptions.script Option<crate::daecore::Tag>
+field daegun::shape::ShapeOptions.seed_script Option<crate::daecore::daeshaper::unicode::Script>
+field daegun::shape::ShapeOptions.suppress_dotted_circle bool
+field daegun::shape::ShapedRun.advances alloc::vec::Vec<f64>
+field daegun::shape::ShapedRun.clusters alloc::vec::Vec<u32>
+field daegun::shape::ShapedRun.complete bool
+field daegun::shape::ShapedRun.glyphs alloc::vec::Vec<crate::daecore::GlyphId>
+field daegun::shape::ShapedRun.has_broken_syllable bool
+field daegun::shape::ShapedRun.offsets alloc::vec::Vec<Offset>
+field daegun::shape::ShapedRun.safe_to_insert_tatweel alloc::vec::Vec<bool>
+field daegun::shape::ShapedRun.shaper crate::daecore::daeshaper::script::Shaper
+field daegun::shape::ShapedRun.unsafe_to_break alloc::vec::Vec<bool>
+field daegun::shape::ShapedRun.unsafe_to_concat alloc::vec::Vec<bool>
+field daegun::tables::BaseScript.baselines alloc::collections::BTreeMap<crate::daecore::Tag, f64>
+field daegun::tables::BaseScript.default_baseline Option<crate::daecore::Tag>
+field daegun::tables::Extents.max Option<f64>
+field daegun::tables::Extents.min Option<f64>
+field daegun::tables::Subset.font alloc::vec::Vec<u8>
+field daegun::unicode::BidiParagraph.base_level u8
+field daegun::unicode::BidiParagraph.levels alloc::vec::Vec<u8>
+field daegun::unicode::BidiParagraph.paragraphs alloc::vec::Vec<ParagraphRun>
+field daegun::unicode::BidiParagraph.visual_order alloc::vec::Vec<usize>
+field daegun::unicode::LineBreak.at usize
+field daegun::unicode::LineBreak.mandatory bool
+field daegun::unicode::ParagraphRun.end usize
+field daegun::unicode::ParagraphRun.level u8
+field daegun::unicode::ParagraphRun.start usize
+field daegun::unicode::ScriptRun.bytes core::range::Range<usize>
+field daegun::unicode::ScriptRun.script super::Script
+field daegun::unicode::VisualRun.bytes core::range::Range<usize>
+field daegun::unicode::VisualRun.level u8
+field daegun::unicode::WordSegmenter.0 &'a dyn Fn(&str, &mut alloc::vec::Vec<usize>) + Sync
+function daegun::color::concat const fn(first: &Matrix, second: &Matrix) -> Matrix
+function daegun::color::invert fn(t: &Matrix) -> Option<Matrix>
+function daegun::color::lower fn(glyph: crate::daecore::GlyphId, graph: &crate::daecore::daetype::colr_v1::PaintGraph, ctm: crate::daecore::daekit::draw::matrix::Matrix, clip_box: &dyn Fn(crate::daecore::GlyphId) -> Option<crate::daecore::Bounds>, outline: &mut dyn FnMut(crate::daecore::GlyphId, &mut dyn OutlinePen) -> bool, foreground: super::Rgba, out: &mut super::DisplayList) -> bool
+function daegun::outline::max_area_for fn(px: f32, units_per_em: f32) -> f32
+function daegun::outline::normalize_winding fn(curves: &mut [Quad])
+function daegun::outline::resolve_overlaps fn(contours: &[alloc::vec::Vec<super::path::Point>]) -> Option<alloc::vec::Vec<alloc::vec::Vec<super::path::Point>>>
+function daegun::raw::build_font fn<'a, V: AsRef<[u8]> + 'a>(tables: impl IntoIterator<Item = (&'a crate::daecore::Tag, &'a V)>) -> crate::Result<alloc::vec::Vec<u8>>
+function daegun::raw::bytes::read_i16_be fn(data: &[u8], off: usize) -> Option<i16>
+function daegun::raw::bytes::read_offset24 fn(data: &[u8], off: usize) -> Option<usize>
+function daegun::raw::bytes::read_u16_be fn(data: &[u8], off: usize) -> Option<u16>
+function daegun::raw::bytes::read_u24_be fn(data: &[u8], off: usize) -> Option<u32>
+function daegun::raw::bytes::read_u32_be fn(data: &[u8], off: usize) -> Option<u32>
+function daegun::raw::bytes::records_fit fn(start: usize, count: usize, stride: usize, len: usize) -> bool
+function daegun::raw::bytes::search_records fn<F>(count: usize, target: u32, key_at: F) -> Option<Result<usize, usize>> where F: Fn(usize) -> Option<u32>
+function daegun::raw::bytes::window fn<const N: usize>(data: &[u8], off: usize) -> Option<&[u8; N]>
+function daegun::raw::bytes::write_i16_be fn(data: &mut [u8], off: usize, val: i16) -> bool
+function daegun::raw::bytes::write_offset24 fn(data: &mut [u8], off: usize, val: usize) -> bool
+function daegun::raw::bytes::write_u16_be fn(data: &mut [u8], off: usize, val: u16) -> bool
+function daegun::raw::bytes::write_u32_be fn(data: &mut [u8], off: usize, val: u32) -> bool
+function daegun::raw::format::control_point fn(data: &[u8], at: usize) -> Option<AnchorPoint>
+function daegun::raw::format::coverage_glyphs fn(buf: &[u8], off: usize) -> Result<alloc::vec::Vec<u32>, crate::daecore::Error>
+function daegun::raw::format::coverage_index fn(data: &[u8], glyph: u32) -> Option<u32>
+function daegun::raw::format::delta_set_index_map_lookup fn(map: &[DeltaSetIndex], idx: usize) -> DeltaSetIndex
+function daegun::raw::format::ot_round fn(v: f64) -> i32
+function daegun::raw::format::parse_delta_set_index_map fn(buf: &[u8], base: usize) -> Result<alloc::vec::Vec<DeltaSetIndex>, crate::daecore::Error>
+function daegun::raw::outline_glyf_bytes fn(glyf: &[u8], extended: bool, loca: &[usize], gid: u32, pen: &mut dyn OutlinePen) -> Result<(), crate::daecore::Error>
+function daegun::raw::parse_loca fn(loca: &[u8], format: i16, num_glyphs: usize) -> alloc::vec::Vec<usize>
+function daegun::release_thread fn()
+function daegun::unicode::general_category fn(c: char) -> GeneralCategory
+function daegun::unicode::grapheme_boundaries fn(text: &str) -> alloc::vec::Vec<usize>
+function daegun::unicode::line_break_opportunities fn(text: &str, segmenter: Option<WordSegmenter<'_>>) -> alloc::vec::Vec<LineBreak>
+function daegun::unicode::script fn(c: char) -> Script
+function daegun::unicode::script_runs fn(text: &str) -> alloc::vec::Vec<ScriptRun>
+function daegun::unicode::vertical_form const fn(c: char) -> Option<char>
+function daegun::unicode::vertical_orientation fn(c: char) -> super::VerticalOrientation
+function daegun::unicode::word_boundaries fn(text: &str) -> alloc::vec::Vec<usize>
+impl daegun::Axis: Clone
+impl daegun::Axis: Debug
+impl daegun::Axis: PartialEq
+impl daegun::Bounds: Clone
+impl daegun::Bounds: Copy
+impl daegun::Bounds: Debug
+impl daegun::Bounds: Default
+impl daegun::Bounds: PartialEq
+impl daegun::Cache: Clone
+impl daegun::Cache: Copy
+impl daegun::Cache: Debug
+impl daegun::Cache: Eq
+impl daegun::Cache: Hash
+impl daegun::Cache: PartialEq
+impl daegun::CachePool: Debug
+impl daegun::CacheStats: Clone
+impl daegun::CacheStats: Copy
+impl daegun::CacheStats: Debug
+impl daegun::CacheStats: Default
+impl daegun::CacheStats: Eq
+impl daegun::CacheStats: Hash
+impl daegun::CacheStats: PartialEq
+impl daegun::Error: Clone
+impl daegun::Error: Debug
+impl daegun::Error: Display
+impl daegun::Error: Eq
+impl daegun::Error: Error
+impl daegun::Error: From<Error> for std::io::Error
+impl daegun::Error: Hash
+impl daegun::Error: PartialEq
+impl daegun::ErrorKind: Clone
+impl daegun::ErrorKind: Copy
+impl daegun::ErrorKind: Debug
+impl daegun::ErrorKind: Display
+impl daegun::ErrorKind: Eq
+impl daegun::ErrorKind: Hash
+impl daegun::ErrorKind: PartialEq
+impl daegun::Font: Debug
+impl daegun::FontStyle: Clone
+impl daegun::FontStyle: Copy
+impl daegun::FontStyle: Debug
+impl daegun::FontStyle: Eq
+impl daegun::FontStyle: Hash
+impl daegun::FontStyle: PartialEq
+impl daegun::GlyphClass: Clone
+impl daegun::GlyphClass: Copy
+impl daegun::GlyphClass: Debug
+impl daegun::GlyphClass: Eq
+impl daegun::GlyphClass: Hash
+impl daegun::GlyphClass: PartialEq
+impl daegun::GlyphId: Clone
+impl daegun::GlyphId: Copy
+impl daegun::GlyphId: Debug
+impl daegun::GlyphId: Default
+impl daegun::GlyphId: Display
+impl daegun::GlyphId: Eq
+impl daegun::GlyphId: From<GlyphId> for u32
+impl daegun::GlyphId: From<u16>
+impl daegun::GlyphId: From<u32>
+impl daegun::GlyphId: Hash
+impl daegun::GlyphId: Ord
+impl daegun::GlyphId: PartialEq
+impl daegun::GlyphId: PartialOrd
+impl daegun::GlyphId: TryFrom<GlyphId> for u16
+impl daegun::LocalizedName: Clone
+impl daegun::LocalizedName: Debug
+impl daegun::LocalizedName: Default
+impl daegun::LocalizedName: Eq
+impl daegun::LocalizedName: Hash
+impl daegun::LocalizedName: PartialEq
+impl daegun::Location: Clone
+impl daegun::Location: Debug
+impl daegun::Location: Default
+impl daegun::Location: Eq
+impl daegun::Location: Hash
+impl daegun::Location: PartialEq
+impl daegun::NameId: Clone
+impl daegun::NameId: Copy
+impl daegun::NameId: Debug
+impl daegun::NameId: Default
+impl daegun::NameId: Display
+impl daegun::NameId: Eq
+impl daegun::NameId: From<NameId> for u16
+impl daegun::NameId: From<u16>
+impl daegun::NameId: Hash
+impl daegun::NameId: Ord
+impl daegun::NameId: PartialEq
+impl daegun::NameId: PartialOrd
+impl daegun::NamedInstance: Clone
+impl daegun::NamedInstance: Debug
+impl daegun::NamedInstance: PartialEq
+impl daegun::Orientation: Clone
+impl daegun::Orientation: Copy
+impl daegun::Orientation: Debug
+impl daegun::Orientation: Default
+impl daegun::Orientation: Eq
+impl daegun::Orientation: Hash
+impl daegun::Orientation: PartialEq
+impl daegun::Tag: Clone
+impl daegun::Tag: Copy
+impl daegun::Tag: Debug
+impl daegun::Tag: Display
+impl daegun::Tag: Eq
+impl daegun::Tag: From<Tag> for u32
+impl daegun::Tag: From<[u8; 4]>
+impl daegun::Tag: From<u32>
+impl daegun::Tag: FromStr
+impl daegun::Tag: Hash
+impl daegun::Tag: Ord
+impl daegun::Tag: PartialEq
+impl daegun::Tag: PartialOrd
+impl daegun::color::BitmapImage: Clone
+impl daegun::color::BitmapImage: Debug
+impl daegun::color::BitmapImage: PartialEq
+impl daegun::color::Blend: Clone
+impl daegun::color::Blend: Copy
+impl daegun::color::Blend: Debug
+impl daegun::color::Blend: Default
+impl daegun::color::Blend: Eq
+impl daegun::color::Blend: Hash
+impl daegun::color::Blend: PartialEq
+impl daegun::color::Center: Clone
+impl daegun::color::Center: Copy
+impl daegun::color::Center: Debug
+impl daegun::color::Center: Default
+impl daegun::color::Center: PartialEq
+impl daegun::color::ClipShape: Clone
+impl daegun::color::ClipShape: Copy
+impl daegun::color::ClipShape: Debug
+impl daegun::color::ClipShape: PartialEq
+impl daegun::color::ColorStop: Clone
+impl daegun::color::ColorStop: Copy
+impl daegun::color::ColorStop: Debug
+impl daegun::color::ColorStop: PartialEq
+impl daegun::color::ColrLayer: Clone
+impl daegun::color::ColrLayer: Copy
+impl daegun::color::ColrLayer: Debug
+impl daegun::color::ColrLayer: Eq
+impl daegun::color::ColrLayer: Hash
+impl daegun::color::ColrLayer: PartialEq
+impl daegun::color::DisplayList: Clone
+impl daegun::color::DisplayList: Debug
+impl daegun::color::DisplayList: Default
+impl daegun::color::DisplayList: Drop
+impl daegun::color::DisplayList: PartialEq
+impl daegun::color::Extend: Clone
+impl daegun::color::Extend: Copy
+impl daegun::color::Extend: Debug
+impl daegun::color::Extend: Default
+impl daegun::color::Extend: Eq
+impl daegun::color::Extend: Hash
+impl daegun::color::Extend: PartialEq
+impl daegun::color::GlyphBitmap: Clone
+impl daegun::color::GlyphBitmap: Debug
+impl daegun::color::GlyphBitmap: PartialEq
+impl daegun::color::Gradient: Clone
+impl daegun::color::Gradient: Copy
+impl daegun::color::Gradient: Debug
+impl daegun::color::Gradient: PartialEq
+impl daegun::color::GradientId: Clone
+impl daegun::color::GradientId: Copy
+impl daegun::color::GradientId: Debug
+impl daegun::color::GradientId: Eq
+impl daegun::color::GradientId: Hash
+impl daegun::color::GradientId: Ord
+impl daegun::color::GradientId: PartialEq
+impl daegun::color::GradientId: PartialOrd
+impl daegun::color::GradientKind: Clone
+impl daegun::color::GradientKind: Copy
+impl daegun::color::GradientKind: Debug
+impl daegun::color::GradientKind: PartialEq
+impl daegun::color::Op: Clone
+impl daegun::color::Op: Copy
+impl daegun::color::Op: Debug
+impl daegun::color::Op: PartialEq
+impl daegun::color::Paint: Clone
+impl daegun::color::Paint: Copy
+impl daegun::color::Paint: Debug
+impl daegun::color::Paint: PartialEq
+impl daegun::color::PaintGraph: Clone
+impl daegun::color::PaintGraph: Debug
+impl daegun::color::PaintGraph: Default
+impl daegun::color::PaintGraph: Drop
+impl daegun::color::PaintGraph: PaintVisitor
+impl daegun::color::PaintGraph: PartialEq
+impl daegun::color::PaintNode: Clone
+impl daegun::color::PaintNode: Copy
+impl daegun::color::PaintNode: Debug
+impl daegun::color::PaintNode: PartialEq
+impl daegun::color::PaintRef: Clone
+impl daegun::color::PaintRef: Copy
+impl daegun::color::PaintRef: Debug
+impl daegun::color::PaintRef: PartialEq
+impl daegun::color::Palette: Clone
+impl daegun::color::Palette: Copy
+impl daegun::color::Palette: Debug
+impl daegun::color::Palette: Eq
+impl daegun::color::Palette: Hash
+impl daegun::color::Palette: PartialEq
+impl daegun::color::PathId: Clone
+impl daegun::color::PathId: Copy
+impl daegun::color::PathId: Debug
+impl daegun::color::PathId: Eq
+impl daegun::color::PathId: Hash
+impl daegun::color::PathId: Ord
+impl daegun::color::PathId: PartialEq
+impl daegun::color::PathId: PartialOrd
+impl daegun::color::Premultiplied: Clone
+impl daegun::color::Premultiplied: Copy
+impl daegun::color::Premultiplied: Debug
+impl daegun::color::Premultiplied: Default
+impl daegun::color::Premultiplied: PartialEq
+impl daegun::color::Rgba: Clone
+impl daegun::color::Rgba: Copy
+impl daegun::color::Rgba: Debug
+impl daegun::color::Rgba: Default
+impl daegun::color::Rgba: Eq
+impl daegun::color::Rgba: From<Rgba> for [u8; 4]
+impl daegun::color::Rgba: From<[u8; 4]>
+impl daegun::color::Rgba: Hash
+impl daegun::color::Rgba: PartialEq
+impl daegun::color::SceneOptions: Clone
+impl daegun::color::SceneOptions: Copy
+impl daegun::color::SceneOptions: Debug
+impl daegun::color::SceneOptions: Default
+impl daegun::color::SceneOptions: Eq
+impl daegun::color::SceneOptions: Hash
+impl daegun::color::SceneOptions: PartialEq
+impl daegun::color::Stop: Clone
+impl daegun::color::Stop: Copy
+impl daegun::color::Stop: Debug
+impl daegun::color::Stop: PartialEq
+impl daegun::color::Stops: Clone
+impl daegun::color::Stops: Debug
+impl daegun::color::Stops: PartialEq
+impl daegun::color::gradient::Interpolation: Clone
+impl daegun::color::gradient::Interpolation: Copy
+impl daegun::color::gradient::Interpolation: Debug
+impl daegun::color::gradient::Interpolation: Default
+impl daegun::color::gradient::Interpolation: Eq
+impl daegun::color::gradient::Interpolation: Hash
+impl daegun::color::gradient::Interpolation: PartialEq
+impl daegun::color::gradient::Ramp: Clone
+impl daegun::color::gradient::Ramp: Debug
+impl daegun::layout::Adjustment: Clone
+impl daegun::layout::Adjustment: Copy
+impl daegun::layout::Adjustment: Debug
+impl daegun::layout::Adjustment: Eq
+impl daegun::layout::Adjustment: Hash
+impl daegun::layout::Adjustment: PartialEq
+impl daegun::layout::Align: Clone
+impl daegun::layout::Align: Copy
+impl daegun::layout::Align: Debug
+impl daegun::layout::Align: Default
+impl daegun::layout::Align: Eq
+impl daegun::layout::Align: Hash
+impl daegun::layout::Align: PartialEq
+impl daegun::layout::BreakStrategy: Clone
+impl daegun::layout::BreakStrategy: Copy
+impl daegun::layout::BreakStrategy: Debug
+impl daegun::layout::BreakStrategy: Default
+impl daegun::layout::BreakStrategy: Eq
+impl daegun::layout::BreakStrategy: Hash
+impl daegun::layout::BreakStrategy: PartialEq
+impl daegun::layout::JstfModLists: Clone
+impl daegun::layout::JstfModLists: Debug
+impl daegun::layout::JstfModLists: Default
+impl daegun::layout::JstfModLists: PartialEq
+impl daegun::layout::Justified: Clone
+impl daegun::layout::Justified: Debug
+impl daegun::layout::Justified: PartialEq
+impl daegun::layout::JustifyOptions: Clone
+impl daegun::layout::JustifyOptions: Copy
+impl daegun::layout::JustifyOptions: Debug
+impl daegun::layout::JustifyOptions: PartialEq
+impl daegun::layout::LayoutLine: Clone
+impl daegun::layout::LayoutLine: Debug
+impl daegun::layout::LayoutLine: Default
+impl daegun::layout::LayoutLine: PartialEq
+impl daegun::layout::LayoutOptions: Clone
+impl daegun::layout::LayoutOptions: Copy
+impl daegun::layout::LayoutOptions: Debug
+impl daegun::layout::LayoutOptions: Default
+impl daegun::layout::PositionedRun: Clone
+impl daegun::layout::PositionedRun: Debug
+impl daegun::layout::PositionedRun: Default
+impl daegun::layout::PositionedRun: PartialEq
+impl daegun::layout::TextLayout: Clone
+impl daegun::layout::TextLayout: Debug
+impl daegun::layout::TextLayout: Default
+impl daegun::layout::TextLayout: PartialEq
+impl daegun::layout::TextOrientation: Clone
+impl daegun::layout::TextOrientation: Copy
+impl daegun::layout::TextOrientation: Debug
+impl daegun::layout::TextOrientation: Default
+impl daegun::layout::TextOrientation: Eq
+impl daegun::layout::TextOrientation: Hash
+impl daegun::layout::TextOrientation: PartialEq
+impl daegun::layout::WritingMode: Clone
+impl daegun::layout::WritingMode: Copy
+impl daegun::layout::WritingMode: Debug
+impl daegun::layout::WritingMode: Default
+impl daegun::layout::WritingMode: Eq
+impl daegun::layout::WritingMode: Hash
+impl daegun::layout::WritingMode: PartialEq
+impl daegun::math::GlyphAssembly: Clone
+impl daegun::math::GlyphAssembly: Debug
+impl daegun::math::GlyphAssembly: PartialEq
+impl daegun::math::GlyphPart: Clone
+impl daegun::math::GlyphPart: Copy
+impl daegun::math::GlyphPart: Debug
+impl daegun::math::GlyphPart: PartialEq
+impl daegun::math::MathConstants: Clone
+impl daegun::math::MathConstants: Copy
+impl daegun::math::MathConstants: Debug
+impl daegun::math::MathConstants: PartialEq
+impl daegun::math::MathGlyphConstruction: Clone
+impl daegun::math::MathGlyphConstruction: Debug
+impl daegun::math::MathGlyphConstruction: PartialEq
+impl daegun::math::MathGlyphVariant: Clone
+impl daegun::math::MathGlyphVariant: Copy
+impl daegun::math::MathGlyphVariant: Debug
+impl daegun::math::MathGlyphVariant: PartialEq
+impl daegun::math::MathKernCorner: Clone
+impl daegun::math::MathKernCorner: Copy
+impl daegun::math::MathKernCorner: Debug
+impl daegun::math::MathKernCorner: Eq
+impl daegun::math::MathKernCorner: Hash
+impl daegun::math::MathKernCorner: PartialEq
+impl daegun::metrics::DecorationLine: Clone
+impl daegun::metrics::DecorationLine: Copy
+impl daegun::metrics::DecorationLine: Debug
+impl daegun::metrics::DecorationLine: Default
+impl daegun::metrics::DecorationLine: PartialEq
+impl daegun::metrics::LineMetrics: Clone
+impl daegun::metrics::LineMetrics: Copy
+impl daegun::metrics::LineMetrics: Debug
+impl daegun::metrics::LineMetrics: Default
+impl daegun::metrics::LineMetrics: PartialEq
+impl daegun::metrics::Os2: Clone
+impl daegun::metrics::Os2: Copy
+impl daegun::metrics::Os2: Debug
+impl daegun::metrics::Os2: Default
+impl daegun::metrics::Os2: PartialEq
+impl daegun::metrics::PdfFlags: Binary
+impl daegun::metrics::PdfFlags: BitAnd
+impl daegun::metrics::PdfFlags: BitAndAssign
+impl daegun::metrics::PdfFlags: BitOr
+impl daegun::metrics::PdfFlags: BitOrAssign
+impl daegun::metrics::PdfFlags: Clone
+impl daegun::metrics::PdfFlags: Copy
+impl daegun::metrics::PdfFlags: Debug
+impl daegun::metrics::PdfFlags: Default
+impl daegun::metrics::PdfFlags: Eq
+impl daegun::metrics::PdfFlags: Hash
+impl daegun::metrics::PdfFlags: LowerHex
+impl daegun::metrics::PdfFlags: Octal
+impl daegun::metrics::PdfFlags: PartialEq
+impl daegun::metrics::PdfFlags: UpperHex
+impl daegun::metrics::ScriptMetrics: Clone
+impl daegun::metrics::ScriptMetrics: Copy
+impl daegun::metrics::ScriptMetrics: Debug
+impl daegun::metrics::ScriptMetrics: Default
+impl daegun::metrics::ScriptMetrics: PartialEq
+impl daegun::metrics::Stat: Clone
+impl daegun::metrics::Stat: Debug
+impl daegun::metrics::Stat: PartialEq
+impl daegun::metrics::StatAxis: Clone
+impl daegun::metrics::StatAxis: Debug
+impl daegun::metrics::StatAxis: PartialEq
+impl daegun::metrics::StatAxisValue: Clone
+impl daegun::metrics::StatAxisValue: Debug
+impl daegun::metrics::StatAxisValue: PartialEq
+impl daegun::metrics::TypographicMetrics: Clone
+impl daegun::metrics::TypographicMetrics: Copy
+impl daegun::metrics::TypographicMetrics: Debug
+impl daegun::metrics::TypographicMetrics: Default
+impl daegun::metrics::TypographicMetrics: PartialEq
+impl daegun::metrics::WinMetrics: Clone
+impl daegun::metrics::WinMetrics: Copy
+impl daegun::metrics::WinMetrics: Debug
+impl daegun::metrics::WinMetrics: Default
+impl daegun::metrics::WinMetrics: PartialEq
+impl daegun::outline::Cap: Clone
+impl daegun::outline::Cap: Copy
+impl daegun::outline::Cap: Debug
+impl daegun::outline::Cap: Eq
+impl daegun::outline::Cap: Hash
+impl daegun::outline::Cap: PartialEq
+impl daegun::outline::CffHints: Clone
+impl daegun::outline::CffHints: Debug
+impl daegun::outline::CffHints: Default
+impl daegun::outline::CffHints: PartialEq
+impl daegun::outline::CffMask: Clone
+impl daegun::outline::CffMask: Debug
+impl daegun::outline::CffMask: Default
+impl daegun::outline::CffMask: Eq
+impl daegun::outline::CffMask: Hash
+impl daegun::outline::CffMask: PartialEq
+impl daegun::outline::CffStem: Clone
+impl daegun::outline::CffStem: Copy
+impl daegun::outline::CffStem: Debug
+impl daegun::outline::CffStem: PartialEq
+impl daegun::outline::FillRule: Clone
+impl daegun::outline::FillRule: Copy
+impl daegun::outline::FillRule: Debug
+impl daegun::outline::FillRule: Default
+impl daegun::outline::FillRule: Eq
+impl daegun::outline::FillRule: Hash
+impl daegun::outline::FillRule: PartialEq
+impl daegun::outline::HintMode: Clone
+impl daegun::outline::HintMode: Copy
+impl daegun::outline::HintMode: Debug
+impl daegun::outline::HintMode: Default
+impl daegun::outline::HintMode: Eq
+impl daegun::outline::HintMode: Hash
+impl daegun::outline::HintMode: PartialEq
+impl daegun::outline::HintedOutline: Clone
+impl daegun::outline::HintedOutline: Debug
+impl daegun::outline::HintedOutline: PartialEq
+impl daegun::outline::Join: Clone
+impl daegun::outline::Join: Copy
+impl daegun::outline::Join: Debug
+impl daegun::outline::Join: PartialEq
+impl daegun::outline::OutlineOptions: Clone
+impl daegun::outline::OutlineOptions: Copy
+impl daegun::outline::OutlineOptions: Debug
+impl daegun::outline::OutlineOptions: Default
+impl daegun::outline::OutlineOptions: PartialEq
+impl daegun::outline::Path: Clone
+impl daegun::outline::Path: Debug
+impl daegun::outline::Path: Default
+impl daegun::outline::Path: OutlinePen
+impl daegun::outline::Path: PartialEq
+impl daegun::outline::PathView: Clone
+impl daegun::outline::PathView: Copy
+impl daegun::outline::PathView: Debug
+impl daegun::outline::PathView: PartialEq
+impl daegun::outline::Point: Clone
+impl daegun::outline::Point: Copy
+impl daegun::outline::Point: Debug
+impl daegun::outline::Point: Default
+impl daegun::outline::Point: From<(f32, f32)>
+impl daegun::outline::Point: From<Point> for (f32, f32)
+impl daegun::outline::Point: PartialEq
+impl daegun::outline::PointKind: Clone
+impl daegun::outline::PointKind: Copy
+impl daegun::outline::PointKind: Debug
+impl daegun::outline::PointKind: Eq
+impl daegun::outline::PointKind: Hash
+impl daegun::outline::PointKind: PartialEq
+impl daegun::outline::PreparedGlyph: Clone
+impl daegun::outline::PreparedGlyph: Copy
+impl daegun::outline::PreparedGlyph: Debug
+impl daegun::outline::PreparedGlyph: Default
+impl daegun::outline::PreparedGlyph: PartialEq
+impl daegun::outline::Quad: Clone
+impl daegun::outline::Quad: Copy
+impl daegun::outline::Quad: Debug
+impl daegun::outline::Quad: Default
+impl daegun::outline::Quad: PartialEq
+impl daegun::outline::QuadraticPen: Debug
+impl daegun::outline::QuadraticPen: OutlinePen
+impl daegun::outline::StrokeStyle: Clone
+impl daegun::outline::StrokeStyle: Copy
+impl daegun::outline::StrokeStyle: Debug
+impl daegun::outline::StrokeStyle: Default
+impl daegun::outline::StrokeStyle: PartialEq
+impl daegun::outline::TransformPen: Debug
+impl daegun::outline::TransformPen: OutlinePen
+impl daegun::outline::Verb: Clone
+impl daegun::outline::Verb: Copy
+impl daegun::outline::Verb: Debug
+impl daegun::outline::Verb: Eq
+impl daegun::outline::Verb: Hash
+impl daegun::outline::Verb: PartialEq
+impl daegun::raster::Bitmap: Clone
+impl daegun::raster::Bitmap: Debug
+impl daegun::raster::Bitmap: Default
+impl daegun::raster::Bitmap: Eq
+impl daegun::raster::Bitmap: Hash
+impl daegun::raster::Bitmap: PartialEq
+impl daegun::raster::Field: Clone
+impl daegun::raster::Field: Copy
+impl daegun::raster::Field: Debug
+impl daegun::raster::Field: PartialEq
+impl daegun::raster::Gamma: Clone
+impl daegun::raster::Gamma: Copy
+impl daegun::raster::Gamma: Debug
+impl daegun::raster::Gamma: Default
+impl daegun::raster::Gamma: PartialEq
+impl daegun::raster::Image: Clone
+impl daegun::raster::Image: Copy
+impl daegun::raster::Image: Debug
+impl daegun::raster::Image: Default
+impl daegun::raster::Image: Eq
+impl daegun::raster::Image: Hash
+impl daegun::raster::Image: PartialEq
+impl daegun::raster::RasterOptions: Clone
+impl daegun::raster::RasterOptions: Copy
+impl daegun::raster::RasterOptions: Debug
+impl daegun::raster::RasterOptions: Default
+impl daegun::raster::RasterOptions: PartialEq
+impl daegun::raster::Rasterizer: Debug
+impl daegun::raster::Rasterizer: Default
+impl daegun::raster::Rect: Clone
+impl daegun::raster::Rect: Copy
+impl daegun::raster::Rect: Debug
+impl daegun::raster::Rect: Eq
+impl daegun::raster::Rect: Hash
+impl daegun::raster::Rect: PartialEq
+impl daegun::raster::ShelfPacker: Clone
+impl daegun::raster::ShelfPacker: Debug
+impl daegun::raster::StripeOrder: Clone
+impl daegun::raster::StripeOrder: Copy
+impl daegun::raster::StripeOrder: Debug
+impl daegun::raster::StripeOrder: Eq
+impl daegun::raster::StripeOrder: Hash
+impl daegun::raster::StripeOrder: PartialEq
+impl daegun::raster::SubpixelLayout: Clone
+impl daegun::raster::SubpixelLayout: Copy
+impl daegun::raster::SubpixelLayout: Debug
+impl daegun::raster::SubpixelLayout: Default
+impl daegun::raster::Target: Debug
+impl daegun::raster::Target: Eq
+impl daegun::raster::Target: Hash
+impl daegun::raster::Target: PartialEq
+impl daegun::raw::format::AnchorPoint: Clone
+impl daegun::raw::format::AnchorPoint: Copy
+impl daegun::raw::format::AnchorPoint: Debug
+impl daegun::raw::format::AnchorPoint: Default
+impl daegun::raw::format::AnchorPoint: Eq
+impl daegun::raw::format::AnchorPoint: Hash
+impl daegun::raw::format::AnchorPoint: PartialEq
+impl daegun::raw::format::Ankr: Clone
+impl daegun::raw::format::Ankr: Copy
+impl daegun::raw::format::Ankr: Debug
+impl daegun::raw::format::DeltaSetIndex: Clone
+impl daegun::raw::format::DeltaSetIndex: Copy
+impl daegun::raw::format::DeltaSetIndex: Debug
+impl daegun::raw::format::DeltaSetIndex: Default
+impl daegun::raw::format::DeltaSetIndex: Eq
+impl daegun::raw::format::DeltaSetIndex: From<DeltaSetIndex> for (usize, usize)
+impl daegun::raw::format::DeltaSetIndex: Hash
+impl daegun::raw::format::DeltaSetIndex: PartialEq
+impl daegun::raw::format::Entry: Clone
+impl daegun::raw::format::Entry: Copy
+impl daegun::raw::format::Entry: Debug
+impl daegun::raw::format::Entry: Default
+impl daegun::raw::format::Entry: Eq
+impl daegun::raw::format::Entry: Hash
+impl daegun::raw::format::Entry: PartialEq
+impl daegun::raw::format::FeatureVariations: Clone
+impl daegun::raw::format::FeatureVariations: Copy
+impl daegun::raw::format::FeatureVariations: Debug
+impl daegun::raw::format::GlyphValue: Clone
+impl daegun::raw::format::GlyphValue: Copy
+impl daegun::raw::format::GlyphValue: Debug
+impl daegun::raw::format::GlyphValue: Default
+impl daegun::raw::format::GlyphValue: Eq
+impl daegun::raw::format::GlyphValue: Hash
+impl daegun::raw::format::GlyphValue: PartialEq
+impl daegun::raw::format::ItemVariationStore: Clone
+impl daegun::raw::format::ItemVariationStore: Debug
+impl daegun::raw::format::ItemVariationStore: Default
+impl daegun::raw::format::Ivd: Clone
+impl daegun::raw::format::Ivd: Debug
+impl daegun::raw::format::Ivd: Default
+impl daegun::raw::format::Lookup: Clone
+impl daegun::raw::format::Lookup: Copy
+impl daegun::raw::format::Lookup: Debug
+impl daegun::raw::format::RegionAxis: Clone
+impl daegun::raw::format::RegionAxis: Copy
+impl daegun::raw::format::RegionAxis: Debug
+impl daegun::raw::format::RegionAxis: Default
+impl daegun::raw::format::RegionAxis: PartialEq
+impl daegun::raw::format::StateTable: Clone
+impl daegun::raw::format::StateTable: Copy
+impl daegun::raw::format::StateTable: Debug
+impl daegun::raw::format::Substitution: Clone
+impl daegun::raw::format::Substitution: Copy
+impl daegun::raw::format::Substitution: Debug
+impl daegun::raw::format::Substitution: Eq
+impl daegun::raw::format::Substitution: Hash
+impl daegun::raw::format::Substitution: PartialEq
+impl daegun::shape::BidiRun: Clone
+impl daegun::shape::BidiRun: Debug
+impl daegun::shape::BidiRun: Default
+impl daegun::shape::BidiRun: PartialEq
+impl daegun::shape::ClusterLevel: Clone
+impl daegun::shape::ClusterLevel: Copy
+impl daegun::shape::ClusterLevel: Debug
+impl daegun::shape::ClusterLevel: Default
+impl daegun::shape::ClusterLevel: Eq
+impl daegun::shape::ClusterLevel: Hash
+impl daegun::shape::ClusterLevel: PartialEq
+impl daegun::shape::Direction: Clone
+impl daegun::shape::Direction: Copy
+impl daegun::shape::Direction: Debug
+impl daegun::shape::Direction: Default
+impl daegun::shape::Direction: Display
+impl daegun::shape::Direction: Eq
+impl daegun::shape::Direction: FromStr
+impl daegun::shape::Direction: Hash
+impl daegun::shape::Direction: PartialEq
+impl daegun::shape::Feature: Clone
+impl daegun::shape::Feature: Copy
+impl daegun::shape::Feature: Debug
+impl daegun::shape::Feature: Display
+impl daegun::shape::Feature: Eq
+impl daegun::shape::Feature: FromStr
+impl daegun::shape::Feature: Hash
+impl daegun::shape::Feature: Ord
+impl daegun::shape::Feature: PartialEq
+impl daegun::shape::Feature: PartialOrd
+impl daegun::shape::Ignorables: Clone
+impl daegun::shape::Ignorables: Copy
+impl daegun::shape::Ignorables: Debug
+impl daegun::shape::Ignorables: Default
+impl daegun::shape::Ignorables: Eq
+impl daegun::shape::Ignorables: Hash
+impl daegun::shape::Ignorables: PartialEq
+impl daegun::shape::Offset: Clone
+impl daegun::shape::Offset: Copy
+impl daegun::shape::Offset: Debug
+impl daegun::shape::Offset: Default
+impl daegun::shape::Offset: From<(f64, f64)>
+impl daegun::shape::Offset: From<Offset> for (f64, f64)
+impl daegun::shape::Offset: PartialEq
+impl daegun::shape::ShapeOptions: Clone
+impl daegun::shape::ShapeOptions: Copy
+impl daegun::shape::ShapeOptions: Debug
+impl daegun::shape::ShapeOptions: Default
+impl daegun::shape::ShapeOptions: PartialEq
+impl daegun::shape::ShapedRun: Clone
+impl daegun::shape::ShapedRun: Debug
+impl daegun::shape::ShapedRun: Default
+impl daegun::shape::ShapedRun: PartialEq
+impl daegun::shape::Shaper: Clone
+impl daegun::shape::Shaper: Copy
+impl daegun::shape::Shaper: Debug
+impl daegun::shape::Shaper: Default
+impl daegun::shape::Shaper: Eq
+impl daegun::shape::Shaper: Hash
+impl daegun::shape::Shaper: PartialEq
+impl daegun::tables::BaseScript: Clone
+impl daegun::tables::BaseScript: Debug
+impl daegun::tables::BaseScript: PartialEq
+impl daegun::tables::Extents: Clone
+impl daegun::tables::Extents: Copy
+impl daegun::tables::Extents: Debug
+impl daegun::tables::Extents: Default
+impl daegun::tables::Extents: PartialEq
+impl daegun::tables::Subset: Clone
+impl daegun::tables::Subset: Debug
+impl daegun::tables::Subset: Eq
+impl daegun::tables::Subset: Hash
+impl daegun::tables::Subset: PartialEq
+impl daegun::unicode::BaseDirection: Clone
+impl daegun::unicode::BaseDirection: Copy
+impl daegun::unicode::BaseDirection: Debug
+impl daegun::unicode::BaseDirection: Default
+impl daegun::unicode::BaseDirection: Eq
+impl daegun::unicode::BaseDirection: Hash
+impl daegun::unicode::BaseDirection: PartialEq
+impl daegun::unicode::BidiParagraph: Clone
+impl daegun::unicode::BidiParagraph: Debug
+impl daegun::unicode::BidiParagraph: Default
+impl daegun::unicode::BidiParagraph: Eq
+impl daegun::unicode::BidiParagraph: Hash
+impl daegun::unicode::BidiParagraph: PartialEq
+impl daegun::unicode::GeneralCategory: Clone
+impl daegun::unicode::GeneralCategory: Copy
+impl daegun::unicode::GeneralCategory: Debug
+impl daegun::unicode::GeneralCategory: Eq
+impl daegun::unicode::GeneralCategory: Hash
+impl daegun::unicode::GeneralCategory: PartialEq
+impl daegun::unicode::LineBreak: Clone
+impl daegun::unicode::LineBreak: Copy
+impl daegun::unicode::LineBreak: Debug
+impl daegun::unicode::LineBreak: Default
+impl daegun::unicode::LineBreak: Eq
+impl daegun::unicode::LineBreak: Hash
+impl daegun::unicode::LineBreak: PartialEq
+impl daegun::unicode::ParagraphRun: Clone
+impl daegun::unicode::ParagraphRun: Copy
+impl daegun::unicode::ParagraphRun: Debug
+impl daegun::unicode::ParagraphRun: Default
+impl daegun::unicode::ParagraphRun: Eq
+impl daegun::unicode::ParagraphRun: Hash
+impl daegun::unicode::ParagraphRun: PartialEq
+impl daegun::unicode::Script: Clone
+impl daegun::unicode::Script: Copy
+impl daegun::unicode::Script: Debug
+impl daegun::unicode::Script: Display
+impl daegun::unicode::Script: Eq
+impl daegun::unicode::Script: FromStr
+impl daegun::unicode::Script: Hash
+impl daegun::unicode::Script: PartialEq
+impl daegun::unicode::ScriptDirection: Clone
+impl daegun::unicode::ScriptDirection: Copy
+impl daegun::unicode::ScriptDirection: Debug
+impl daegun::unicode::ScriptDirection: Eq
+impl daegun::unicode::ScriptDirection: Hash
+impl daegun::unicode::ScriptDirection: PartialEq
+impl daegun::unicode::ScriptRun: Clone
+impl daegun::unicode::ScriptRun: Copy
+impl daegun::unicode::ScriptRun: Debug
+impl daegun::unicode::ScriptRun: Eq
+impl daegun::unicode::ScriptRun: Hash
+impl daegun::unicode::ScriptRun: PartialEq
+impl daegun::unicode::VerticalOrientation: Clone
+impl daegun::unicode::VerticalOrientation: Copy
+impl daegun::unicode::VerticalOrientation: Debug
+impl daegun::unicode::VerticalOrientation: Eq
+impl daegun::unicode::VerticalOrientation: Hash
+impl daegun::unicode::VerticalOrientation: PartialEq
+impl daegun::unicode::VisualRun: Clone
+impl daegun::unicode::VisualRun: Copy
+impl daegun::unicode::VisualRun: Debug
+impl daegun::unicode::VisualRun: Default
+impl daegun::unicode::VisualRun: Eq
+impl daegun::unicode::VisualRun: Hash
+impl daegun::unicode::VisualRun: PartialEq
+impl daegun::unicode::WordSegmenter: Clone
+impl daegun::unicode::WordSegmenter: Copy
+impl daegun::unicode::WordSegmenter: Debug
+method daegun::CachePool::new fn(bytes: usize) -> CachePool
+method daegun::CachePool::set_budget fn(self: &Self, bytes: usize)
+method daegun::CachePool::stats fn(self: &Self) -> CacheStats
+method daegun::Error::kind const fn(self: &Self) -> ErrorKind
+method daegun::Error::message fn(self: &Self) -> &str
+method daegun::Font::advance fn(self: &Self, glyph: GlyphId, location: &Location, orientation: Orientation) -> f64
+method daegun::Font::advances fn(self: &Self, glyphs: &[GlyphId], location: &Location, orientation: Orientation, out: &mut Vec<f64>)
+method daegun::Font::ascender fn(self: &Self, location: &Location) -> f64
+method daegun::Font::axes fn(self: &Self) -> Vec<Axis>
+method daegun::Font::base_extents fn(self: &Self, script: Tag, location: &Location, orientation: Orientation, language_system: Option<Tag>, feature: Option<Tag>) -> Option<Extents>
+method daegun::Font::base_script fn(self: &Self, script: Tag, location: &Location, orientation: Orientation) -> Option<BaseScript>
+method daegun::Font::bitmap fn(self: &Self, glyph: GlyphId, ppem: u16) -> Option<GlyphBitmap<'_>>
+method daegun::Font::bounds fn(self: &Self) -> Option<crate::daecore::Bounds>
+method daegun::Font::cache_stats fn(self: &Self, cache: Cache) -> CacheStats
+method daegun::Font::cap_height fn(self: &Self, location: &Location) -> f64
+method daegun::Font::caret_positions fn(self: &Self, text: &str, location: &Location, orientation: Orientation) -> Vec<f64>
+method daegun::Font::cff_hints fn(self: &Self, glyph: GlyphId, location: &Location) -> Option<CffHints>
+method daegun::Font::clear_cache fn(self: &Self, cache: Cache)
+method daegun::Font::color_scene fn(self: &Self, glyph: GlyphId, location: &Location, options: &SceneOptions) -> Result<Option<DisplayList>>
+method daegun::Font::colr_clip_box fn(self: &Self, glyph: GlyphId, location: &Location) -> Option<Bounds>
+method daegun::Font::colr_layers fn(self: &Self, glyph: GlyphId, palette: u16) -> Option<Vec<ColrLayer>>
+method daegun::Font::coverage fn(self: &Self) -> impl DoubleEndedIterator<Item = (char, GlyphId)> + FusedIterator + use<>
+method daegun::Font::default_vertical_origin fn(self: &Self) -> f64
+method daegun::Font::descender fn(self: &Self, location: &Location) -> f64
+method daegun::Font::face_count fn(bytes: &[u8]) -> usize
+method daegun::Font::family_name fn(self: &Self, location: &Location) -> Option<String>
+method daegun::Font::feature_tags fn(self: &Self, script: Option<Tag>, language_system: Option<Tag>) -> Vec<Tag>
+method daegun::Font::from_bytes fn(bytes: &[u8]) -> Result<Font>
+method daegun::Font::from_collection fn(bytes: &[u8], index: usize) -> Result<Font>
+method daegun::Font::from_static fn(bytes: &'static [u8], index: usize) -> Result<Font>
+method daegun::Font::from_vec fn(bytes: Vec<u8>, index: usize) -> Result<Font>
+method daegun::Font::glyph_bounds fn(self: &Self, glyph: GlyphId, location: &Location) -> Option<Bounds>
+method daegun::Font::glyph_class fn(self: &Self, glyph: GlyphId) -> Option<GlyphClass>
+method daegun::Font::glyph_closure fn(self: &Self, glyphs: impl IntoIterator<Item: Borrow<GlyphId>>, location: &Location) -> Result<Vec<GlyphId>>
+method daegun::Font::glyph_count fn(self: &Self) -> u32
+method daegun::Font::glyph_id fn(self: &Self, c: char) -> Option<GlyphId>
+method daegun::Font::glyph_ids fn(self: &Self, text: &str) -> impl DoubleEndedIterator<Item = Option<GlyphId>> + FusedIterator + Clone
+method daegun::Font::glyph_name fn(self: &Self, glyph: GlyphId) -> Option<&str>
+method daegun::Font::glyph_names fn(self: &Self) -> impl ExactSizeIterator<Item = Option<&str>> + DoubleEndedIterator + FusedIterator + Clone
+method daegun::Font::has_glyph fn(self: &Self, c: char) -> bool
+method daegun::Font::has_glyph_free_base fn(self: &Self) -> bool
+method daegun::Font::has_overlap_flag fn(self: &Self, glyph: GlyphId) -> bool
+method daegun::Font::has_table fn(self: &Self, tag: Tag) -> bool
+method daegun::Font::hinted_outline fn(self: &Self, glyph: GlyphId, location: &Location, px: f32, mode: HintMode) -> Result<Option<HintedOutline>>
+method daegun::Font::index_allowance fn(self: &Self) -> usize
+method daegun::Font::instance fn(self: &Self, location: &Location) -> Result<Arc<[u8]>>
+method daegun::Font::instance_tables fn(self: &Self, location: &Location) -> Result<BTreeMap<Tag, Cow<'_, [u8]>>>
+method daegun::Font::is_variable fn(self: &Self) -> bool
+method daegun::Font::italic_angle fn(self: &Self, location: &Location) -> f64
+method daegun::Font::justification_glyphs fn(self: &Self, script: Tag) -> Option<Vec<GlyphId>>
+method daegun::Font::justification_priorities fn(self: &Self, script: Tag, language_system: Option<Tag>) -> Option<Vec<JstfModLists>>
+method daegun::Font::justify fn(self: &Self, text: &str, location: &Location, orientation: Orientation, options: &JustifyOptions) -> Justified
+method daegun::Font::language_system_tags fn(self: &Self, script: Tag) -> Vec<Tag>
+method daegun::Font::layout fn(self: &Self, text: &str, location: &Location, options: &LayoutOptions<'_>) -> TextLayout
+method daegun::Font::ligature_carets fn(self: &Self, glyph: GlyphId, location: &Location, orientation: Orientation) -> Vec<Option<f64>>
+method daegun::Font::line_metrics fn(self: &Self, location: &Location, orientation: Orientation) -> LineMetrics
+method daegun::Font::localized_names fn(self: &Self, name_id: NameId, location: &Location) -> Vec<crate::LocalizedName>
+method daegun::Font::location fn(self: &Self, coords: &[(Tag, f64)]) -> Location
+method daegun::Font::mark_attachment_class fn(self: &Self, glyph: GlyphId) -> Option<core::num::NonZeroU32>
+method daegun::Font::math_constants fn(self: &Self, location: &Location) -> Option<MathConstants>
+method daegun::Font::math_glyph_variants fn(self: &Self, glyph: GlyphId, location: &Location, orientation: Orientation) -> Option<MathGlyphConstruction>
+method daegun::Font::math_is_extended_shape fn(self: &Self, glyph: GlyphId) -> bool
+method daegun::Font::math_italics_correction fn(self: &Self, glyph: GlyphId, location: &Location) -> Option<f64>
+method daegun::Font::math_kern fn(self: &Self, glyph: GlyphId, location: &Location, corner: MathKernCorner, height: f64) -> Result<f64>
+method daegun::Font::math_min_connector_overlap fn(self: &Self) -> Option<f64>
+method daegun::Font::math_top_accent_attachment fn(self: &Self, glyph: GlyphId, location: &Location) -> f64
+method daegun::Font::name fn(self: &Self, name_id: NameId, location: &Location) -> Option<String>
+method daegun::Font::named_instances fn(self: &Self) -> Vec<NamedInstance>
+method daegun::Font::names fn(self: &Self, location: &Location) -> BTreeMap<NameId, String>
+method daegun::Font::os2 fn(self: &Self, location: &Location) -> Option<Os2>
+method daegun::Font::outline fn(self: &Self, glyph: GlyphId, location: &Location, pen: &mut dyn OutlinePen) -> Result<()>
+method daegun::Font::paint_graph fn(self: &Self, glyph: GlyphId, location: &Location, palette: u16) -> Option<PaintGraph>
+method daegun::Font::palette_colors fn(self: &Self, palette: u16) -> Vec<Rgba>
+method daegun::Font::palette_count fn(self: &Self) -> usize
+method daegun::Font::palette_entry_labels fn(self: &Self) -> Vec<Option<NameId>>
+method daegun::Font::palettes fn(self: &Self) -> Vec<Palette>
+method daegun::Font::pdf_flags fn(self: &Self, location: &Location) -> PdfFlags
+method daegun::Font::prepared_outline fn(self: &Self, glyph: GlyphId, location: &Location, px: f32, options: &OutlineOptions, pen: &mut impl OutlinePen + ?Sized) -> Result<PreparedGlyph>
+method daegun::Font::prewarm fn(self: &Self, glyphs: impl IntoIterator<Item: Borrow<GlyphId>>, location: &Location) -> usize
+method daegun::Font::quads fn(self: &Self, glyph: GlyphId, location: &Location) -> Result<Vec<Quad>>
+method daegun::Font::quads_into fn(self: &Self, glyph: GlyphId, location: &Location, curves: &mut Vec<Quad>) -> Result<()>
+method daegun::Font::script_tags fn(self: &Self) -> Vec<Tag>
+method daegun::Font::set_cache_budget fn(self: &Self, cache: Cache, bytes: usize)
+method daegun::Font::set_cache_pool fn(self: &Self, cache: Cache, pool: Option<&CachePool>)
+method daegun::Font::set_index_allowance fn(self: &Self, bytes: usize)
+method daegun::Font::shape fn(self: &Self, text: &str, location: &Location, options: &ShapeOptions<'_>) -> Arc<ShapedRun>
+method daegun::Font::shape_bidi fn(self: &Self, text: &str, location: &Location, base: BaseDirection, options: &ShapeOptions<'_>) -> Vec<BidiRun>
+method daegun::Font::shape_into fn(self: &Self, text: &str, location: &Location, options: &ShapeOptions<'_>, run: &mut ShapedRun)
+method daegun::Font::shape_justified fn(self: &Self, text: &str, location: &Location, orientation: Orientation, level: &JstfModLists, adjustment: Adjustment) -> Arc<crate::text::shape::ShapedRun>
+method daegun::Font::stat fn(self: &Self, location: &Location) -> Option<Stat>
+method daegun::Font::style fn(self: &Self, location: &Location) -> FontStyle
+method daegun::Font::subset fn(self: &Self, glyphs: impl IntoIterator<Item: Borrow<GlyphId>>, location: &Location) -> Result<Subset>
+method daegun::Font::subset_text fn(self: &Self, text: &str, location: &Location) -> Result<Subset>
+method daegun::Font::table fn(self: &Self, tag: Tag) -> Option<&[u8]>
+method daegun::Font::table_tags fn(self: &Self) -> impl ExactSizeIterator<Item = Tag> + DoubleEndedIterator + FusedIterator + Clone
+method daegun::Font::tracking fn(self: &Self, point_size: f64, orientation: Orientation) -> f64
+method daegun::Font::typographic_metrics fn(self: &Self, location: &Location) -> TypographicMetrics
+method daegun::Font::units_per_em fn(self: &Self) -> u16
+method daegun::Font::variation_glyph_id fn(self: &Self, c: char, selector: char) -> Option<GlyphId>
+method daegun::Font::vertical_origin fn(self: &Self, glyph: GlyphId, location: &Location) -> f64
+method daegun::Font::visit_names fn(self: &Self, location: &Location, visit: impl FnMut(NameId, &str))
+method daegun::Font::visit_paint_graph fn(self: &Self, glyph: GlyphId, location: &Location, palette: u16, visitor: &mut impl PaintVisitor + ?Sized) -> bool
+method daegun::Location::coords fn(self: &Self) -> &[(Tag, f64)]
+method daegun::Location::normalized fn(self: &Self) -> &[f64]
+method daegun::Tag::new const fn(bytes: &[u8; 4]) -> Tag
+method daegun::Tag::to_bytes const fn(self: Self) -> [u8; 4]
+method daegun::color::Blend::blend fn(self: Self, cb: Rgb, cs: Rgb) -> Rgb
+method daegun::color::Blend::composite fn(self: Self, cs: Rgb, a_s: f32, cb: Rgb, a_b: f32) -> Premultiplied
+method daegun::color::Blend::from_colr fn(mode: u8) -> Blend
+method daegun::color::DisplayList::clear fn(self: &mut Self)
+method daegun::color::DisplayList::gradient fn(self: &Self, id: GradientId) -> Option<Gradient<'_>>
+method daegun::color::DisplayList::gradients fn(self: &Self) -> impl ExactSizeIterator<Item = Gradient<'_>> + DoubleEndedIterator + FusedIterator + Clone
+method daegun::color::DisplayList::is_empty const fn(self: &Self) -> bool
+method daegun::color::DisplayList::ops fn(self: &Self) -> &[Op]
+method daegun::color::DisplayList::path fn(self: &Self, id: PathId) -> Option<PathView<'_>>
+method daegun::color::DisplayList::paths fn(self: &Self) -> impl ExactSizeIterator<Item = PathView<'_>> + DoubleEndedIterator + FusedIterator + Clone
+method daegun::color::DisplayList::push fn(self: &mut Self, op: Op)
+method daegun::color::DisplayList::push_gradient fn(self: &mut Self, gradient: Gradient<'_>) -> GradientId
+method daegun::color::DisplayList::push_path fn(self: &mut Self, path: PathView<'_>) -> PathId
+method daegun::color::DisplayList::push_shapes fn(self: &mut Self, shapes: &[ClipShape]) -> Range<usize>
+method daegun::color::DisplayList::shapes fn(self: &Self, shapes: Range<usize>) -> &[ClipShape]
+method daegun::color::Gradient::new const fn(kind: GradientKind, stops: &'s [Stop], extend: Extend, transform: [f64; 6]) -> Gradient<'s>
+method daegun::color::PaintGraph::new fn() -> PaintGraph
+method daegun::color::PaintGraph::root const fn(self: &Self) -> PaintRef<'_>
+method daegun::color::PaintGraph::with fn(self: &mut Self, node: PaintNode<'_>, below: impl FnOnce(&mut PaintGraph)) -> &mut PaintGraph
+method daegun::color::PaintRef::children fn(self: &Self) -> impl core::iter::FusedIterator<Item = PaintRef<'a>> + Clone + use<'a>
+method daegun::color::PaintRef::node fn(self: &Self) -> PaintNode<'a>
+method daegun::color::Rgba::fade fn(self: Self, by: f64) -> Rgba
+method daegun::color::Rgba::opaque const fn(r: u8, g: u8, b: u8) -> Rgba
+method daegun::color::SceneOptions::with_foreground const fn(self: Self, foreground: Rgba) -> SceneOptions
+method daegun::color::SceneOptions::with_palette const fn(self: Self, palette: u16) -> SceneOptions
+method daegun::color::Stops::resolve fn(stops: Vec<Stop>, extend: Extend) -> Stops
+method daegun::color::gradient::Ramp::at fn(self: &Self, dx: f64, dy: f64) -> Option<Rgba>
+method daegun::color::gradient::Ramp::new fn(g: &Gradient<'_>, to_device: &[f64; 6]) -> Ramp
+method daegun::color::gradient::Ramp::with_interpolation fn(g: &Gradient<'_>, to_device: &[f64; 6], how: Interpolation) -> Ramp
+method daegun::layout::JustifyOptions::new const fn(script: Tag, target_width: f64) -> JustifyOptions
+method daegun::layout::JustifyOptions::with_language_system const fn(self: Self, language_system: Tag) -> JustifyOptions
+method daegun::layout::JustifyOptions::with_tolerance const fn(self: Self, tolerance: f64) -> JustifyOptions
+method daegun::layout::LayoutOptions::with_align const fn(self: Self, align: Align) -> Self
+method daegun::layout::LayoutOptions::with_base_direction const fn(self: Self, direction: BaseDirection) -> Self
+method daegun::layout::LayoutOptions::with_features const fn(self: Self, features: &'a [Feature]) -> Self
+method daegun::layout::LayoutOptions::with_language const fn(self: Self, language: &'a str) -> Self
+method daegun::layout::LayoutOptions::with_line_height const fn(self: Self, height: f64) -> Self
+method daegun::layout::LayoutOptions::with_max_inline_size const fn(self: Self, size: f64) -> Self
+method daegun::layout::LayoutOptions::with_max_lines const fn(self: Self, lines: usize) -> Self
+method daegun::layout::LayoutOptions::with_segmenter const fn(self: Self, segmenter: crate::daecore::daekit::text::WordSegmenter<'a>) -> Self
+method daegun::layout::LayoutOptions::with_strategy const fn(self: Self, strategy: BreakStrategy) -> Self
+method daegun::layout::LayoutOptions::with_tab_size const fn(self: Self, spaces: f64) -> Self
+method daegun::layout::LayoutOptions::with_text_orientation const fn(self: Self, orientation: TextOrientation) -> Self
+method daegun::layout::LayoutOptions::with_writing_mode const fn(self: Self, mode: WritingMode) -> Self
+method daegun::layout::WritingMode::is_vertical const fn(self: Self) -> bool
+method daegun::metrics::LineMetrics::line_height fn(self: &Self) -> f64
+method daegun::metrics::Os2::is_bold fn(self: &Self) -> bool
+method daegun::metrics::Os2::is_italic fn(self: &Self) -> bool
+method daegun::metrics::Os2::is_oblique fn(self: &Self) -> bool
+method daegun::metrics::Os2::is_regular fn(self: &Self) -> bool
+method daegun::metrics::Os2::uses_typo_metrics fn(self: &Self) -> bool
+method daegun::metrics::PdfFlags::bits const fn(self: Self) -> u32
+method daegun::metrics::PdfFlags::contains const fn(self: Self, other: PdfFlags) -> bool
+method daegun::metrics::PdfFlags::empty const fn() -> PdfFlags
+method daegun::metrics::PdfFlags::is_empty const fn(self: Self) -> bool
+method daegun::outline::HintMode::may_autohint const fn(self: Self) -> bool
+method daegun::outline::HintedOutline::contours fn(self: &Self) -> &[usize]
+method daegun::outline::HintedOutline::draw fn(self: &Self, pen: &mut impl OutlinePen + ?Sized)
+method daegun::outline::HintedOutline::points fn(self: &Self) -> impl ExactSizeIterator<Item = (Point, PointKind)> + DoubleEndedIterator + core::iter::FusedIterator + Clone
+method daegun::outline::OutlineOptions::with_embolden const fn(self: Self, units: f32) -> OutlineOptions
+method daegun::outline::OutlineOptions::with_hinting const fn(self: Self, hinting: HintMode) -> OutlineOptions
+method daegun::outline::OutlineOptions::with_oblique const fn(self: Self, tangent: f32) -> OutlineOptions
+method daegun::outline::OutlineOptions::with_stroke const fn(self: Self, stroke: StrokeStyle) -> OutlineOptions
+method daegun::outline::OutlineOptions::with_transform const fn(self: Self, transform: [f32; 6]) -> OutlineOptions
+method daegun::outline::Path::bounds fn(self: &Self) -> Option<Bounds>
+method daegun::outline::Path::clear fn(self: &mut Self)
+method daegun::outline::Path::cost const fn(self: &Self) -> usize
+method daegun::outline::Path::flatten fn(self: &Self, max_area: f32) -> Result<Vec<Vec<Point>>>
+method daegun::outline::Path::flatten_into fn(self: &Self, max_area: f32, contours: &mut Vec<Vec<Point>>) -> Result<()>
+method daegun::outline::Path::is_empty const fn(self: &Self) -> bool
+method daegun::outline::Path::new const fn() -> Path
+method daegun::outline::Path::parts fn(self: &Self) -> (&[Verb], &[Point])
+method daegun::outline::Path::replay fn(self: &Self, transform: Option<&[f64; 6]>, pen: &mut impl OutlinePen + ?Sized)
+method daegun::outline::Path::segments fn(self: &Self) -> impl ExactSizeIterator<Item = (Verb, &[Point])> + FusedIterator + Clone + '_
+method daegun::outline::Path::stroke fn(self: &Self, style: &StrokeStyle, tolerance: f32, pen: &mut dyn OutlinePen) -> Result<()>
+method daegun::outline::Path::stroke_simplified fn(self: &Self, style: &StrokeStyle, tolerance: f32, pen: &mut dyn OutlinePen) -> Result<()>
+method daegun::outline::Path::view fn(self: &Self) -> PathView<'_>
+method daegun::outline::Path::with_capacity fn(verbs: usize, points: usize) -> Path
+method daegun::outline::PathView::bounds fn(self: &Self) -> Option<Bounds>
+method daegun::outline::PathView::is_empty const fn(self: &Self) -> bool
+method daegun::outline::PathView::parts const fn(self: &Self) -> (&'a [Verb], &'a [Point])
+method daegun::outline::PathView::replay fn(self: &Self, transform: Option<&[f64; 6]>, pen: &mut impl OutlinePen + ?Sized)
+method daegun::outline::PathView::segments fn(self: &Self) -> impl ExactSizeIterator<Item = (Verb, &'a [Point])> + FusedIterator + Clone + use<'a>
+method daegun::outline::PathView::to_path fn(self: Self) -> Path
+method daegun::outline::QuadraticPen::finish fn(self: Self) -> Result<Vec<Quad>>
+method daegun::outline::QuadraticPen::new fn(tolerance: f32) -> QuadraticPen
+method daegun::outline::QuadraticPen::reusing fn(tolerance: f32, curves: Vec<Quad>) -> QuadraticPen
+method daegun::outline::StrokeStyle::new const fn(width: f32) -> StrokeStyle
+method daegun::outline::StrokeStyle::with_cap const fn(self: Self, cap: Cap) -> StrokeStyle
+method daegun::outline::StrokeStyle::with_join const fn(self: Self, join: Join) -> StrokeStyle
+method daegun::outline::TransformPen::new fn(inner: &'a mut P, t: [f64; 6]) -> Self
+method daegun::raster::Bitmap::image fn(self: &Self) -> Image<'_>
+method daegun::raster::Image::row fn(self: &Self, y: u32) -> &[u8]
+method daegun::raster::Image::to_bitmap fn(self: Self) -> Bitmap
+method daegun::raster::RasterOptions::with_darken const fn(self: Self, darken: bool) -> Self
+method daegun::raster::RasterOptions::with_gamma const fn(self: Self, gamma: Gamma) -> Self
+method daegun::raster::RasterOptions::with_layout const fn(self: Self, layout: &'a SubpixelLayout) -> Self
+method daegun::raster::RasterOptions::with_offset const fn(self: Self, x: f32, y: f32) -> Self
+method daegun::raster::RasterOptions::with_outline const fn(self: Self, outline: OutlineOptions) -> Self
+method daegun::raster::Rasterizer::color_glyph fn(self: &mut Self, font: &Font, glyph: GlyphId, location: &Location, px: f32, options: &RasterOptions<'_>, scene: &SceneOptions) -> Result<Option<Image<'_>>>
+method daegun::raster::Rasterizer::color_glyph_into fn(self: &mut Self, font: &Font, glyph: GlyphId, location: &Location, px: f32, options: &RasterOptions<'_>, scene: &SceneOptions, target: Target<'_>) -> Result<bool>
+method daegun::raster::Rasterizer::distance_field fn(self: &mut Self, font: &Font, glyph: GlyphId, location: &Location, px: f32, field: Field) -> Result<Image<'_>>
+method daegun::raster::Rasterizer::glyph fn(self: &mut Self, font: &Font, glyph: GlyphId, location: &Location, px: f32, options: &RasterOptions<'_>) -> Result<Image<'_>>
+method daegun::raster::Rasterizer::glyph_into fn(self: &mut Self, font: &Font, glyph: GlyphId, location: &Location, px: f32, options: &RasterOptions<'_>, target: Target<'_>) -> Result<()>
+method daegun::raster::Rasterizer::new fn() -> Rasterizer
+method daegun::raster::Rasterizer::path fn(self: &mut Self, path: &Path, rule: FillRule, transform: Option<&[f64; 6]>) -> Result<Image<'_>>
+method daegun::raster::Rasterizer::path_into fn(self: &mut Self, path: &Path, rule: FillRule, transform: Option<&[f64; 6]>, target: Target<'_>) -> Result<()>
+method daegun::raster::Rasterizer::set_cache_budget fn(self: &mut Self, bytes: usize)
+method daegun::raster::ShelfPacker::insert fn(self: &mut Self, w: usize, h: usize) -> Option<Rect>
+method daegun::raster::ShelfPacker::new const fn(width: usize, height: usize) -> ShelfPacker
+method daegun::raster::ShelfPacker::reset fn(self: &mut Self)
+method daegun::raster::SubpixelLayout::channels const fn(self: &Self) -> u8
+method daegun::raster::SubpixelLayout::from_weights fn(oversample: (u8, u8), taps: (u8, u8), origin: (i8, i8), weights: [&[f32]; 3]) -> crate::daecore::daekit::base::error::Result<Self>
+method daegun::raster::SubpixelLayout::grayscale const fn() -> Self
+method daegun::raster::SubpixelLayout::horizontal fn(order: StripeOrder) -> Self
+method daegun::raster::SubpixelLayout::is_grayscale const fn(self: &Self) -> bool
+method daegun::raster::SubpixelLayout::key const fn(self: &Self) -> u64
+method daegun::raster::SubpixelLayout::origin const fn(self: &Self) -> (i8, i8)
+method daegun::raster::SubpixelLayout::oversample const fn(self: &Self) -> (u8, u8)
+method daegun::raster::SubpixelLayout::pad fn(self: &Self) -> (usize, usize)
+method daegun::raster::SubpixelLayout::taps const fn(self: &Self) -> (u8, u8)
+method daegun::raster::SubpixelLayout::unfiltered fn(order: StripeOrder, orientation: crate::daecore::Orientation) -> Self
+method daegun::raster::SubpixelLayout::vertical fn(order: StripeOrder) -> Self
+method daegun::raster::SubpixelLayout::weights fn(self: &Self, channel: usize) -> Option<&[f32]>
+method daegun::raster::Target::new fn(left: i32, top: i32, width: u32, height: u32, stride: usize, pixels: &'a mut [u8]) -> Self
+method daegun::raw::format::Ankr::anchor_point fn(self: &Self, glyph: u32, index: u16) -> Option<AnchorPoint>
+method daegun::raw::format::Ankr::parse fn(data: &'a [u8], num_glyphs: u32) -> Result<Self, Error>
+method daegun::raw::format::Ankr::point_count fn(self: &Self, glyph: u32) -> u32
+method daegun::raw::format::Ankr::version fn(data: &[u8]) -> Option<u16>
+method daegun::raw::format::FeatureVariations::at const fn(layout: &'a [u8], at: usize) -> Self
+method daegun::raw::format::FeatureVariations::find fn(self: &Self, coords: &[i32], store: Option<&ItemVariationStore>) -> Option<u32>
+method daegun::raw::format::FeatureVariations::parse fn(layout: &'a [u8]) -> Option<Self>
+method daegun::raw::format::FeatureVariations::substitute fn(self: &Self, variation: u32, feature: u16) -> Option<Substitution>
+method daegun::raw::format::ItemVariationStore::delta fn(self: &Self, index: DeltaSetIndex, region_scalars: &[f64]) -> f64
+method daegun::raw::format::ItemVariationStore::parse fn(buf: &[u8], base: usize) -> Result<ItemVariationStore, Error>
+method daegun::raw::format::ItemVariationStore::region_scalars fn(self: &Self, location: &[f64]) -> Vec<f64>
+method daegun::raw::format::Ivd::row fn(self: &Self, inner: usize) -> Option<&[i32]>
+method daegun::raw::format::Ivd::rows const fn(self: &Self) -> usize
+method daegun::raw::format::Lookup::entries fn(self: &Self) -> Vec<GlyphValue>
+method daegun::raw::format::Lookup::parse fn(data: &'a [u8], num_glyphs: u32) -> Result<Self, Error>
+method daegun::raw::format::Lookup::value fn(self: &Self, glyph: u32) -> Option<u16>
+method daegun::raw::format::StateTable::class fn(self: &Self, glyph: u32) -> u16
+method daegun::raw::format::StateTable::entry fn(self: &Self, state: u16, klass: u16) -> Option<Entry>
+method daegun::raw::format::StateTable::parse fn(data: &'a [u8], extra_words: usize, num_glyphs: u32) -> Result<Self, Error>
+method daegun::shape::ClusterLevel::is_graphemes const fn(self: Self) -> bool
+method daegun::shape::ClusterLevel::is_monotone const fn(self: Self) -> bool
+method daegun::shape::Feature::new const fn(tag: Tag, value: u32) -> Self
+method daegun::shape::ShapeOptions::with_beginning_of_text const fn(self: Self, beginning: bool) -> Self
+method daegun::shape::ShapeOptions::with_cluster_level const fn(self: Self, cluster_level: ClusterLevel) -> Self
+method daegun::shape::ShapeOptions::with_context const fn(self: Self, before: &'a str, after: &'a str) -> Self
+method daegun::shape::ShapeOptions::with_direction const fn(self: Self, direction: Direction) -> Self
+method daegun::shape::ShapeOptions::with_features const fn(self: Self, features: &'a [Feature]) -> Self
+method daegun::shape::ShapeOptions::with_ignorables const fn(self: Self, ignorables: Ignorables) -> Self
+method daegun::shape::ShapeOptions::with_invisible_glyph const fn(self: Self, glyph: GlyphId) -> Self
+method daegun::shape::ShapeOptions::with_language const fn(self: Self, language: &'a str) -> Self
+method daegun::shape::ShapeOptions::with_not_found_glyph const fn(self: Self, glyph: GlyphId) -> Self
+method daegun::shape::ShapeOptions::with_not_found_variation_selector_glyph const fn(self: Self, glyph: GlyphId) -> Self
+method daegun::shape::ShapeOptions::with_point_size const fn(self: Self, point_size: f64) -> Self
+method daegun::shape::ShapeOptions::with_report_tatweel_positions const fn(self: Self, report: bool) -> Self
+method daegun::shape::ShapeOptions::with_report_unsafe_to_concat const fn(self: Self, report: bool) -> Self
+method daegun::shape::ShapeOptions::with_script const fn(self: Self, script: Tag) -> Self
+method daegun::shape::ShapeOptions::with_seed_script const fn(self: Self, script: Script) -> Self
+method daegun::shape::ShapeOptions::with_suppress_dotted_circle const fn(self: Self, suppress: bool) -> Self
+method daegun::shape::ShapedRun::width fn(self: &Self) -> f64
+method daegun::shape::Shaper::name fn(self: Self) -> &'static str
+method daegun::tables::Subset::renumbered fn(self: &Self, old: GlyphId) -> Option<GlyphId>
+method daegun::unicode::BidiParagraph::new fn(text: &str, base: BaseDirection) -> BidiParagraph
+method daegun::unicode::BidiParagraph::visual_runs fn(self: &Self, text: &str, line: impl core::ops::RangeBounds<usize>) -> alloc::vec::Vec<VisualRun>
+method daegun::unicode::Script::direction fn(self: Self) -> ScriptDirection
+method daegun::unicode::Script::from_iso15924 fn(code: &str) -> Option<Script>
+method daegun::unicode::Script::is_context_dependent fn(self: Self) -> bool
+method daegun::unicode::Script::iso15924 fn(self: Self) -> Option<&'static str>
+method daegun::unicode::Script::name fn(self: Self) -> &'static str
+method daegun::unicode::Script::opentype_tags fn(self: Self) -> impl ExactSizeIterator<Item = crate::daecore::Tag> + DoubleEndedIterator + core::iter::FusedIterator + Clone
+module daegun
+module daegun::color
+module daegun::color::gradient
+module daegun::layout
+module daegun::math
+module daegun::metrics
+module daegun::outline
+module daegun::raster
+module daegun::raw
+module daegun::raw::bytes
+module daegun::raw::format
+module daegun::raw::format::class
+module daegun::raw::format::state
+module daegun::shape
+module daegun::tables
+module daegun::unicode
+struct daegun::Axis
+struct daegun::Bounds
+struct daegun::CachePool
+struct daegun::CacheStats
+struct daegun::Error
+struct daegun::Font
+struct daegun::GlyphId
+struct daegun::LocalizedName
+struct daegun::Location
+struct daegun::NameId
+struct daegun::NamedInstance
+struct daegun::Tag
+struct daegun::color::Center
+struct daegun::color::ClipShape
+struct daegun::color::ColorStop
+struct daegun::color::ColrLayer
+struct daegun::color::DisplayList
+struct daegun::color::GlyphBitmap
+struct daegun::color::Gradient
+struct daegun::color::GradientId
+struct daegun::color::PaintGraph
+struct daegun::color::PaintRef
+struct daegun::color::Palette
+struct daegun::color::PathId
+struct daegun::color::Premultiplied
+struct daegun::color::Rgba
+struct daegun::color::SceneOptions
+struct daegun::color::Stop
+struct daegun::color::gradient::Ramp
+struct daegun::layout::JstfModLists
+struct daegun::layout::Justified
+struct daegun::layout::JustifyOptions
+struct daegun::layout::LayoutLine
+struct daegun::layout::LayoutOptions
+struct daegun::layout::PositionedRun
+struct daegun::layout::TextLayout
+struct daegun::math::GlyphAssembly
+struct daegun::math::GlyphPart
+struct daegun::math::MathConstants
+struct daegun::math::MathGlyphConstruction
+struct daegun::math::MathGlyphVariant
+struct daegun::metrics::DecorationLine
+struct daegun::metrics::LineMetrics
+struct daegun::metrics::Os2
+struct daegun::metrics::PdfFlags
+struct daegun::metrics::ScriptMetrics
+struct daegun::metrics::Stat
+struct daegun::metrics::StatAxis
+struct daegun::metrics::TypographicMetrics
+struct daegun::metrics::WinMetrics
+struct daegun::outline::CffHints
+struct daegun::outline::CffMask
+struct daegun::outline::CffStem
+struct daegun::outline::HintedOutline
+struct daegun::outline::OutlineOptions
+struct daegun::outline::Path
+struct daegun::outline::PathView
+struct daegun::outline::Point
+struct daegun::outline::PreparedGlyph
+struct daegun::outline::Quad
+struct daegun::outline::QuadraticPen
+struct daegun::outline::StrokeStyle
+struct daegun::outline::TransformPen
+struct daegun::raster::Bitmap
+struct daegun::raster::Image
+struct daegun::raster::RasterOptions
+struct daegun::raster::Rasterizer
+struct daegun::raster::Rect
+struct daegun::raster::ShelfPacker
+struct daegun::raster::SubpixelLayout
+struct daegun::raster::Target
+struct daegun::raw::format::AnchorPoint
+struct daegun::raw::format::Ankr
+struct daegun::raw::format::DeltaSetIndex
+struct daegun::raw::format::Entry
+struct daegun::raw::format::FeatureVariations
+struct daegun::raw::format::GlyphValue
+struct daegun::raw::format::ItemVariationStore
+struct daegun::raw::format::Ivd
+struct daegun::raw::format::Lookup
+struct daegun::raw::format::RegionAxis
+struct daegun::raw::format::StateTable
+struct daegun::shape::BidiRun
+struct daegun::shape::Feature
+struct daegun::shape::Offset
+struct daegun::shape::ShapeOptions
+struct daegun::shape::ShapedRun
+struct daegun::tables::BaseScript
+struct daegun::tables::Extents
+struct daegun::tables::Subset
+struct daegun::unicode::BidiParagraph
+struct daegun::unicode::LineBreak
+struct daegun::unicode::ParagraphRun
+struct daegun::unicode::Script
+struct daegun::unicode::ScriptRun
+struct daegun::unicode::VisualRun
+struct daegun::unicode::WordSegmenter
+trait daegun::color::PaintVisitor
+trait daegun::outline::OutlinePen
+trait-item daegun::color::PaintVisitor::enter fn(self: &mut Self, node: PaintNode<'_>)
+trait-item daegun::color::PaintVisitor::leave fn(self: &mut Self)
+trait-item daegun::outline::OutlinePen::close fn(self: &mut Self)
+trait-item daegun::outline::OutlinePen::curve_to fn(self: &mut Self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32)
+trait-item daegun::outline::OutlinePen::line_to fn(self: &mut Self, x: f32, y: f32)
+trait-item daegun::outline::OutlinePen::move_to fn(self: &mut Self, x: f32, y: f32)
+trait-item daegun::outline::OutlinePen::quad_to fn(self: &mut Self, cx: f32, cy: f32, x: f32, y: f32)
+type_alias daegun::Result core::result::Result<T, E>
+type_alias daegun::color::Matrix [f64; 6]
+type_alias daegun::color::Rgb [f32; 3]
+variant daegun::Cache::Instance
+variant daegun::Cache::Outline
+variant daegun::Cache::Raster
+variant daegun::Cache::Shape
+variant daegun::ErrorKind::InvalidArgument
+variant daegun::ErrorKind::LimitExceeded
+variant daegun::ErrorKind::Malformed
+variant daegun::ErrorKind::Missing
+variant daegun::ErrorKind::NoOutline
+variant daegun::ErrorKind::Overflow
+variant daegun::ErrorKind::Unsupported
+variant daegun::FontStyle::Italic
+variant daegun::FontStyle::Normal
+variant daegun::FontStyle::Oblique
+variant daegun::GlyphClass::Base
+variant daegun::GlyphClass::Component
+variant daegun::GlyphClass::Ligature
+variant daegun::GlyphClass::Mark
+variant daegun::Orientation::Horizontal
+variant daegun::Orientation::Vertical
+variant daegun::color::BitmapImage::Coverage {width: u16, height: u16, pixels: alloc::vec::Vec<u8>}
+variant daegun::color::BitmapImage::Png (&'a [u8])
+variant daegun::color::Blend::Clear
+variant daegun::color::Blend::ColorBurn
+variant daegun::color::Blend::ColorDodge
+variant daegun::color::Blend::Darken
+variant daegun::color::Blend::Dest
+variant daegun::color::Blend::DestAtop
+variant daegun::color::Blend::DestIn
+variant daegun::color::Blend::DestOut
+variant daegun::color::Blend::DestOver
+variant daegun::color::Blend::Difference
+variant daegun::color::Blend::Exclusion
+variant daegun::color::Blend::HardLight
+variant daegun::color::Blend::HslColor
+variant daegun::color::Blend::HslHue
+variant daegun::color::Blend::HslLuminosity
+variant daegun::color::Blend::HslSaturation
+variant daegun::color::Blend::Lighten
+variant daegun::color::Blend::Multiply
+variant daegun::color::Blend::Overlay
+variant daegun::color::Blend::Plus
+variant daegun::color::Blend::Screen
+variant daegun::color::Blend::SoftLight
+variant daegun::color::Blend::Src
+variant daegun::color::Blend::SrcAtop
+variant daegun::color::Blend::SrcIn
+variant daegun::color::Blend::SrcOut
+variant daegun::color::Blend::SrcOver
+variant daegun::color::Blend::Xor
+variant daegun::color::Extend::Pad
+variant daegun::color::Extend::Reflect
+variant daegun::color::Extend::Repeat
+variant daegun::color::GradientKind::Linear {x0: f32, y0: f32, x1: f32, y1: f32}
+variant daegun::color::GradientKind::Radial {x0: f32, y0: f32, r0: f32, x1: f32, y1: f32, r1: f32}
+variant daegun::color::GradientKind::Sweep {cx: f32, cy: f32, start_angle: f32, end_angle: f32}
+variant daegun::color::Op::Fill {path: PathId, paint: Paint, rule: crate::daecore::daetype::outline::FillRule, transform: [f64; 6]}
+variant daegun::color::Op::PopClip
+variant daegun::color::Op::PopLayer
+variant daegun::color::Op::PushClip {shapes: core::range::Range<usize>}
+variant daegun::color::Op::PushLayer {opacity: f32, blend: Blend}
+variant daegun::color::Paint::Gradient (GradientId)
+variant daegun::color::Paint::Solid (Rgba)
+variant daegun::color::PaintNode::ColrGlyph {glyph: crate::daecore::GlyphId}
+variant daegun::color::PaintNode::Composite {mode: crate::daecore::daekit::draw::Blend}
+variant daegun::color::PaintNode::Glyph {glyph: crate::daecore::GlyphId}
+variant daegun::color::PaintNode::Layers
+variant daegun::color::PaintNode::LinearGradient {extend: crate::daecore::daekit::draw::Extend, stops: &'s [ColorStop], x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64}
+variant daegun::color::PaintNode::RadialGradient {extend: crate::daecore::daekit::draw::Extend, stops: &'s [ColorStop], x0: f64, y0: f64, r0: f64, x1: f64, y1: f64, r1: f64}
+variant daegun::color::PaintNode::Rotate {angle: f64, center: Option<Center>}
+variant daegun::color::PaintNode::Scale {sx: f64, sy: f64, center: Option<Center>}
+variant daegun::color::PaintNode::ScaleUniform {s: f64, center: Option<Center>}
+variant daegun::color::PaintNode::Skew {x_angle: f64, y_angle: f64, center: Option<Center>}
+variant daegun::color::PaintNode::Solid {color: crate::daecore::daekit::draw::Rgba, foreground: bool}
+variant daegun::color::PaintNode::SweepGradient {extend: crate::daecore::daekit::draw::Extend, stops: &'s [ColorStop], cx: f64, cy: f64, start_angle: f64, end_angle: f64}
+variant daegun::color::PaintNode::Transform {matrix: [f64; 6]}
+variant daegun::color::PaintNode::Translate {dx: f64, dy: f64}
+variant daegun::color::Stops::Many (alloc::vec::Vec<Stop>)
+variant daegun::color::Stops::Nothing
+variant daegun::color::Stops::Solid (Rgba)
+variant daegun::color::gradient::Interpolation::LinearLight
+variant daegun::color::gradient::Interpolation::Srgb
+variant daegun::layout::Adjustment::Extend
+variant daegun::layout::Adjustment::Shrink
+variant daegun::layout::Align::Center
+variant daegun::layout::Align::End
+variant daegun::layout::Align::Justify
+variant daegun::layout::Align::Start
+variant daegun::layout::BreakStrategy::Greedy
+variant daegun::layout::BreakStrategy::Optimal
+variant daegun::layout::TextOrientation::Mixed
+variant daegun::layout::TextOrientation::Sideways
+variant daegun::layout::TextOrientation::Upright
+variant daegun::layout::WritingMode::Horizontal
+variant daegun::layout::WritingMode::VerticalLr
+variant daegun::layout::WritingMode::VerticalRl
+variant daegun::math::MathKernCorner::BottomLeft
+variant daegun::math::MathKernCorner::BottomRight
+variant daegun::math::MathKernCorner::TopLeft
+variant daegun::math::MathKernCorner::TopRight
+variant daegun::metrics::StatAxisValue::Combo {name: Option<alloc::string::String>, values: alloc::vec::Vec<(u16, f64)>, elidable: bool, older_sibling: bool}
+variant daegun::metrics::StatAxisValue::Linked {axis_index: u16, name: Option<alloc::string::String>, value: f64, linked_value: f64, elidable: bool, older_sibling: bool}
+variant daegun::metrics::StatAxisValue::Range {axis_index: u16, name: Option<alloc::string::String>, nominal: f64, min: f64, max: f64, elidable: bool, older_sibling: bool}
+variant daegun::metrics::StatAxisValue::Single {axis_index: u16, name: Option<alloc::string::String>, value: f64, elidable: bool, older_sibling: bool}
+variant daegun::outline::Cap::Butt
+variant daegun::outline::Cap::Round
+variant daegun::outline::Cap::Square
+variant daegun::outline::FillRule::EvenOdd
+variant daegun::outline::FillRule::NonZero
+variant daegun::outline::HintMode::Auto
+variant daegun::outline::HintMode::AutoForce
+variant daegun::outline::HintMode::Font
+variant daegun::outline::HintMode::None
+variant daegun::outline::Join::Bevel
+variant daegun::outline::Join::Miter {limit: f32}
+variant daegun::outline::Join::Round
+variant daegun::outline::PointKind::Cubic
+variant daegun::outline::PointKind::OnCurve
+variant daegun::outline::PointKind::Quadratic
+variant daegun::outline::Verb::Close
+variant daegun::outline::Verb::Cubic
+variant daegun::outline::Verb::Line
+variant daegun::outline::Verb::Move
+variant daegun::outline::Verb::Quad
+variant daegun::raster::Field::Msdf {spread: f32}
+variant daegun::raster::Field::Sdf {spread: f32}
+variant daegun::raster::Gamma::Linear
+variant daegun::raster::Gamma::Srgb {text: crate::color::Rgba, contrast: f32}
+variant daegun::raster::StripeOrder::Bgr
+variant daegun::raster::StripeOrder::Rgb
+variant daegun::raw::format::Substitution::Empty
+variant daegun::raw::format::Substitution::Feature (usize)
+variant daegun::shape::ClusterLevel::Characters
+variant daegun::shape::ClusterLevel::Graphemes
+variant daegun::shape::ClusterLevel::MonotoneCharacters
+variant daegun::shape::ClusterLevel::MonotoneGraphemes
+variant daegun::shape::Direction::BottomToTop
+variant daegun::shape::Direction::LeftToRight
+variant daegun::shape::Direction::RightToLeft
+variant daegun::shape::Direction::TopToBottom
+variant daegun::shape::Ignorables::Hide
+variant daegun::shape::Ignorables::Preserve
+variant daegun::shape::Ignorables::Remove
+variant daegun::shape::Shaper::Arabic
+variant daegun::shape::Shaper::Default
+variant daegun::shape::Shaper::Dumber
+variant daegun::shape::Shaper::Hangul
+variant daegun::shape::Shaper::Hebrew
+variant daegun::shape::Shaper::Indic
+variant daegun::shape::Shaper::Khmer
+variant daegun::shape::Shaper::Myanmar
+variant daegun::shape::Shaper::MyanmarZawgyi
+variant daegun::shape::Shaper::Thai
+variant daegun::shape::Shaper::Universal
+variant daegun::unicode::BaseDirection::Auto
+variant daegun::unicode::BaseDirection::LeftToRight
+variant daegun::unicode::BaseDirection::RightToLeft
+variant daegun::unicode::GeneralCategory::ClosePunctuation
+variant daegun::unicode::GeneralCategory::ConnectPunctuation
+variant daegun::unicode::GeneralCategory::Control
+variant daegun::unicode::GeneralCategory::CurrencySymbol
+variant daegun::unicode::GeneralCategory::DashPunctuation
+variant daegun::unicode::GeneralCategory::DecimalNumber
+variant daegun::unicode::GeneralCategory::EnclosingMark
+variant daegun::unicode::GeneralCategory::FinalPunctuation
+variant daegun::unicode::GeneralCategory::Format
+variant daegun::unicode::GeneralCategory::InitialPunctuation
+variant daegun::unicode::GeneralCategory::LetterNumber
+variant daegun::unicode::GeneralCategory::LineSeparator
+variant daegun::unicode::GeneralCategory::LowercaseLetter
+variant daegun::unicode::GeneralCategory::MathSymbol
+variant daegun::unicode::GeneralCategory::ModifierLetter
+variant daegun::unicode::GeneralCategory::ModifierSymbol
+variant daegun::unicode::GeneralCategory::NonspacingMark
+variant daegun::unicode::GeneralCategory::OpenPunctuation
+variant daegun::unicode::GeneralCategory::OtherLetter
+variant daegun::unicode::GeneralCategory::OtherNumber
+variant daegun::unicode::GeneralCategory::OtherPunctuation
+variant daegun::unicode::GeneralCategory::OtherSymbol
+variant daegun::unicode::GeneralCategory::ParagraphSeparator
+variant daegun::unicode::GeneralCategory::PrivateUse
+variant daegun::unicode::GeneralCategory::SpaceSeparator
+variant daegun::unicode::GeneralCategory::SpacingMark
+variant daegun::unicode::GeneralCategory::Surrogate
+variant daegun::unicode::GeneralCategory::TitlecaseLetter
+variant daegun::unicode::GeneralCategory::Unassigned
+variant daegun::unicode::GeneralCategory::UppercaseLetter
+variant daegun::unicode::ScriptDirection::LeftToRight
+variant daegun::unicode::ScriptDirection::RightToLeft
+variant daegun::unicode::VerticalOrientation::Rotated
+variant daegun::unicode::VerticalOrientation::TransformedRotated
+variant daegun::unicode::VerticalOrientation::TransformedUpright
+variant daegun::unicode::VerticalOrientation::Upright

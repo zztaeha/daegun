@@ -1,0 +1,81 @@
+[package]
+name = "daegun-fuzz-libfuzzer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+daegun-fuzz-harness = { path = "../harness", features = ["threading"] }
+
+# What a hostile font overflows or asserts against fails as a panic; lines kept for the reports.
+[profile.release]
+debug = 1
+overflow-checks = true
+debug-assertions = true
+
+[[bin]]
+name = "load"
+path = "fuzz_targets/load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outline"
+path = "fuzz_targets/outline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raster"
+path = "fuzz_targets/raster.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shape"
+path = "fuzz_targets/shape.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "derive"
+path = "fuzz_targets/derive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "everything"
+path = "fuzz_targets/everything.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stack"
+path = "fuzz_targets/stack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pool"
+path = "fuzz_targets/pool.rs"
+test = false
+doc = false
+bench = false
